@@ -1,0 +1,23 @@
+{
+  "name": "paloma-sales-pricing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "営業向け 値上げ交渉・合意価格申請 管理アプリ",
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:41729/git/PalomaPF-dev/Sales"
+  },
+  "scripts": {
+    "dev": "node --watch server/index.js",
+    "start": "node server/index.js",
+    "build": "cd client && npm install && npm run build",
+    "import": "node scripts/import.js",
+    "reset-db": "node scripts/reset-db.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.2.0",
+    "xlsx": "^0.18.5"
+  }
+}
