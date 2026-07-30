@@ -151,7 +151,50 @@ function createTursoDb() {
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
-export const db = isTurso ? createTursoDb() : createLocalDb();
+// サーバーレス環境（Vercel）はファイルシステムが揮発性のため、
+// ローカルSQLiteへのフォールバックは許可しない。
+const isServerless = Boolean(process.env.VERCEL);
+
+export class DbConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'DbConfigError';
+    this.isConfigError = true;
+  }
+}
+
+// 接続の生成は初回アクセスまで遅延させる。
+// モジュール読み込み時に生成すると、設定不備のときに関数全体が起動できず、
+// 原因の分からない500になってしまうため。
+let impl = null;
+function getImpl() {
+  if (impl) return impl;
+  if (isTurso) {
+    impl = createTursoDb();
+  } else if (isServerless) {
+    throw new DbConfigError(
+      '環境変数 TURSO_DATABASE_URL が設定されていません。' +
+      'Vercelではファイルシステムが揮発性のためデータを保存できません。' +
+      'Turso の接続情報（TURSO_DATABASE_URL / TURSO_AUTH_TOKEN）を設定してください。詳細は DEPLOY.md を参照してください。'
+    );
+  } else {
+    impl = createLocalDb();
+  }
+  return impl;
+}
+
+export const db = {
+  get kind() {
+    if (isTurso) return 'turso';
+    return isServerless ? 'unconfigured' : 'sqlite';
+  },
+  async get(sql, params) { return getImpl().get(sql, params); },
+  async all(sql, params) { return getImpl().all(sql, params); },
+  async run(sql, params) { return getImpl().run(sql, params); },
+  async exec(sql) { return getImpl().exec(sql); },
+  async batch(statements) { return getImpl().batch(statements); },
+  close() { impl?.close?.(); },
+};
 
 let initialized = null;
 
@@ -163,7 +206,12 @@ export async function initDb() {
     await db.exec(schema);
     await seedMasters();
   })();
-  return initialized;
+  try {
+    return await initialized;
+  } catch (e) {
+    initialized = null; // 失敗を記憶せず、設定修正後の再試行を可能にする
+    throw e;
+  }
 }
 
 async function seedMasters() {

@@ -26,10 +26,15 @@ export function createApp({ serveStatic = true } = {}) {
         status: 'ok',
         db: db.kind,
         deals: Number(row.deals),
+        authProtected: Boolean(process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASS),
         uptime: Math.round(process.uptime()),
       });
     } catch (e) {
-      res.status(503).json({ status: 'error', error: e.message });
+      res.status(503).json({
+        status: e.isConfigError ? 'not_configured' : 'error',
+        db: db.kind,
+        error: e.message,
+      });
     }
   });
 
@@ -56,6 +61,9 @@ export function createApp({ serveStatic = true } = {}) {
 
   app.use((err, req, res, next) => {
     console.error(err);
+    if (err?.isConfigError) {
+      return res.status(503).json({ error: err.message, hint: 'DEPLOY.md の手順を参照してください' });
+    }
     res.status(500).json({ error: err.message || 'サーバーエラー' });
   });
 
