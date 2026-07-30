@@ -18,7 +18,7 @@ Vercelのサーバーレス関数はファイルシステムが揮発性のた�
 curl -sSfL https://tur.so/install.sh | bash
 turso auth login
 
-# DBを作成（リージョンは東京 nrt を推奨）
+# DBを作成（リージョンは東京 nrt。アプリ側も東京 hnd1 で動かすため合わせる）
 turso db create sales-pricing --location nrt
 
 # 接続情報を取得（この2つをVercelの環境変数に設定します）
@@ -27,6 +27,10 @@ turso db tokens create sales-pricing     # → TURSO_AUTH_TOKEN
 ```
 
 無料プランで動作します（本アプリのデータ量は23,000行・約3MB程度）。
+
+> **リージョンを揃えてください。** `vercel.json` でアプリの実行リージョンを東京（`hnd1`）に指定しています。
+> DBを別リージョン（例: 米国）に作ると1リクエストごとに複数回の太平洋往復が発生し、
+> 画面表示が目に見えて遅くなります。
 
 ## 2. 初期データの投入
 

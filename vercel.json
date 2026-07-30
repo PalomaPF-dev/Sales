@@ -3,10 +3,10 @@
   "buildCommand": "npm run vercel-build",
   "outputDirectory": "client/dist",
   "framework": null,
+  "regions": ["hnd1"],
   "functions": {
     "api/index.js": {
-      "maxDuration": 60,
-      "memory": 1024
+      "maxDuration": 60
     }
   },
   "rewrites": [
