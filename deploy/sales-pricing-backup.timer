@@ -1,0 +1,9 @@
+[Unit]
+Description=値上げ交渉管理システム DBバックアップ（毎日2:00）
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

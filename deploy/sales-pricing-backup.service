@@ -1,0 +1,11 @@
+[Unit]
+Description=値上げ交渉管理システム DBバックアップ
+
+[Service]
+Type=oneshot
+User=sales
+WorkingDirectory=/opt/sales-pricing
+Environment=DATA_DIR=/var/lib/sales-pricing
+Environment=BACKUP_DIR=/var/backups/sales-pricing
+Environment=BACKUP_KEEP=14
+ExecStart=/usr/bin/node scripts/backup.js

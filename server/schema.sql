@@ -2,8 +2,8 @@
 -- 値上げ交渉・合意価格申請 管理アプリ スキーマ
 -- =============================================================
 
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+-- ※ PRAGMA（journal_mode / foreign_keys）は接続時に server/db.js で設定する。
+--    Turso ではPRAGMAを受け付けないため、このファイルには含めない。
 
 -- ユーザー（営業担当者 / 支店長 / 営業企画部 / 管理者）
 CREATE TABLE IF NOT EXISTS users (

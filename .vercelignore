@@ -1,0 +1,8 @@
+data
+backups
+uploads
+deploy
+Dockerfile
+docker-compose.yml
+.dockerignore
+*.log

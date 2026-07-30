@@ -15,9 +15,9 @@
 | 承認ルール設定 | 達成率の範囲と最終決裁者（支店長 / 営業企画部）を画面から自由に設定 |
 | Excel取込 | 現行管理表（.xlsx）をアップロードするだけで取込・統合 |
 
-## セットアップ
+## セットアップ（ローカル）
 
-Node.js 22以上が必要です（SQLiteを内蔵の `node:sqlite` で使用するため、DBの追加インストールは不要）。
+Node.js 22以上が必要です（DBは組み込みの `node:sqlite` を使うため追加インストール不要）。
 
 ```bash
 npm install          # サーバー依存関係
@@ -33,7 +33,22 @@ npm start            # http://localhost:3000 で起動
 npm run import -- FH風呂釜.xlsx 業務部品.xlsx ビルトイン.xlsx
 npm run import -- 管理表.xlsx --replace   # 既存データを消して取込
 npm run reset-db                           # DB初期化（マスタ再seed）
+npm run backup                             # DBバックアップ
 ```
+
+## デプロイ
+
+**Vercel（アプリ）＋ Turso（DB）** で公開できます。手順は **[DEPLOY.md](DEPLOY.md)** を参照してください。
+自社サーバー向けにDocker / systemdの構成も同梱しています。
+
+環境変数 `TURSO_DATABASE_URL` を設定するとTursoへ、未設定ならローカルのSQLiteファイルへ接続します
+（アプリのコードは共通で、接続先だけが切り替わります）。
+
+| 変数 | 用途 |
+|---|---|
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Turso接続情報。未設定時はローカルSQLite |
+| `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | アクセス保護。公開環境では必須 |
+| `PORT` / `DATA_DIR` | 待受ポート / ローカルDBの保存先 |
 
 ### 開発時
 
@@ -104,18 +119,27 @@ CB列（商談結果 記号入力）が「〇」の明細のみ第2弾の値上�
 ## 技術構成
 
 ```
-server/          Express + node:sqlite（Node 22組み込みSQLite）
+server/
+  db.js          データアクセス層（ローカルSQLite / Turso を同一APIで抽象化）
   schema.sql     スキーマ・計算ビュー（deal_calc: ❹❺❽❾を自動計算）
   importer.js    現行管理表パーサー（ヘッダー名で列を自動対応付け）
   api.js         REST API（案件・申請・承認・ルール・設定・取込）
+  auth.js        Basic認証・セキュリティヘッダー
+  app.js         Expressアプリの組み立て（ローカル/Vercel共通）
+  index.js       ローカル・コンテナ用の起動エントリ
+api/index.js     Vercel Functions のエントリ
+middleware.js    Vercel Edge Middleware（静的ファイルを含む全体の認証）
 client/          React + TypeScript + Vite（SPA）
-scripts/         CLI取込・DB初期化
-data/            SQLite DB（gitignore対象）
+scripts/         CLI取込・DB初期化・バックアップ
+deploy/          systemdユニット（自社サーバー運用向け）
 ```
 
-## プロトタイプとしての注意点
+## 現時点での制約
 
-- **認証は簡易版**（ユーザー選択式）。本番導入時はSSO等への置き換えが必要です
+- **個人単位の認証はプロトタイプのまま**（画面でユーザーを選択する方式）です。
+  Basic認証で入室した人は誰の名義でも承認操作ができるため、
+  「誰が承認したか」を証跡として残す運用に進む場合はSSO等の導入が必要です
 - ユーザー・支店マスタはseedデータ（`server/db.js`）。実際の組織に合わせて登録してください
 - 目標金額の初期値は管理表から読み取った値（設定画面から変更可能）
 - 承認済み申請の単価は本システム内の案件に反映されます。基幹システムのマスター単価への連携は今後の拡張ポイントです
+- Vercel経由の画面アップロードは約4MBが上限です。大きい管理表はCLI（`npm run import`）から投入してください

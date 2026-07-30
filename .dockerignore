@@ -1,0 +1,10 @@
+node_modules
+client/node_modules
+client/dist
+data
+uploads
+.git
+.gitignore
+*.log
+*.md
+!README.md

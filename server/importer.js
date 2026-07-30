@@ -1,5 +1,5 @@
 import XLSX from 'xlsx';
-import { db } from './db.js';
+import { db, initDb } from './db.js';
 
 // 現行管理表のヘッダー名 → deals列 の対応
 const HEADER_MAP = {
@@ -74,6 +74,9 @@ const DATEISH_COLS = new Set([
 
 const CONFIRM_SYMBOLS = ['〇', '○', '◯'];
 
+// 1回のトランザクションで送る行数。Tursoのリクエストサイズ上限を考慮した値。
+const CHUNK_SIZE = 400;
+
 function excelSerialToISO(n) {
   // Excelシリアル値(1900年基準)を日付文字列へ
   const ms = Math.round((n - 25569) * 86400 * 1000);
@@ -127,13 +130,15 @@ function findHeaderRow(rows) {
   throw new Error('ヘッダー行（「売上年月」列）が見つかりません。現行管理表の形式か確認してください。');
 }
 
-export function importWorkbook(buffer, filename, userId) {
+export async function importWorkbook(buffer, filename, userId, onProgress) {
+  await initDb();
+
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
   const headerRow = findHeaderRow(rows);
 
-  // ヘッダー名 → 列index（同名ヘッダーは最初の出現を採用: カテゴリーコード/名は S,T 列が後勝ちのため個別処理）
+  // ヘッダー名 → 列index
   const headers = rows[headerRow].map((h) => String(h ?? '').replace(/[\s　]+$/g, '').trim());
   const colIndex = {};
   headers.forEach((h, i) => {
@@ -148,33 +153,37 @@ export function importWorkbook(buffer, filename, userId) {
   }
 
   const cols = Object.keys(colIndex);
-  const insertBatch = db.prepare(
-    'INSERT INTO import_batches (filename, row_count, imported_by) VALUES (?,?,?)'
-  );
   const dealCols = [...cols, 'batch_id', 'price_type_code', 'status', 'updated_at'];
-  const insertDeal = db.prepare(
-    `INSERT INTO deals (${dealCols.join(',')}) VALUES (${dealCols.map(() => '?').join(',')})`
+  const insertSql = `INSERT INTO deals (${dealCols.join(',')}) VALUES (${dealCols.map(() => '?').join(',')})`;
+
+  const { lastInsertRowid: batchId } = await db.run(
+    'INSERT INTO import_batches (filename, row_count, imported_by) VALUES (?,?,?)',
+    [filename, 0, userId ?? null]
   );
 
-  const batchId = insertBatch.run(filename, 0, userId ?? null).lastInsertRowid;
+  const stamp = new Date().toISOString();
+  let pending = [];
   let count = 0;
-  db.exec('BEGIN');
-  try {
-    for (let i = headerRow + 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row[colIndex.sales_ym] == null) continue; // 空行スキップ
-      const d = {};
-      for (const c of cols) d[c] = normalize(c, row[colIndex[c]]);
-      const values = cols.map((c) => d[c]);
-      values.push(batchId, inferPriceType(d), deriveStatus(d), new Date().toISOString());
-      insertDeal.run(...values);
-      count++;
+
+  for (let i = headerRow + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row[colIndex.sales_ym] == null) continue; // 空行スキップ
+    const d = {};
+    for (const c of cols) d[c] = normalize(c, row[colIndex[c]]);
+    const values = cols.map((c) => d[c]);
+    values.push(batchId, inferPriceType(d), deriveStatus(d), stamp);
+    pending.push({ sql: insertSql, params: values });
+    count++;
+
+    if (pending.length >= CHUNK_SIZE) {
+      await db.batch(pending);
+      pending = [];
+      onProgress?.(count);
     }
-    db.prepare('UPDATE import_batches SET row_count = ? WHERE id = ?').run(count, batchId);
-    db.exec('COMMIT');
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
   }
+  if (pending.length) await db.batch(pending);
+
+  await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [count, batchId]);
+  onProgress?.(count);
   return { batchId, count };
 }

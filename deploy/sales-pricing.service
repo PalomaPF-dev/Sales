@@ -1,0 +1,30 @@
+[Unit]
+Description=値上げ交渉管理システム (Sales Pricing App)
+After=network.target
+
+[Service]
+Type=simple
+User=sales
+WorkingDirectory=/opt/sales-pricing
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=TZ=Asia/Tokyo
+Environment=DATA_DIR=/var/lib/sales-pricing
+# アクセス保護。値は EnvironmentFile で外出しすることを推奨します。
+EnvironmentFile=-/etc/sales-pricing.env
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=5
+# 安全な停止（SQLiteの書き込み完了を待つ）
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# セキュリティ強化
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sales-pricing
+
+[Install]
+WantedBy=multi-user.target

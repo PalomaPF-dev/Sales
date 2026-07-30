@@ -1,31 +1,25 @@
-import express from 'express';
-import path from 'node:path';
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { api } from './api.js';
+// ローカル / コンテナ / systemd での起動エントリポイント
+import { createApp } from './app.js';
+import { initDb, db } from './db.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
+await initDb();
 
-app.use(express.json({ limit: '10mb' }));
-app.use('/api', api);
+const app = createApp({ serveStatic: true });
+const port = Number(process.env.PORT) || 3000;
+const host = process.env.HOST || '0.0.0.0';
 
-// ビルド済みフロントエンド（client/dist）を配信
-const dist = path.join(__dirname, '..', 'client', 'dist');
-if (existsSync(dist)) {
-  app.use(express.static(dist));
-  app.use((req, res, next) => {
-    if (req.method === 'GET' && !req.path.startsWith('/api')) {
-      return res.sendFile(path.join(dist, 'index.html'));
-    }
-    next();
-  });
-}
-
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: err.message || 'サーバーエラー' });
+const server = app.listen(port, host, () => {
+  console.log(`起動しました: http://${host}:${port}（DB: ${db.kind}）`);
+  if (!process.env.BASIC_AUTH_USER) {
+    console.warn('警告: BASIC_AUTH_USER/PASS が未設定です。公開環境ではアクセス保護を設定してください。');
+  }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`http://localhost:${port} で起動しました`));
+// コンテナ環境での安全な停止
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    console.log(`${sig} を受信しました。停止します。`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 10000).unref();
+  });
+}
