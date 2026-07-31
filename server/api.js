@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import multer from 'multer';
 import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
@@ -128,7 +129,9 @@ api.use(wrap(async (req, res, next) => {
 
 // ログイン前に到達してよいパス。これ以外は既定で拒否する。
 // 個別のハンドラに requireLogin を書き忘れても素通りしないようにするための関門。
-const PUBLIC_PATHS = new Set(['/login', '/logout', '/me', '/setup/status', '/setup', '/sso']);
+const PUBLIC_PATHS = new Set([
+  '/login', '/logout', '/me', '/setup/status', '/setup', '/sso', '/admin-recovery',
+]);
 
 api.use((req, res, next) => {
   if (PUBLIC_PATHS.has(req.path)) return next();
@@ -303,6 +306,83 @@ api.post('/logout', wrap(async (req, res) => {
 api.get('/me', wrap(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'ログインしてください' });
   res.json(publicUser(req.user));
+}));
+
+// ---- 管理者の復旧（締め出されたときの最後の手段） ----
+
+/**
+ * 管理者アカウントを作り直す。
+ *
+ * 通常は `npm run set-password` で復旧するが、ターミナルを使えない運用では
+ * 本番で管理者に入れなくなると手が無くなる。そのための逃げ道。
+ *
+ * ADMIN_RECOVERY_TOKEN を設定したときだけ開く。この環境変数を設定できるのは
+ * Vercelの設定を触れる人だけなので、DATABASE_URL を設定できる人と同じ範囲に収まる。
+ * 使い終わったら環境変数を消して閉じること（応答にもその旨を書いて返す）。
+ */
+const MIN_RECOVERY_TOKEN_LENGTH = 24;
+
+api.get('/admin-recovery', wrap(async (req, res) => {
+  const expected = process.env.ADMIN_RECOVERY_TOKEN || '';
+
+  // 未設定のときは機能そのものを隠す（存在を知られないように404）
+  if (!expected) return res.status(404).json({ error: '見つかりません' });
+
+  if (expected.length < MIN_RECOVERY_TOKEN_LENGTH) {
+    console.error('ADMIN_RECOVERY_TOKEN が短すぎます。復旧は行いません。');
+    return res.status(500).json({
+      error: `ADMIN_RECOVERY_TOKEN は${MIN_RECOVERY_TOKEN_LENGTH}文字以上にしてください`,
+    });
+  }
+
+  const given = String(req.query?.token ?? '');
+  const a = Buffer.from(given, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    console.warn('管理者復旧: 合言葉が一致しませんでした');
+    return res.status(404).json({ error: '見つかりません' });
+  }
+
+  const loginId = String(req.query?.loginId ?? '').trim();
+  const name = String(req.query?.name ?? '').trim() || loginId;
+  if (!loginId) {
+    return res.status(400).json({ error: 'loginId を指定してください（例: ?loginId=devadmin&name=開発者）' });
+  }
+
+  const password = generateTempPassword();
+  const hash = await hashPassword(password);
+  const existing = await db.get('SELECT * FROM users WHERE login_id = ?', [loginId]);
+
+  let action;
+  if (existing) {
+    // 役割も管理者へ引き上げる。締め出されている状況なので、
+    // 権限が足りないまま入れても復旧にならない。
+    await db.run(
+      `UPDATE users SET password_hash = ?, role = 'admin', active = 1,
+              must_change_password = 1, failed_attempts = 0, locked_until = NULL
+         WHERE id = ?`, [hash, existing.id]);
+    await destroyUserSessions(existing.id);
+    action = 'reset';
+  } else {
+    await db.run(
+      `INSERT INTO users (name, role, branch, office, active, login_id,
+                          password_hash, must_change_password)
+       VALUES (?, 'admin', NULL, NULL, 1, ?, ?, 1)`, [name, loginId, hash]);
+    action = 'created';
+  }
+
+  console.warn(
+    `*** 管理者復旧を実行しました（${action}: ${loginId}）。***\n` +
+    '*** 使い終わったら ADMIN_RECOVERY_TOKEN を削除してください。***');
+
+  res.json({
+    ok: true,
+    action,
+    loginId,
+    tempPassword: password,
+    note: '初回ログイン時にパスワードの変更が求められます。'
+        + '完了したら Vercel の ADMIN_RECOVERY_TOKEN を削除して、この入口を閉じてください。',
+  });
 }));
 
 // ---- 社内ポータルからのSSO ----
