@@ -79,6 +79,9 @@ Vercelダッシュボードから設定する場合は **Settings → Environmen
 | `DB_SCHEMA` | | テーブルを作成するスキーマ名（既定: `sales_pricing`） |
 | `DB_SSL_NO_VERIFY` | | `true` でTLS証明書の検証を緩める（社内認証局を使っている場合） |
 | `DISPLAY_TZ` | | 画面に出す時刻の時間帯（既定: `Asia/Tokyo`）。通常は設定不要 |
+| `PORTAL_SSO_SECRET` | | ポータルからのSSOで使う共有鍵。**設定するとSSOが有効になります**（未設定の間は入口が開きません）。[docs/SSO-PROPOSAL.md](docs/SSO-PROPOSAL.md) 参照 |
+| `PORTAL_SSO_AUTO_CREATE` | | `false` でSSO時の未登録者を拒否（既定は営業担当者として自動作成） |
+| `PORTAL_SSO_ISSUER` | | トークンの発行元の期待値（既定: `portal`） |
 
 `DISABLE_AUTH` と `DEV_LOGIN_AS` は認証を省略するための開発用の設定です。
 **本番（Vercel）では設定されていても無視され、必ずログインを求めます。**

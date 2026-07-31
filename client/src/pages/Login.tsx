@@ -1,12 +1,34 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { login } from '../api';
 import type { User } from '../types';
+
+/**
+ * ポータルからのSSOに失敗したときの案内。
+ * サーバーは短い区分だけを ?sso= で渡す（詳しい理由は総当たりの手掛かりになるため）。
+ */
+const SSO_MESSAGES: Record<string, string> = {
+  expired: 'リンクの有効期限が切れました。ポータルからもう一度お開きください。',
+  replayed: 'このリンクは既に使われています。ポータルからもう一度お開きください。',
+  unknown_user: 'このアカウントは登録されていません。営業企画部にお問い合わせください。',
+  inactive: 'このアカウントは現在ご利用いただけません。営業企画部にお問い合わせください。',
+  disabled: 'ポータル連携は現在設定されていません。下のログインをお使いください。',
+};
+const SSO_FALLBACK = 'ポータルからのログインに失敗しました。もう一度お試しください。';
 
 export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [ssoError, setSsoError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // SSOで戻されたときは理由を出す。読み終えたらURLから消しておく
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('sso');
+    if (!code) return;
+    setSsoError(SSO_MESSAGES[code] ?? SSO_FALLBACK);
+    window.history.replaceState({}, '', window.location.pathname);
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,6 +49,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
       <form className="login-card" onSubmit={submit}>
         <h1>値上げ交渉管理システム</h1>
         <p>ログインIDとパスワードを入力してください</p>
+        {ssoError && <div className="alert error">{ssoError}</div>}
         {error && <div className="alert error">{error}</div>}
 
         <label className="fld" style={{ marginBottom: 12 }}>

@@ -159,7 +159,9 @@ function toPgPlaceholders(sql) {
 
 // id列を持たないテーブル。INSERT時に RETURNING id を付けるとエラーになる。
 // 主キーがidでないテーブルを足すときは、ここにも必ず追加すること。
-const TABLES_WITHOUT_ID = new Set(['settings', 'price_types', 'corp_negotiations']);
+const TABLES_WITHOUT_ID = new Set([
+  'settings', 'price_types', 'corp_negotiations', 'sso_used_tokens',
+]);
 
 /** SQLiteの方言をPostgreSQLへ寄せる */
 function toPgSql(sql) {

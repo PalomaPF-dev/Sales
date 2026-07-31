@@ -13,6 +13,7 @@ import {
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
 import { buildWorkbook } from './export.js';
+import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -127,7 +128,7 @@ api.use(wrap(async (req, res, next) => {
 
 // ログイン前に到達してよいパス。これ以外は既定で拒否する。
 // 個別のハンドラに requireLogin を書き忘れても素通りしないようにするための関門。
-const PUBLIC_PATHS = new Set(['/login', '/logout', '/me', '/setup/status', '/setup']);
+const PUBLIC_PATHS = new Set(['/login', '/logout', '/me', '/setup/status', '/setup', '/sso']);
 
 api.use((req, res, next) => {
   if (PUBLIC_PATHS.has(req.path)) return next();
@@ -302,6 +303,76 @@ api.post('/logout', wrap(async (req, res) => {
 api.get('/me', wrap(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'ログインしてください' });
   res.json(publicUser(req.user));
+}));
+
+// ---- 社内ポータルからのSSO ----
+
+/**
+ * ポータルが発行した受け渡しトークンを受け取り、本アプリのセッションを作る。
+ * 仕様は docs/SSO-PROPOSAL.md を参照。
+ *
+ * 失敗しても理由を画面に細かく出さない（総当たりの手掛かりになるため）。
+ * ログイン画面に短い区分だけ渡し、詳細はサーバーのログに残す。
+ */
+api.get('/sso', wrap(async (req, res) => {
+  const config = ssoConfig();
+  const next = safeNextPath(req.query?.next);
+  const fail = (code, detail) => {
+    console.warn(`SSO失敗 (${code}): ${detail}`);
+    return res.redirect(302, `/login?sso=${encodeURIComponent(code)}`);
+  };
+
+  // 鍵が未設定の間はSSOそのものを開かない
+  if (!config.enabled) {
+    return fail('disabled', 'PORTAL_SSO_SECRET が未設定です');
+  }
+
+  let claims;
+  try {
+    claims = verifyToken(req.query?.token, config);
+  } catch (e) {
+    if (e instanceof SsoError) return fail(e.code, e.message);
+    throw e;
+  }
+
+  // 期限切れの記録を掃除してから、使い回しでないことを確かめる
+  await db.run('DELETE FROM sso_used_tokens WHERE expires_at < ?', [now()]).catch(() => {});
+  const used = await db.get('SELECT jti FROM sso_used_tokens WHERE jti = ?', [claims.jti]);
+  if (used) return fail('replayed', `jti ${claims.jti} は使用済みです`);
+
+  let user = await db.get('SELECT * FROM users WHERE login_id = ?', [claims.loginId]);
+
+  if (!user) {
+    if (!config.autoCreate) {
+      return fail('unknown_user', `未登録のログインID: ${claims.loginId}`);
+    }
+    // 自動作成は必ず最小権限から。管理者への変更は本アプリの管理者画面で行う
+    // （トークンに役割を持たせると、ポータル側の設定ミスで管理者を作れてしまう）
+    const created = await db.run(
+      `INSERT INTO users (name, role, branch, office, active, login_id, must_change_password)
+       VALUES (?,?,?,?,1,?,0)`,
+      [claims.name || claims.loginId, 'sales', claims.branch, claims.office, claims.loginId]);
+    user = await db.get('SELECT * FROM users WHERE id = ?', [created.lastInsertRowid]);
+    console.warn(`SSO: 未登録のため営業担当者として作成しました（${claims.loginId} / ${user?.name}）`);
+  }
+
+  if (!user?.active) return fail('inactive', `無効なユーザー: ${claims.loginId}`);
+
+  await db.run(
+    'INSERT INTO sso_used_tokens (jti, user_id, used_at, expires_at) VALUES (?,?,?,?)',
+    [claims.jti, user.id, now(), claims.expiresAt]);
+
+  // パスワードでのログインと同じ扱いにする。ロックが残っていても
+  // ポータルで本人確認が済んでいるため解除する。
+  await db.run(
+    `UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ?
+       WHERE id = ?`, [now(), user.id]);
+
+  const { token, expires } = await createSession(user.id);
+  setSessionCookie(req, res, token, expires);
+
+  // トークンをURLに残さない（履歴・ブックマーク・Referer に載るため）
+  res.redirect(302, next);
 }));
 
 // パスワード変更（本人のみ。仮パスワード状態でも実行できる）
