@@ -60,6 +60,11 @@ export interface Deal {
   final_confirm_date: string | null;
   price_type_code: number | null;
   status: string;
+  // 一覧で交渉の直近状況を見せるために付与される
+  last_contact_date?: string | null;
+  last_result?: string | null;
+  last_note?: string | null;
+  log_count?: number;
 }
 
 export interface AppItem {

@@ -444,27 +444,60 @@ api.get('/deals', wrap(async (req, res) => {
              COALESCE(SUM(r1_target_amount), 0) AS r1_target,
              COALESCE(SUM(r2_target_amount), 0) AS r2_target
       FROM deal_calc ${where}`, params),
+    // 交渉の直近状況を一覧で分かるようにするため、最新の交渉履歴を添える。
+    // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
+    // （LATERAL join はSQLiteが解釈できない）。
     db.all(`
-      SELECT * FROM deal_calc ${where}
+      SELECT deal_calc.*,
+        (SELECT l.contact_date FROM negotiation_logs l WHERE l.deal_id = deal_calc.id
+         ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC LIMIT 1) AS last_contact_date,
+        (SELECT l.result FROM negotiation_logs l WHERE l.deal_id = deal_calc.id
+         ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC LIMIT 1) AS last_result,
+        (SELECT l.note FROM negotiation_logs l WHERE l.deal_id = deal_calc.id
+         ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC LIMIT 1) AS last_note,
+        (SELECT COUNT(*) FROM negotiation_logs l WHERE l.deal_id = deal_calc.id) AS log_count
+      FROM deal_calc ${where}
       ORDER BY customer_name, equip_name, model_name, id
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   res.json({ rows, totals, page, size });
 }));
 
+// 集計。絞り込み条件をそのまま引き継ぎ、支店・営業所・器具区分などの単位でまとめる。
+const SUMMARY_GROUPS = {
+  branch:   { sql: 'branch',                        label: 'branch' },
+  office:   { sql: 'branch, office',                label: 'office' },
+  equip:    { sql: 'equip_name',                    label: 'equip_name' },
+  customer: { sql: 'customer_code, customer_name',  label: 'customer_name' },
+  person:   { sql: 'sales_person',                  label: 'sales_person' },
+  status:   { sql: 'status',                        label: 'status' },
+};
+
 api.get('/deals/summary', wrap(async (req, res) => {
-  const group = { customer: 'customer_code, customer_name', equip: 'equip_name', person: 'sales_person' }[req.query.group] || 'customer_code, customer_name';
+  const g = SUMMARY_GROUPS[req.query.group] || SUMMARY_GROUPS.branch;
   const { where, params } = dealFilters(req.query);
-  const rows = await db.all(`
-    SELECT ${group}, COUNT(*) AS deals, COALESCE(SUM(qty),0) AS qty,
+  const select = `
+    SELECT COUNT(*) AS deals, COALESCE(SUM(qty),0) AS qty,
+           COALESCE(SUM(r1_target_amount),0) AS r1_target,
+           COALESCE(SUM(r2_target_amount),0) AS r2_target,
+           COALESCE(SUM(r1_target_amount),0) + COALESCE(SUM(r2_target_amount),0) AS total_target,
            COALESCE(SUM(r1_raise_amount),0) AS r1_amount,
            COALESCE(SUM(r2_raise_amount),0) AS r2_amount,
            COALESCE(SUM(r1_raise_amount),0) + COALESCE(SUM(r2_raise_amount),0) AS total_amount,
-           COALESCE(SUM(r1_target_amount),0) AS r1_target,
-           COALESCE(SUM(r2_target_amount),0) AS r2_target
-    FROM deal_calc ${where}
-    GROUP BY ${group} ORDER BY total_amount DESC`, params);
-  res.json(rows);
+           -- 交渉の進み具合（明細数）
+           SUM(CASE WHEN status = 'not_started' THEN 1 ELSE 0 END) AS cnt_not_started,
+           SUM(CASE WHEN status = 'negotiating' THEN 1 ELSE 0 END) AS cnt_negotiating,
+           SUM(CASE WHEN status = 'r1_agreed' THEN 1 ELSE 0 END) AS cnt_r1_agreed,
+           SUM(CASE WHEN status = 'r2_negotiating' THEN 1 ELSE 0 END) AS cnt_r2_negotiating,
+           SUM(CASE WHEN status = 'r2_agreed' THEN 1 ELSE 0 END) AS cnt_r2_agreed,
+           SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END) AS cnt_declined`;
+
+  const [rows, total] = await Promise.all([
+    db.all(`${select}, ${g.sql} FROM deal_calc ${where}
+            GROUP BY ${g.sql} ORDER BY total_target DESC, total_amount DESC`, params),
+    db.get(`${select} FROM deal_calc ${where}`, params),
+  ]);
+  res.json({ group: req.query.group || 'branch', labelKey: g.label, rows, total });
 }));
 
 // 現行管理表フォーマットでのExcel書き出し。

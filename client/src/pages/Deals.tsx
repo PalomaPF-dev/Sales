@@ -5,6 +5,8 @@ import type { Deal, Meta } from '../types';
 import { DealStatusBadge, PriceTypeBadge } from '../components/ui';
 import { useUser } from '../user';
 import BulkApplyDialog from '../components/BulkApplyDialog';
+import DealSummary from '../components/DealSummary';
+import { NegotiationStage } from '../components/ui';
 
 interface DealsRes {
   rows: Deal[];
@@ -24,6 +26,7 @@ export default function Deals() {
   const [editing, setEditing] = useState<number | null>(null);
   const [bulkRound, setBulkRound] = useState<1 | 2 | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [showSummary, setShowSummary] = useState(true);
   const navigate = useNavigate();
 
   const get = (k: string) => params.get(k) || '';
@@ -174,6 +177,9 @@ export default function Deals() {
             {data.totals.count.toLocaleString()}件 ・ 第1弾 ¥{yen(data.totals.r1_amount)} ・ 第2弾 ¥{yen(data.totals.r2_amount)}
           </span>
           <div className="grow" />
+          <button className="btn secondary sm" onClick={() => setShowSummary((v) => !v)}>
+            {showSummary ? '集計を隠す' : '集計を表示'}
+          </button>
           <button className="btn secondary sm" onClick={exportExcel}>Excel出力</button>
           <button className="btn secondary sm" onClick={() => setBulkRound(1)}>得意先一括申請（第1弾）</button>
           <button className="btn secondary sm" onClick={() => setBulkRound(2)}>得意先一括申請（第2弾）</button>
@@ -187,6 +193,8 @@ export default function Deals() {
         </div>
       )}
 
+      {showSummary && <DealSummary query={queryString()} />}
+
       <div className="card tbl-scroll" style={{ padding: 0 }}>
         <table className="tbl">
           <thead>
@@ -199,6 +207,7 @@ export default function Deals() {
               <th className="num">台数</th>
               <th className="num">出荷単価❶</th>
               <th className="num">目標単価❷</th>
+              <th style={{ minWidth: 150 }}>交渉状況</th>
               <th className="num">値上後単価❸</th>
               <th className="num">値上金額❺</th>
               <th className="num">第2弾目標❻</th>
@@ -226,6 +235,9 @@ export default function Deals() {
                   <td className="num">{d.qty}</td>
                   <td className="num">{yen(d.base_price)}</td>
                   <td className="num">{yen(d.r1_target_price)}</td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <NegotiationStage deal={d} />
+                  </td>
                   <td className="num">{yen(d.r1_agreed_price)}</td>
                   <td className="num">{yen(d.r1_raise_amount)}</td>
                   <td className="num">{yen(d.r2_target_price)}</td>

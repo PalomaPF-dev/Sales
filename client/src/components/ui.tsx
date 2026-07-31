@@ -63,3 +63,63 @@ export function Card({ title, children }: { title?: string; children: ReactNode 
     </div>
   );
 }
+
+const STAGE_STEPS = [
+  { key: 'negotiating', label: '交渉' },
+  { key: 'r1_agreed', label: '第1弾' },
+  { key: 'r2_negotiating', label: '第2弾交渉' },
+  { key: 'r2_agreed', label: '第2弾' },
+];
+
+// ステータスがどこまで進んだかの段階（-1 は未着手 / 値上げ不可は別扱い）
+const STAGE_INDEX: Record<string, number> = {
+  not_started: -1,
+  negotiating: 0,
+  r1_agreed: 1,
+  r2_negotiating: 2,
+  r2_agreed: 3,
+};
+
+/**
+ * 値上げ交渉がどこまで進んでいるかを一覧上で示す。
+ * 段階のドットに加えて、直近の商談日と結果を添える。
+ */
+export function NegotiationStage({ deal }: {
+  deal: {
+    status: string;
+    last_contact_date?: string | null;
+    last_result?: string | null;
+    last_note?: string | null;
+    log_count?: number;
+    negotiated_date?: string | null;
+    r2_result_symbol?: string | null;
+  };
+}) {
+  const declined = deal.status === 'declined';
+  const current = STAGE_INDEX[deal.status] ?? -1;
+  const lastDate = deal.last_contact_date || deal.negotiated_date;
+
+  return (
+    <div className="stage">
+      <div className="stage-dots" title={STATUS_NAMES[deal.status] || deal.status}>
+        {STAGE_STEPS.map((s, i) => (
+          <span
+            key={s.key}
+            className={declined ? 'declined' : i <= current ? 'done' : ''}
+            title={s.label}
+          />
+        ))}
+      </div>
+      <span className="stage-label">
+        {declined ? '値上げ不可' : STATUS_NAMES[deal.status] || deal.status}
+      </span>
+      {(lastDate || deal.last_result) && (
+        <span className="stage-sub" title={deal.last_note || ''}>
+          {lastDate ? String(lastDate).slice(0, 10) : ''}
+          {deal.last_result ? ` ${deal.last_result}` : ''}
+          {deal.log_count ? `（履歴${deal.log_count}）` : ''}
+        </span>
+      )}
+    </div>
+  );
+}
