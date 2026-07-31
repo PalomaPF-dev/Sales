@@ -19,9 +19,38 @@ const num = (v) => (v == null ? 0 : Number(v));
 // 非同期ハンドラのエラーをExpressのエラーハンドラへ渡す
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+/**
+ * 開発用のログイン省略。
+ * DEV_LOGIN_AS=<ログインID> を指定すると、そのユーザーとしてログイン済みとして扱う。
+ *
+ * 本番で有効になると認証が丸ごと無効化されてしまうため、
+ * サーバーレス環境（Vercel）と NODE_ENV=production では明示的に拒否する。
+ */
+const DEV_LOGIN_AS = (() => {
+  const value = process.env.DEV_LOGIN_AS;
+  if (!value) return null;
+  if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+    console.error('DEV_LOGIN_AS は本番環境では使用できません。無視します。');
+    return null;
+  }
+  console.warn(
+    `\n*** 開発モード: 認証を省略し「${value}」としてログイン済みとして扱います。***\n` +
+    '*** 本番環境では DEV_LOGIN_AS を設定しないでください。 ***\n'
+  );
+  return value;
+})();
+
 // ---- 認証（ログインID/パスワード + セッションCookie） ----
 api.use(wrap(async (req, res, next) => {
   await initDb();
+  if (DEV_LOGIN_AS) {
+    req.user = await db.get('SELECT * FROM users WHERE login_id = ? AND active = 1', [DEV_LOGIN_AS]);
+    if (req.user) {
+      req.user.must_change_password = 0; // 開発時はパスワード変更を求めない
+      return next();
+    }
+    console.warn(`DEV_LOGIN_AS="${DEV_LOGIN_AS}" に該当するユーザーが見つかりません。`);
+  }
   req.sessionToken = readCookie(req, COOKIE_NAME);
   req.user = await resolveSession(req.sessionToken);
   next();
