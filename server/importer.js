@@ -89,8 +89,10 @@ const DATEISH_COLS = new Set([
 
 const CONFIRM_SYMBOLS = ['〇', '○', '◯'];
 
-// 1回のトランザクションで送る行数。1リクエストが大きくなりすぎないようにする。
-const CHUNK_SIZE = 400;
+// 1回のトランザクションで送る行数。
+// PostgreSQL側で1文のINSERTにまとめられる上限（バインド変数65535個）に収まる範囲で
+// 大きめに取り、DBとの往復回数を減らす。
+const CHUNK_SIZE = 1000;
 
 function excelSerialToISO(n) {
   // Excelシリアル値(1900年基準)を日付文字列へ
@@ -250,6 +252,9 @@ export async function importWorkbook(buffer, filename, userId, onProgress, { for
     if (pending.length >= CHUNK_SIZE) {
       await db.batch(pending);
       pending = [];
+      // 途中で中断（サーバーレスの実行時間切れなど）しても、
+      // どこまで入ったかが取込履歴に残るようにここで件数を更新する
+      await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [count, batchId]);
       onProgress?.(count);
     }
   }

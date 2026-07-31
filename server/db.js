@@ -170,6 +170,32 @@ function toPgSql(sql) {
   return toPgPlaceholders(out);
 }
 
+// 1文あたりのバインド変数はPostgreSQLで65535個まで。余裕をみて上限を決める
+const PG_MAX_BIND_PARAMS = 60000;
+const PG_MAX_ROWS_PER_INSERT = 1000;
+
+/**
+ * 同じINSERT文が並んでいるとき、VALUES を複数タプルに展開して1文にまとめる。
+ * 取込では2万行を超えるINSERTが並ぶため、1行1文のままだと
+ * DBとの往復回数がそのまま行数になり、遠隔のDBでは実行時間が桁違いになる。
+ * 展開できない形（OR IGNORE、プレースホルダ以外を含むVALUESなど）は null を返す。
+ */
+function expandInsertValues(sql, rowCount) {
+  if (rowCount < 2) return null;
+  if (/\binsert\s+or\s+ignore\b/i.test(sql)) return null; // 競合でスキップされると件数が対応づかない
+  const trimmed = sql.trim().replace(/;$/, '');
+  const m = /\bvalues\s*(\(\s*\?(?:\s*,\s*\?)*\s*\))\s*$/i.exec(trimmed);
+  if (!m) return null;
+  const tuple = m[1];
+  const perRow = (tuple.match(/\?/g) || []).length;
+  if (perRow === 0) return null;
+  const head = trimmed.slice(0, m.index);
+  return {
+    perRow,
+    build: (n) => `${head}VALUES ${Array(n).fill(tuple).join(',')}`,
+  };
+}
+
 /** INSERTに RETURNING id を足して lastInsertRowid 相当を得られるようにする */
 function withReturningId(sql) {
   const m = /^\s*insert\s+into\s+"?([a-z_][a-z0-9_]*)"?/i.exec(sql);
@@ -255,19 +281,45 @@ function createPostgresDb() {
       try {
         await client.query('BEGIN');
         const results = [];
-        for (const { sql, params } of statements) {
-          const { sql: withRet, hasReturning } = withReturningId(sql);
-          const r = await client.query(toPgSql(withRet), normalizeParams(params));
-          results.push({
-            lastInsertRowid: hasReturning && r.rows[0]?.id != null ? Number(r.rows[0].id) : null,
-            changes: Number(r.rowCount || 0),
-          });
+        let i = 0;
+        while (i < statements.length) {
+          const { sql } = statements[i];
+          // 同じINSERT文が続く区間を探し、まとめて1文で送る
+          let end = i + 1;
+          while (end < statements.length && statements[end].sql === sql) end++;
+          const expandable = expandInsertValues(sql, end - i);
+          if (!expandable) {
+            const { sql: withRet, hasReturning } = withReturningId(sql);
+            const r = await client.query(toPgSql(withRet), normalizeParams(statements[i].params));
+            results.push({
+              lastInsertRowid: hasReturning && r.rows[0]?.id != null ? Number(r.rows[0].id) : null,
+              changes: Number(r.rowCount || 0),
+            });
+            i++;
+            continue;
+          }
+          const chunkRows = Math.max(1, Math.min(
+            PG_MAX_ROWS_PER_INSERT,
+            Math.floor(PG_MAX_BIND_PARAMS / expandable.perRow)
+          ));
+          for (let from = i; from < end; from += chunkRows) {
+            const slice = statements.slice(from, Math.min(from + chunkRows, end));
+            const { sql: withRet, hasReturning } = withReturningId(expandable.build(slice.length));
+            const params = normalizeParams(slice.flatMap((s) => s.params));
+            const r = await client.query(toPgSql(withRet), params);
+            // RETURNING は挿入順に返るため、そのまま各文の結果へ割り当てる
+            slice.forEach((_, k) => results.push({
+              lastInsertRowid: hasReturning && r.rows[k]?.id != null ? Number(r.rows[k].id) : null,
+              changes: 1,
+            }));
+          }
+          i = end;
         }
         await client.query('COMMIT');
         return results;
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
-        throw e;
+        throw translate(e);
       } finally {
         client.release();
       }

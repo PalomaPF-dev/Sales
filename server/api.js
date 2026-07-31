@@ -1154,13 +1154,30 @@ api.put('/targets', wrap(async (req, res) => {
 }));
 
 // ---- Excel取込 ----
+
+/**
+ * multerのoriginalnameはUTF-8のバイト列をlatin-1として解釈した文字列で渡ってくるため、
+ * 日本語のファイル名が「çµ¦æ¹¯å™¨…」のように化ける。バイト列へ戻してUTF-8で読み直す。
+ */
+function decodeUploadName(name) {
+  if (!name) return name;
+  try {
+    const decoded = Buffer.from(name, 'latin1').toString('utf8');
+    // 復元に失敗すると U+FFFD が出る。その場合は元の文字列のままにする
+    return decoded.includes('�') ? name : decoded;
+  } catch {
+    return name;
+  }
+}
 api.post('/import', upload.single('file'), wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: 'ファイルを選択してください' });
   // 同じファイルを取り込み直すと明細が二重になる。既定では止め、明示指定のときだけ通す
   const force = req.body?.force === 'true' || req.body?.force === true;
   try {
-    const result = await importWorkbook(req.file.buffer, req.file.originalname, req.user.id, undefined, { force });
+    const result = await importWorkbook(
+      req.file.buffer, decodeUploadName(req.file.originalname), req.user.id, undefined, { force }
+    );
     res.json(result);
   } catch (e) {
     if (e.isDuplicate) {
