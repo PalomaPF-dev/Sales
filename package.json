@@ -19,6 +19,7 @@
     "vercel-build": "cd client && npm install && npm run build"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "express": "^5.2.1",
     "multer": "^2.2.0",
     "pg": "^8.22.0",

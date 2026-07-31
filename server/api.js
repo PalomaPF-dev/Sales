@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { db, initDb } from './db.js';
 import { importWorkbook } from './importer.js';
-import { hashPassword, verifyPassword, generateTempPassword, validatePassword } from './passwords.js';
+import { hashPassword, verifyPassword, generateTempPassword, validatePassword, isLegacyHash } from './passwords.js';
 import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
   readCookie, setSessionCookie, clearSessionCookie,
@@ -227,6 +227,12 @@ api.post('/login', wrap(async (req, res) => {
     'UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?',
     [now(), user.id]
   );
+  // 旧方式(scrypt)のまま残っているハッシュは、ログイン成功時に現行方式へ入れ替える。
+  // 利用者に再設定を求めずに移行できる。
+  if (isLegacyHash(user.password_hash)) {
+    await db.run('UPDATE users SET password_hash = ? WHERE id = ?',
+      [await hashPassword(password), user.id]);
+  }
   const { token, expires } = await createSession(user.id);
   setSessionCookie(req, res, token, expires);
   res.json(publicUser(user));

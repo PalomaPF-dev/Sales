@@ -1,30 +1,40 @@
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
+import bcrypt from 'bcryptjs';
 
 const scrypt = promisify(scryptCb);
 
-// scrypt のコストパラメータ。N は 2 のべき乗。
-const N = 16384;
-const R = 8;
-const P = 1;
-const KEYLEN = 32;
+// 社内ポータル（NextAuth）と同じ bcryptjs を使う。
+// 同じユーザーテーブルを共有しても、双方でパスワードを検証・更新できる。
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 10);
 
 /** パスワードをハッシュ化する（保存用の文字列を返す） */
 export async function hashPassword(password) {
-  const salt = randomBytes(16);
-  const key = await scrypt(normalize(password), salt, KEYLEN, { N, r: R, p: P });
-  return `scrypt$${N}$${R}$${P}$${salt.toString('base64')}$${key.toString('base64')}`;
+  return bcrypt.hash(normalize(password), BCRYPT_ROUNDS);
 }
 
-/** 平文パスワードと保存済みハッシュを照合する */
+/**
+ * 平文パスワードと保存済みハッシュを照合する。
+ * bcrypt（$2a$/$2b$/$2y$）と、本アプリが以前使っていた scrypt 形式の両方を受け付ける。
+ */
 export async function verifyPassword(password, stored) {
   if (!stored) return false;
-  const parts = String(stored).split('$');
+  const hash = String(stored);
+
+  if (/^\$2[aby]\$/.test(hash)) {
+    try {
+      return await bcrypt.compare(normalize(password), hash);
+    } catch {
+      return false;
+    }
+  }
+
+  // 旧形式（scrypt$N$r$p$salt$key）
+  const parts = hash.split('$');
   if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
   const [, n, r, p, saltB64, keyB64] = parts;
-  let expected;
   try {
-    expected = Buffer.from(keyB64, 'base64');
+    const expected = Buffer.from(keyB64, 'base64');
     const key = await scrypt(normalize(password), Buffer.from(saltB64, 'base64'), expected.length, {
       N: Number(n), r: Number(r), p: Number(p),
     });
@@ -32,6 +42,11 @@ export async function verifyPassword(password, stored) {
   } catch {
     return false;
   }
+}
+
+/** 保存済みハッシュが旧方式か（ログイン時に新方式へ移行するために使う） */
+export function isLegacyHash(stored) {
+  return Boolean(stored) && String(stored).startsWith('scrypt$');
 }
 
 // 全角で入力された英数字などの表記ゆれを吸収する
@@ -68,7 +83,11 @@ export function generateTempPassword(length = 12) {
 export function validatePassword(password) {
   const s = normalize(password);
   if (s.length < 10) return 'パスワードは10文字以上にしてください';
-  if (s.length > 200) return 'パスワードが長すぎます';
+  // bcryptは72バイトを超える部分を無視するため、そこで頭打ちにする
+  // （日本語はUTF-8で1文字3バイトのため、全角なら24文字が上限になる）
+  if (Buffer.byteLength(s, 'utf8') > 72) {
+    return 'パスワードが長すぎます（半角72文字・全角24文字までを目安にしてください）';
+  }
   if (/^\d+$/.test(s)) return '数字だけのパスワードは使用できません';
   const weak = ['password', 'paloma', '12345678', 'qwerty', 'sales'];
   const lower = s.toLowerCase();
