@@ -42,9 +42,42 @@ const DEV_LOGIN_AS = (() => {
   return value;
 })();
 
+/**
+ * 認証の無効化（本番でも有効になる設定）。
+ *
+ * DISABLE_AUTH=true を設定すると、ログインを求めずに全員が同じユーザーとして操作する。
+ * DEV_LOGIN_AS と違い本番でも効くため、明示的に "true" と書いたときだけ有効にする。
+ *
+ * 注意: 有効にすると、URLを知っている人は誰でも価格データを閲覧・変更でき、
+ * 承認操作も誰の名義か区別できなくなる。画面上部に常時警告を表示する。
+ */
+const AUTH_DISABLED = String(process.env.DISABLE_AUTH ?? '').toLowerCase() === 'true';
+if (AUTH_DISABLED) {
+  console.warn(
+    '\n*** 警告: DISABLE_AUTH=true のため認証が無効です。***\n' +
+    '*** URLを知っている全員が価格データを閲覧・変更でき、承認者も記録されません。***\n' +
+    '*** 社外から到達できる環境では設定を解除してください。***\n'
+  );
+}
+
+/** 認証無効時に全員が名乗るユーザー（管理者→営業企画部の順で選ぶ） */
+async function fallbackUser() {
+  return db.get(
+    `SELECT * FROM users WHERE active = 1
+     ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'planning' THEN 1 ELSE 2 END, id LIMIT 1`);
+}
+
 // ---- 認証（ログインID/パスワード + セッションCookie） ----
 api.use(wrap(async (req, res, next) => {
   await initDb();
+  if (AUTH_DISABLED) {
+    req.user = await fallbackUser();
+    if (req.user) {
+      req.user.must_change_password = 0;
+      return next();
+    }
+    console.warn('DISABLE_AUTH が有効ですが、有効なユーザーが1人も居ません。');
+  }
   if (DEV_LOGIN_AS) {
     req.user = await db.get('SELECT * FROM users WHERE login_id = ? AND active = 1', [DEV_LOGIN_AS]);
     if (req.user) {
@@ -60,7 +93,7 @@ api.use(wrap(async (req, res, next) => {
 
 // ログイン前に到達してよいパス。これ以外は既定で拒否する。
 // 個別のハンドラに requireLogin を書き忘れても素通りしないようにするための関門。
-const PUBLIC_PATHS = new Set(['/login', '/logout', '/me']);
+const PUBLIC_PATHS = new Set(['/login', '/logout', '/me', '/setup/status', '/setup']);
 
 api.use((req, res, next) => {
   if (PUBLIC_PATHS.has(req.path)) return next();
@@ -103,7 +136,58 @@ const LOCK_MINUTES = 15;
 const publicUser = (u) => ({
   id: u.id, name: u.name, role: u.role, branch: u.branch, office: u.office,
   loginId: u.login_id, mustChangePassword: Boolean(u.must_change_password),
+  // 認証が無効な状態を画面側で気づけるようにする
+  authDisabled: AUTH_DISABLED || undefined,
 });
+
+// ---- 初期セットアップ ----
+// パスワードを持つユーザーが1人も居ない間だけ、ブラウザから最初の管理者を設定できる。
+// 誰か1人でも設定された時点で完全に閉じるため、後から悪用されることはない。
+
+async function needsSetup() {
+  const { c } = await db.get('SELECT COUNT(*) AS c FROM users WHERE password_hash IS NOT NULL');
+  return Number(c) === 0;
+}
+
+api.get('/setup/status', wrap(async (req, res) => {
+  const open = await needsSetup();
+  res.json({
+    needsSetup: open,
+    // 初期設定の対象は管理者・営業企画部のみ（POST側の制限と揃える）
+    candidates: open
+      ? await db.all(
+          `SELECT login_id, name, role FROM users
+           WHERE active = 1 AND login_id IS NOT NULL AND role IN ('admin','planning')
+           ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, id`)
+      : [],
+  });
+}));
+
+api.post('/setup', wrap(async (req, res) => {
+  if (!await needsSetup()) {
+    return res.status(410).json({ error: '初期設定は完了しています。ログイン画面からお進みください' });
+  }
+  const loginId = String(req.body?.loginId ?? '').trim();
+  const password = String(req.body?.password ?? '');
+  const user = await db.get('SELECT * FROM users WHERE login_id = ? AND active = 1', [loginId]);
+  if (!user) return res.status(400).json({ error: '対象のユーザーが見つかりません' });
+  if (!['admin', 'planning'].includes(user.role)) {
+    return res.status(400).json({ error: '最初の設定は管理者または営業企画部のユーザーに対して行ってください' });
+  }
+  const problem = validatePassword(password);
+  if (problem) return res.status(400).json({ error: problem });
+
+  await db.run(
+    `UPDATE users SET password_hash = ?, must_change_password = 0,
+            failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?`,
+    [await hashPassword(password), now(), user.id]);
+
+  // そのままログインした状態にして、続けて操作できるようにする
+  const { token, expires } = await createSession(user.id);
+  setSessionCookie(req, res, token, expires);
+  console.warn(`初期セットアップが完了しました（${user.login_id} / ${user.name}）。以降この画面は無効になります。`);
+  res.status(201).json(publicUser({ ...user, must_change_password: 0 }));
+}));
 
 api.post('/login', wrap(async (req, res) => {
   const loginId = String(req.body?.loginId ?? '').trim();

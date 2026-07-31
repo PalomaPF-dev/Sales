@@ -6,6 +6,7 @@ export interface User {
   office: string | null;
   loginId?: string | null;
   mustChangePassword?: boolean;
+  authDisabled?: boolean;
 }
 
 export interface PriceType {

@@ -5,6 +5,7 @@ import type { Application, User } from './types';
 import { ROLE_NAMES } from './types';
 import { UserContext } from './user';
 import Login from './pages/Login';
+import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
 import Deals from './pages/Deals';
@@ -20,16 +21,26 @@ import ImportPage from './pages/ImportPage';
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [setupCandidates, setSetupCandidates] = useState<{ login_id: string; name: string; role: string }[] | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
   const [unread, setUnread] = useState(0);
   const navigate = useNavigate();
 
-  // Cookieのセッションから復元する
+  // Cookieのセッションから復元する。
+  // 未ログインなら、初期セットアップが必要な状態か（＝誰もパスワードを持たない）を確認する。
   useEffect(() => {
     fetchMe()
-      .then(setUser)
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
+      .then((u) => { setUser(u); setLoading(false); })
+      .catch(async () => {
+        setUser(null);
+        try {
+          const s = await api<{ needsSetup: boolean; candidates: typeof setupCandidates }>('/setup/status');
+          setSetupCandidates(s.needsSetup ? s.candidates : null);
+        } catch {
+          setSetupCandidates(null);
+        }
+        setLoading(false);
+      });
   }, []);
 
   const refreshInbox = useCallback(() => {
@@ -59,6 +70,10 @@ export default function App() {
   }
 
   if (!user) {
+    // パスワードが1つも設定されていない初回のみ、セットアップ画面を出す
+    if (setupCandidates?.length) {
+      return <Setup candidates={setupCandidates} onDone={(u) => { setUser(u); setSetupCandidates(null); navigate('/'); }} />;
+    }
     return <Login onLogin={(u) => { setUser(u); navigate('/'); }} />;
   }
 
@@ -78,6 +93,12 @@ export default function App() {
   return (
     <UserContext.Provider value={user}>
       <div className="layout">
+        {user.authDisabled && (
+          <div className="auth-off-banner">
+            認証が無効になっています（DISABLE_AUTH）。
+            URLを知っている人は誰でも価格データを閲覧・変更でき、承認者も記録されません。
+          </div>
+        )}
         <aside className="sidebar">
           <div className="brand">
             値上げ交渉管理
