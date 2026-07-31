@@ -17,6 +17,10 @@ import Settings from './pages/Settings';
 import Users from './pages/Users';
 import Notifications from './pages/Notifications';
 import ImportPage from './pages/ImportPage';
+import {
+  IconApplications, IconBell, IconBrand, IconDashboard, IconDeals,
+  IconImport, IconInbox, IconSettings, IconUsers,
+} from './components/icons';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -124,26 +128,30 @@ export default function App() {
         )}
         <aside className="sidebar">
           <div className="brand">
-            値上げ交渉管理
-            <small>営業価格申請システム</small>
+            <span className="mark"><IconBrand /></span>
+            <span className="txt">
+              <b>値上げ交渉管理</b>
+              <small>Price Negotiation</small>
+            </span>
           </div>
           <nav>
-            <NavLink to="/" end>ダッシュボード</NavLink>
-            <NavLink to="/deals">案件一覧</NavLink>
-            <NavLink to="/applications">申請一覧</NavLink>
+            <NavLink to="/" end><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
+            <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
+            <NavLink to="/applications"><IconApplications /><span className="lbl">申請一覧</span></NavLink>
             {canApprove && (
               <NavLink to="/inbox">
-                承認箱
+                <IconInbox /><span className="lbl">承認箱</span>
                 {inboxCount > 0 && <span className="badge red">{inboxCount}</span>}
               </NavLink>
             )}
             <NavLink to="/notifications">
-              通知
+              <IconBell /><span className="lbl">通知</span>
               {unread > 0 && <span className="badge red">{unread}</span>}
             </NavLink>
-            <NavLink to="/import">Excel取込</NavLink>
-            {canConfig && <NavLink to="/settings">設定</NavLink>}
-            {canConfig && <NavLink to="/users">ユーザー管理</NavLink>}
+            <div className="nav-sep" />
+            <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
+            {canConfig && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
+            {canConfig && <NavLink to="/users"><IconUsers /><span className="lbl">ユーザー管理</span></NavLink>}
           </nav>
           <div className="spacer" />
           <div className="userbox">

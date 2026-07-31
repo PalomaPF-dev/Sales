@@ -122,7 +122,7 @@ export default function Deals() {
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       <div className="filters">
-        <label className="fld">
+        <label className="fld" style={{ minWidth: 240, flex: '1 1 240px' }}>
           検索（得意先・器種など）
           <input type="text" defaultValue={get('q')} placeholder="例: 東京ガス / FH-1613"
             onKeyDown={(e) => e.key === 'Enter' && setParam('q', (e.target as HTMLInputElement).value)} />
@@ -173,19 +173,20 @@ export default function Deals() {
 
       {data && (
         <div className="toolbar">
-          <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>
-            {data.totals.count.toLocaleString()}件 ・ 第1弾 ¥{yen(data.totals.r1_amount)} ・ 第2弾 ¥{yen(data.totals.r2_amount)}
+          <span className="count">
+            <b>{data.totals.count.toLocaleString()}</b>件 ・ 第1弾 <b>¥{yen(data.totals.r1_amount)}</b>
+            {' ・ '}第2弾 <b>¥{yen(data.totals.r2_amount)}</b>
           </span>
           <div className="grow" />
           <button className="btn secondary sm" onClick={() => setShowSummary((v) => !v)}>
             {showSummary ? '集計を隠す' : '集計を表示'}
           </button>
-          <button className="btn secondary sm" onClick={exportExcel}>Excel出力</button>
           <button className="btn secondary sm" onClick={() => setBulkRound(1)}>得意先一括申請（第1弾）</button>
           <button className="btn secondary sm" onClick={() => setBulkRound(2)}>得意先一括申請（第2弾）</button>
+          <button className="btn dark sm" onClick={exportExcel}>Excel出力</button>
           {selected.size > 0 && (
             <>
-              <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{selected.size}件選択</span>
+              <span className="count">{selected.size}件選択</span>
               <button className="btn sm" onClick={() => startApplication(1)}>第1弾 申請</button>
               <button className="btn sm" onClick={() => startApplication(2)}>第2弾 申請</button>
             </>
@@ -195,7 +196,7 @@ export default function Deals() {
 
       {showSummary && <DealSummary query={queryString()} />}
 
-      <div className="card tbl-scroll" style={{ padding: 0 }}>
+      <div className="card tbl-scroll">
         <table className="tbl">
           <thead>
             <tr>

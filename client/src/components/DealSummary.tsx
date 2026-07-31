@@ -86,7 +86,7 @@ export default function DealSummary({ query }: { query: URLSearchParams }) {
   return (
     <div className="card" style={{ padding: '14px 16px' }}>
       <div className="toolbar" style={{ marginBottom: 10 }}>
-        <strong style={{ fontSize: 13 }}>集計</strong>
+        <strong style={{ fontSize: 13, color: '#334155' }}>集計</strong>
         <div className="seg">
           {GROUPS.map((g) => (
             <button key={g.key} className={group === g.key ? 'on' : ''} onClick={() => setGroup(g.key)}>
