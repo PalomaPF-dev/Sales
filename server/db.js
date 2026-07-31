@@ -16,7 +16,40 @@ import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PG_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+// 接続文字列。VercelのNeon連携はプール接続と直接接続の両方を環境変数に入れるため、
+// 直接接続（UNPOOLED / NON_POOLING）があればそちらを優先する。
+// 本アプリは接続時に search_path を指定しており、プーラー（PgBouncer）経由では
+// この指定が拒否されるため（unsupported startup parameter）。
+const RAW_PG_URL =
+  process.env.DATABASE_URL_UNPOOLED ||
+  process.env.POSTGRES_URL_NON_POOLING ||
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL;
+
+/**
+ * Neonのプール接続URL（ホスト名に -pooler が付く）を直接接続へ読み替える。
+ * Neonでは両者はホスト名だけの違いで同じDBを指す。プーラー経由のままだと
+ * search_path 指定が拒否されて起動できないため、貼られた文字列がどちらでも
+ * 動くようにここで吸収する。
+ */
+function normalizePgUrl(raw) {
+  if (!raw) return raw;
+  try {
+    const u = new URL(raw);
+    if (u.hostname.endsWith('.neon.tech') && u.hostname.includes('-pooler')) {
+      u.hostname = u.hostname.replace('-pooler', '');
+      console.warn(
+        'DATABASE_URL がNeonのプール接続（-pooler付き）だったため、直接接続へ読み替えました。'
+      );
+      return u.toString();
+    }
+  } catch {
+    // URL形式でない（host=/var/run/... 等）場合はそのまま使う
+  }
+  return raw;
+}
+
+const PG_URL = normalizePgUrl(RAW_PG_URL);
 export const isPostgres = Boolean(PG_URL);
 
 // 相乗り先のDBで既存テーブルと衝突しないよう、専用スキーマに配置する
@@ -168,8 +201,24 @@ function createPostgresDb() {
     options: `-c search_path=${PG_SCHEMA},public`,
   });
 
-  const query = async (sql, params = []) =>
-    pool.query(toPgSql(sql), normalizeParams(params));
+  // Neon以外のプーラー（Supabase等）で同じ拒否が起きた場合に、対処が分かる形で返す
+  const translate = (e) => {
+    if (/unsupported startup parameter/i.test(String(e?.message || ''))) {
+      return new DbConfigError(
+        '接続先がプーラー（PgBouncer）経由のため、本アプリが必要とする接続時のスキーマ指定を受け付けません。'
+        + 'プーラーを経由しない接続文字列（ホスト名に -pooler や pooler. が付かない直接接続）に差し替えてください。'
+      );
+    }
+    return e;
+  };
+
+  const query = async (sql, params = []) => {
+    try {
+      return await pool.query(toPgSql(sql), normalizeParams(params));
+    } catch (e) {
+      throw translate(e);
+    }
+  };
 
   return {
     kind: 'postgres',
@@ -182,7 +231,12 @@ function createPostgresDb() {
     },
     async run(sql, params = []) {
       const { sql: withRet, hasReturning } = withReturningId(sql);
-      const r = await pool.query(toPgSql(withRet), normalizeParams(params));
+      let r;
+      try {
+        r = await pool.query(toPgSql(withRet), normalizeParams(params));
+      } catch (e) {
+        throw translate(e);
+      }
       return {
         lastInsertRowid: hasReturning && r.rows[0]?.id != null ? Number(r.rows[0].id) : null,
         changes: Number(r.rowCount || 0),
@@ -190,7 +244,11 @@ function createPostgresDb() {
     },
     async exec(sql) {
       // スキーマ適用。パラメータを含まないため、まとめて実行できる
-      await pool.query(sql);
+      try {
+        await pool.query(sql);
+      } catch (e) {
+        throw translate(e);
+      }
     },
     async batch(statements) {
       const client = await pool.connect();
