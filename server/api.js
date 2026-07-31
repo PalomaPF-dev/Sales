@@ -32,6 +32,21 @@ const num = (v) => (v == null ? 0 : Number(v));
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 /**
+ * 数字のIDを受ける経路の見張り。
+ *
+ * PostgreSQLはinteger列に数字以外を渡すとエラーになるため、
+ * /deals/summary のような古いURLを開かれると500になってしまう
+ * （SQLiteでは該当なしとして扱われるので、本番だけで起きる）。
+ * 経路に入る前にはじいて「見つかりません」を返す。
+ */
+for (const name of ['id', 'batchId']) {
+  api.param(name, (req, res, next, value) => {
+    if (!/^\d+$/.test(String(value))) return res.status(404).json({ error: '見つかりません' });
+    next();
+  });
+}
+
+/**
  * 開発用のログイン省略。
  * DEV_LOGIN_AS=<ログインID> を指定すると、そのユーザーとしてログイン済みとして扱う。
  *
