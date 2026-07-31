@@ -1,5 +1,20 @@
+import { createHash } from 'node:crypto';
 import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
+
+/** 同じ内容のファイルを二度取り込もうとしたときに投げる */
+export class DuplicateImportError extends Error {
+  constructor(batch) {
+    super(
+      `このファイルは既に取り込まれています（#${batch.id} ${batch.filename} / `
+      + `${Number(batch.row_count).toLocaleString()}行 / ${String(batch.imported_at).slice(0, 16).replace('T', ' ')}）。`
+      + 'そのまま取り込むと明細が二重になり、値上げ金額が二倍になります。'
+    );
+    this.name = 'DuplicateImportError';
+    this.isDuplicate = true;
+    this.batch = batch;
+  }
+}
 
 // 現行管理表のヘッダー名 → deals列 の対応
 const HEADER_MAP = {
@@ -169,8 +184,23 @@ function findHeaderRow(rows) {
   throw new Error('ヘッダー行（「売上年月」列）が見つかりません。現行管理表の形式か確認してください。');
 }
 
-export async function importWorkbook(buffer, filename, userId, onProgress) {
+/**
+ * 管理表を取り込む。
+ * 同じ内容のファイルが既に取り込まれている場合は DuplicateImportError を投げる
+ * （明細がそのまま二重になり、値上げ金額の集計が二倍になってしまうため）。
+ * 意図的に再取込したいときは force を立てる。
+ */
+export async function importWorkbook(buffer, filename, userId, onProgress, { force = false } = {}) {
   await initDb();
+
+  const contentHash = createHash('sha256').update(buffer).digest('hex');
+  if (!force) {
+    const dup = await db.get(
+      'SELECT id, filename, row_count, imported_at FROM import_batches WHERE content_hash = ? ORDER BY id LIMIT 1',
+      [contentHash]
+    );
+    if (dup) throw new DuplicateImportError(dup);
+  }
 
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -196,8 +226,8 @@ export async function importWorkbook(buffer, filename, userId, onProgress) {
   const insertSql = `INSERT INTO deals (${dealCols.join(',')}) VALUES (${dealCols.map(() => '?').join(',')})`;
 
   const { lastInsertRowid: batchId } = await db.run(
-    'INSERT INTO import_batches (filename, row_count, imported_by) VALUES (?,?,?)',
-    [filename, 0, userId ?? null]
+    'INSERT INTO import_batches (filename, row_count, imported_by, content_hash) VALUES (?,?,?,?)',
+    [filename, 0, userId ?? null, contentHash]
   );
 
   const stamp = new Date().toISOString();

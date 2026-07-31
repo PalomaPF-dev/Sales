@@ -1157,10 +1157,15 @@ api.put('/targets', wrap(async (req, res) => {
 api.post('/import', upload.single('file'), wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: 'ファイルを選択してください' });
+  // 同じファイルを取り込み直すと明細が二重になる。既定では止め、明示指定のときだけ通す
+  const force = req.body?.force === 'true' || req.body?.force === true;
   try {
-    const result = await importWorkbook(req.file.buffer, req.file.originalname, req.user.id);
+    const result = await importWorkbook(req.file.buffer, req.file.originalname, req.user.id, undefined, { force });
     res.json(result);
   } catch (e) {
+    if (e.isDuplicate) {
+      return res.status(409).json({ error: e.message, duplicate: true, batch: e.batch });
+    }
     res.status(400).json({ error: e.message });
   }
 }));
@@ -1170,4 +1175,32 @@ api.get('/import/batches', wrap(async (req, res) => {
     SELECT b.*, u.name AS imported_by_name FROM import_batches b
     LEFT JOIN users u ON u.id = b.imported_by
     ORDER BY b.id DESC LIMIT 50`));
+}));
+
+// 誤って取り込んだ分の取り消し。申請済みの明細を含む場合は消さない
+// （申請・承認の記録が根拠を失うため）
+api.delete('/import/batches/:id', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning', 'admin'])) return;
+  const id = Number(req.params.id);
+  const batch = await db.get('SELECT * FROM import_batches WHERE id = ?', [id]);
+  if (!batch) return res.status(404).json({ error: '取込履歴が見つかりません' });
+
+  const used = await db.get(
+    `SELECT COUNT(*) AS c FROM application_items ai
+       JOIN deals d ON d.id = ai.deal_id
+      WHERE d.batch_id = ?`,
+    [id]
+  );
+  if (Number(used?.c || 0) > 0) {
+    return res.status(400).json({
+      error: `この取込には申請済みの明細が${Number(used.c).toLocaleString()}件含まれているため取り消せません。`
+        + '該当の申請を取下げてから実行してください',
+    });
+  }
+
+  await db.run('DELETE FROM negotiation_logs WHERE deal_id IN (SELECT id FROM deals WHERE batch_id = ?)', [id]);
+  await db.run('DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE batch_id = ?)', [id]);
+  const { changes } = await db.run('DELETE FROM deals WHERE batch_id = ?', [id]);
+  await db.run('DELETE FROM import_batches WHERE id = ?', [id]);
+  res.json({ deleted: Number(changes ?? batch.row_count) });
 }));

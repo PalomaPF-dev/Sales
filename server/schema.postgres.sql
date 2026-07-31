@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
   filename    TEXT,
   row_count   INTEGER NOT NULL DEFAULT 0,
   imported_by INTEGER REFERENCES users(id),
+  content_hash TEXT,  -- 同じファイルの二重取込を検知する
   imported_at TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
 );
 

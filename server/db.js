@@ -384,6 +384,8 @@ async function migrate() {
     'ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN locked_until TEXT',
     'ALTER TABLE users ADD COLUMN last_login_at TEXT',
+    // 同じファイルの二重取込を検知するための内容ハッシュ
+    'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',
   ];
   for (const sql of additions) {
     try {

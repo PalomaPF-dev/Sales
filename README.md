@@ -64,9 +64,15 @@ npm run set-password -- planning1 <パスワード>  # パスワードを直接�
 ```bash
 npm run import -- FH風呂釜.xlsx 業務部品.xlsx ビルトイン.xlsx
 npm run import -- 管理表.xlsx --replace   # 既存データを消して取込
+npm run import -- 管理表.xlsx --force     # 取込済みでも入れ直す
 npm run reset-db                           # DB初期化（マスタ再seed）
 npm run backup                             # DBバックアップ
 ```
+
+一度取り込んだファイルと同じ内容のものは、既定でスキップします。
+そのまま入れると明細が二重になり、値上げ金額が二倍になってしまうためです。
+誤って取り込んだ場合は「Excel取込」画面の取込履歴から**取り消し**できます
+（申請済みの明細を含む取込は、根拠が失われるため取り消せません）。
 
 ## デプロイ
 

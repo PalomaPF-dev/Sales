@@ -1,6 +1,9 @@
 // 現行管理表(Excel)のCLI取込
-//   ローカル: npm run import -- <file1.xlsx> [file2.xlsx ...] [--replace]
+//   ローカル: npm run import -- <file1.xlsx> [file2.xlsx ...] [--replace] [--force]
 //   本番     : DATABASE_URL を設定して同じコマンドを実行
+//
+// 既に取り込んだファイルと同じ内容のものは既定でスキップします（明細が二重になるため）。
+// 意図的に入れ直す場合のみ --force を付けてください。
 //
 // ※ Vercelのサーバーレス関数はリクエストボディに上限（約4.5MB）があるため、
 //    数MB規模の管理表は画面アップロードではなくこのCLIから投入してください。
@@ -11,10 +14,11 @@ import { importWorkbook } from '../server/importer.js';
 
 const args = process.argv.slice(2);
 const replace = args.includes('--replace');
+const force = args.includes('--force');
 const files = args.filter((a) => !a.startsWith('--'));
 
 if (files.length === 0) {
-  console.error('使い方: npm run import -- <管理表.xlsx> [追加ファイル...] [--replace]');
+  console.error('使い方: npm run import -- <管理表.xlsx> [追加ファイル...] [--replace] [--force]');
   process.exit(1);
 }
 
@@ -35,9 +39,20 @@ for (const f of files) {
   const name = path.basename(f);
   const buf = readFileSync(f);
   process.stdout.write(`取込中: ${name} ... `);
-  const { batchId, count, skipped } = await importWorkbook(buf, name, null, (n) => {
-    process.stdout.write(`\r取込中: ${name} ... ${n.toLocaleString()}行`);
-  });
+  let result;
+  try {
+    result = await importWorkbook(buf, name, null, (n) => {
+      process.stdout.write(`\r取込中: ${name} ... ${n.toLocaleString()}行`);
+    }, { force: force || replace });
+  } catch (e) {
+    if (e.isDuplicate) {
+      console.log(`\rスキップ: ${name} … ${e.message}          `);
+      console.log('  入れ直す場合は --force を付けて実行してください。');
+      continue;
+    }
+    throw e;
+  }
+  const { batchId, count, skipped } = result;
   console.log(`\r取込完了: ${name} → ${count.toLocaleString()}行 (batch #${batchId})          `);
   for (const w of skipped ?? []) {
     console.warn(`  警告: ${w.column} の ${w.count.toLocaleString()}件は数値として読めなかったため未設定にしました`
