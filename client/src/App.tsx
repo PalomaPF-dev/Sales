@@ -22,6 +22,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [setupCandidates, setSetupCandidates] = useState<{ login_id: string; name: string; role: string }[] | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
   const [unread, setUnread] = useState(0);
   const navigate = useNavigate();
@@ -36,8 +37,11 @@ export default function App() {
         try {
           const s = await api<{ needsSetup: boolean; candidates: typeof setupCandidates }>('/setup/status');
           setSetupCandidates(s.needsSetup ? s.candidates : null);
-        } catch {
+        } catch (e) {
+          // DB未接続などサーバー側の問題を、ログイン画面で握りつぶさない。
+          // 入れないログイン画面を見せても原因が分からないため、内容をそのまま表示する。
           setSetupCandidates(null);
+          setServerError((e as Error).message);
         }
         setLoading(false);
       });
@@ -70,6 +74,25 @@ export default function App() {
   }
 
   if (!user) {
+    // サーバー側の問題（DB未接続など）は、入れないログイン画面ではなく原因を出す
+    if (serverError) {
+      return (
+        <div className="login-wrap">
+          <div className="login-card">
+            <h1>設定が完了していません</h1>
+            <div className="alert error" style={{ whiteSpace: 'pre-wrap' }}>{serverError}</div>
+            <p className="pt-note">
+              設定を直したあとに、この画面を再読み込みしてください。<br />
+              状況は <code>/api/health</code> でも確認できます。
+            </p>
+            <button className="btn" style={{ width: '100%', marginTop: 12 }}
+              onClick={() => window.location.reload()}>
+              再読み込み
+            </button>
+          </div>
+        </div>
+      );
+    }
     // パスワードが1つも設定されていない初回のみ、セットアップ画面を出す
     if (setupCandidates?.length) {
       return <Setup candidates={setupCandidates} onDone={(u) => { setUser(u); setSetupCandidates(null); navigate('/'); }} />;
