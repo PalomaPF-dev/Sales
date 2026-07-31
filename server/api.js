@@ -2,7 +2,11 @@ import { Router } from 'express';
 import multer from 'multer';
 import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
-import { importWorkbook } from './importer.js';
+import {
+  addBatchCount, assertNotDuplicate, buildRow, createBatch, importWorkbook,
+  insertRows, isSkippableRow, summarizeWarnings, validateMapping,
+} from './importer.js';
+import { FIELDS } from './fields.js';
 import { hashPassword, verifyPassword, generateTempPassword, validatePassword, isLegacyHash } from './passwords.js';
 import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
@@ -13,6 +17,9 @@ import { buildWorkbook } from './export.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+// 分割取込で1回に送る行数。JSONにして数百KBに収まる大きさにする
+const IMPORT_CHUNK_ROWS = 500;
 
 const nv = (v) => (v === undefined ? null : v);
 const now = () => new Date().toISOString();
@@ -1454,14 +1461,33 @@ function decodeUploadName(name) {
     return name;
   }
 }
+// 取り込める項目の一覧。画面で列を合わせるときの選択肢になる
+api.get('/import/fields', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  res.json({
+    // 別名も返す。画面側で同じ規則で自動判定できないと、
+    // 「出荷数」「売上担当者支店名」のような見出しを取りこぼす
+    fields: FIELDS.map((f) => ({
+      key: f.key, label: f.label, group: f.group, type: f.type,
+      required: Boolean(f.required), aliases: f.aliases,
+    })),
+    chunkRows: IMPORT_CHUNK_ROWS,
+  });
+}));
+
 api.post('/import', upload.single('file'), wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: 'ファイルを選択してください' });
   // 同じファイルを取り込み直すと明細が二重になる。既定では止め、明示指定のときだけ通す
   const force = req.body?.force === 'true' || req.body?.force === true;
+  let mapping;
+  if (req.body?.mapping) {
+    try { mapping = JSON.parse(req.body.mapping); }
+    catch { return res.status(400).json({ error: '列の対応を読み取れませんでした' }); }
+  }
   try {
     const result = await importWorkbook(
-      req.file.buffer, decodeUploadName(req.file.originalname), req.user.id, undefined, { force }
+      req.file.buffer, decodeUploadName(req.file.originalname), req.user.id, undefined, { force, mapping }
     );
     res.json(result);
   } catch (e) {
@@ -1470,6 +1496,95 @@ api.post('/import', upload.single('file'), wrap(async (req, res) => {
     }
     res.status(400).json({ error: e.message });
   }
+}));
+
+// ---- 分割取込 ----
+// Vercelはリクエスト本文を約4.5MBまでしか受け取れず、数MBの管理表は
+// ファイルのまま送れない。ブラウザ側でExcelを読み、行データだけを
+// 小分けにして送ることで、ファイルの大きさに関係なく取り込めるようにする。
+
+api.post('/import/session', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const { filename, contentHash, mapping, force } = req.body || {};
+  if (!mapping || typeof mapping !== 'object') {
+    return res.status(400).json({ error: '列の対応が指定されていません' });
+  }
+  try {
+    validateMapping(mapping);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  if (contentHash && !force) {
+    try {
+      await assertNotDuplicate(String(contentHash));
+    } catch (e) {
+      if (e.isDuplicate) return res.status(409).json({ error: e.message, duplicate: true, batch: e.batch });
+      throw e;
+    }
+  }
+  const batchId = await createBatch(String(filename || '（名称不明）'), req.user.id, contentHash || null);
+  res.status(201).json({ batchId });
+}));
+
+api.post('/import/session/:batchId/rows', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const batchId = Number(req.params.batchId);
+  const batch = await db.get('SELECT * FROM import_batches WHERE id = ?', [batchId]);
+  if (!batch) return res.status(404).json({ error: '取込セッションが見つかりません' });
+  // 他人の取込に行を混ぜられないようにする
+  if (batch.imported_by !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'この取込を操作する権限がありません' });
+  }
+  const { rows, mapping } = req.body || {};
+  if (!Array.isArray(rows)) return res.status(400).json({ error: '行データが不正です' });
+  if (rows.length > IMPORT_CHUNK_ROWS) {
+    return res.status(400).json({ error: `1回に送れるのは${IMPORT_CHUNK_ROWS}行までです` });
+  }
+  try {
+    validateMapping(mapping);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const warnings = new Map();
+  const built = [];
+  for (const cells of rows) {
+    if (!Array.isArray(cells) || isSkippableRow(cells, mapping)) continue;
+    built.push(buildRow(cells, mapping, warnings));
+  }
+  await insertRows(batchId, built);
+  const total = await addBatchCount(batchId, built.length);
+  res.json({ added: built.length, total, skipped: summarizeWarnings(warnings) });
+}));
+
+api.post('/import/session/:batchId/finish', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const batchId = Number(req.params.batchId);
+  const batch = await db.get('SELECT * FROM import_batches WHERE id = ?', [batchId]);
+  if (!batch) return res.status(404).json({ error: '取込セッションが見つかりません' });
+  if (batch.imported_by !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'この取込を操作する権限がありません' });
+  }
+  // 1行も入らなかった取込は履歴に残さない（0行の履歴だけが残ると原因が分からなくなる）
+  if (Number(batch.row_count) === 0) {
+    await db.run('DELETE FROM import_batches WHERE id = ?', [batchId]);
+    return res.status(400).json({ error: '取り込める行がありませんでした' });
+  }
+  res.json({ batchId, count: Number(batch.row_count) });
+}));
+
+// 中断した取込の後始末
+api.delete('/import/session/:batchId', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const batchId = Number(req.params.batchId);
+  const batch = await db.get('SELECT * FROM import_batches WHERE id = ?', [batchId]);
+  if (!batch) return res.json({ deleted: 0 });
+  if (batch.imported_by !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'この取込を操作する権限がありません' });
+  }
+  const { changes } = await db.run('DELETE FROM deals WHERE batch_id = ?', [batchId]);
+  await db.run('DELETE FROM import_batches WHERE id = ?', [batchId]);
+  res.json({ deleted: Number(changes ?? 0) });
 }));
 
 api.get('/import/batches', wrap(async (req, res) => {

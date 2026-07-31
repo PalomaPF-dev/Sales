@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
+import {
+  DATE_KEYS, FIELDS, NUMBER_KEYS, REQUIRED_KEYS, TEXT_KEYS,
+  autoMapHeaders, findHeaderRow,
+} from './fields.js';
 
 /** 同じ内容のファイルを二度取り込もうとしたときに投げる */
 export class DuplicateImportError extends Error {
@@ -16,77 +20,6 @@ export class DuplicateImportError extends Error {
   }
 }
 
-// 現行管理表のヘッダー名 → deals列 の対応
-const HEADER_MAP = {
-  '売上年月': 'sales_ym',
-  '法人コード': 'corp_code',
-  '法人名': 'corp_name',
-  '得意先コード': 'customer_code',
-  '得意先名': 'customer_name',
-  '納入先コード': 'delivery_code',
-  '納入先名': 'delivery_name',
-  '扱い先コード': 'handler_code',
-  '扱い先名': 'handler_name',
-  '業種名': 'industry',
-  '器具区分': 'equip_code',
-  '器具区分名': 'equip_name',
-  'カテゴリーコード': 'category_code',
-  'カテゴリー名': 'category_name',
-  '器種コード': 'model_code',
-  'ガスコード': 'gas_code',
-  '器種名': 'model_name',
-  'ガス種': 'gas_type',
-  '出荷数': 'qty',
-  '定価': 'list_price',
-  '掛け率': 'rate',
-  '出荷単価': 'base_price',           // ❶
-  '新値上げ後掛け率': 'r1_target_rate',
-  '新出荷単価': 'r1_target_price',    // ❷ AD列 第1弾目標
-  '出荷金額': 'ship_amount',
-  '最終単価': 'final_price',
-  '売上伝票ＮＯ': 'voucher_no',
-  '見積伝票番号': 'quote_no',
-  '受注日': 'order_date',
-  '売上日': 'sales_date',
-  '売上担当者支店名': 'branch',
-  '売上担当者営業所名': 'office',
-  '売上担当者名': 'sales_person',
-  '得意先担当者名': 'customer_person',
-  '確定商談日': 'negotiated_date',
-  '商談結果': 'negotiation_note',
-  '値上後単価': 'r1_agreed_price',    // ❸ BL列
-  '値上日時': 'r1_raise_date',
-  '稟議NO': 'r1_ringi_no',
-  '新定価': 'new_list_price',
-  '第１弾値上げ後掛率': 'r1_after_rate',
-  '第２弾新値上げ単価': 'r2_target_price', // ❻ BS列 第2弾目標
-  '１回目提示日': 'offer1_date',
-  '1回目提示率': 'offer1_rate',
-  '1回目提示単価': 'offer1_price',
-  '商談結果（記号入力）': 'r2_result_symbol', // CB列
-  '最終確定日': 'final_confirm_date',
-  '最終確定値上日': 'final_raise_date',
-  '第2弾稟議NO': 'r2_ringi_no',
-  '最終確定掛率': 'final_rate',
-  '最終確定単価': 'r2_agreed_price',  // ❼ CG列
-};
-
-const TEXT_COLS = new Set([
-  'sales_ym','corp_code','corp_name','customer_code','customer_name',
-  'delivery_code','delivery_name','handler_code','handler_name','industry',
-  'equip_code','equip_name','category_code','category_name','model_code',
-  'gas_code','model_name','gas_type','voucher_no','quote_no','order_date',
-  'sales_date','branch','office','sales_person','customer_person',
-  'negotiated_date','negotiation_note','r1_raise_date','r1_ringi_no',
-  'offer1_date','r2_result_symbol','final_confirm_date','final_raise_date',
-  'r2_ringi_no',
-]);
-
-const DATEISH_COLS = new Set([
-  'order_date','sales_date','negotiated_date','r1_raise_date','offer1_date',
-  'final_confirm_date','final_raise_date',
-]);
-
 const CONFIRM_SYMBOLS = ['〇', '○', '◯'];
 
 // 1回のトランザクションで送る行数。
@@ -100,11 +33,6 @@ function excelSerialToISO(n) {
   const d = new Date(ms);
   return d.toISOString().slice(0, 10);
 }
-
-// 数値列（HEADER_MAPの対象のうちTEXT_COLSでないもの）
-const NUMERIC_COLS = new Set(
-  Object.values(HEADER_MAP).filter((c) => !TEXT_COLS.has(c))
-);
 
 /**
  * 数値列の値を数値へ寄せる。
@@ -130,13 +58,13 @@ function toNumber(s) {
   return { value: isPercent ? n / 100 : n, ambiguous: false };
 }
 
-function normalize(col, v, warnings) {
+export function normalize(col, v, warnings) {
   if (v === null || v === undefined) return null;
   if (v instanceof Date) return v.toISOString().slice(0, 10);
   if (typeof v === 'string') {
     const s = v.trim();
     if (s === '' || s === '< NULL >' || s === '-' || s === '－') return null;
-    if (NUMERIC_COLS.has(col)) {
+    if (NUMBER_KEYS.has(col)) {
       const { value, ambiguous } = toNumber(s);
       if (ambiguous && warnings) {
         const w = warnings.get(col) || { count: 0, samples: new Set() };
@@ -149,12 +77,12 @@ function normalize(col, v, warnings) {
     return s;
   }
   if (typeof v === 'number') {
-    if (DATEISH_COLS.has(col) && v > 40000 && v < 60000 && Number.isInteger(v)) {
+    if (DATE_KEYS.has(col) && v > 40000 && v < 60000 && Number.isInteger(v)) {
       return excelSerialToISO(v);
     }
-    return TEXT_COLS.has(col) ? String(v) : v;
+    return TEXT_KEYS.has(col) ? String(v) : v;
   }
-  return TEXT_COLS.has(col) ? String(v) : null;
+  return TEXT_KEYS.has(col) ? String(v) : null;
 }
 
 // 商談状況から管理ステータスを導出
@@ -178,96 +106,164 @@ export function inferPriceType(d) {
   return 4;
 }
 
-// ヘッダー行（「売上年月」を含む行）を探す
-function findHeaderRow(rows) {
-  for (let i = 0; i < Math.min(rows.length, 10); i++) {
-    if (rows[i] && rows[i].some((c) => String(c ?? '').trim() === '売上年月')) return i;
+/**
+ * 見出し行を読み、列の対応（項目key → 列index）を組み立てる。
+ * 画面で列を手動で合わせる場合は、この結果を出発点にする。
+ */
+export function inspectWorkbook(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const sheetName = wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  if (!ws) throw new Error('シートが見つかりません');
+  const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  const headerRow = findHeaderRow(grid);
+  if (headerRow < 0) {
+    throw new Error('見出し行が見つかりません。「売上年月」「出荷単価」などの列を含む行が必要です');
   }
-  throw new Error('ヘッダー行（「売上年月」列）が見つかりません。現行管理表の形式か確認してください。');
+  const headers = (grid[headerRow] || []).map((h) => String(h ?? '').trim());
+  return { wb, ws, grid, headerRow, headers, sheetName, ...autoMapHeaders(headers) };
 }
 
 /**
- * 管理表を取り込む。
- * 同じ内容のファイルが既に取り込まれている場合は DuplicateImportError を投げる
- * （明細がそのまま二重になり、値上げ金額の集計が二倍になってしまうため）。
- * 意図的に再取込したいときは force を立てる。
+ * 1行分のセル配列を deals の値へ変換する。
+ * mapping は { 項目key: 列index }。取込経路（ファイル / 分割送信）で共通に使う。
  */
-export async function importWorkbook(buffer, filename, userId, onProgress, { force = false } = {}) {
-  await initDb();
-
-  const contentHash = createHash('sha256').update(buffer).digest('hex');
-  if (!force) {
-    const dup = await db.get(
-      'SELECT id, filename, row_count, imported_at FROM import_batches WHERE content_hash = ? ORDER BY id LIMIT 1',
-      [contentHash]
-    );
-    if (dup) throw new DuplicateImportError(dup);
+export function buildRow(cells, mapping, warnings) {
+  const d = {};
+  for (const [key, idx] of Object.entries(mapping)) {
+    if (idx == null || idx < 0) continue;
+    d[key] = normalize(key, cells[idx], warnings);
   }
+  return d;
+}
 
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  const headerRow = findHeaderRow(rows);
-
-  // ヘッダー名 → 列index
-  const headers = rows[headerRow].map((h) => String(h ?? '').replace(/[\s　]+$/g, '').trim());
-  const colIndex = {};
-  headers.forEach((h, i) => {
-    if (HEADER_MAP[h] !== undefined) {
-      // カテゴリーコード/カテゴリー名は大中小の後に総合列(S,T)が来るため最後の出現を採用
-      if (h === 'カテゴリーコード' || h === 'カテゴリー名') colIndex[HEADER_MAP[h]] = i;
-      else if (colIndex[HEADER_MAP[h]] === undefined) colIndex[HEADER_MAP[h]] = i;
-    }
-  });
-  if (colIndex.base_price === undefined || colIndex.r1_target_price === undefined) {
-    throw new Error('必須列（出荷単価・新出荷単価）が見つかりません。');
+/** mapping に必須項目が揃っているか確認する */
+export function validateMapping(mapping) {
+  const missing = REQUIRED_KEYS.filter((k) => mapping?.[k] == null || mapping[k] < 0);
+  if (missing.length) {
+    const labels = missing.map((k) => FIELDS.find((f) => f.key === k)?.label ?? k);
+    throw new Error(`必須の項目が対応づけられていません: ${labels.join(' / ')}`);
   }
+}
 
-  const cols = Object.keys(colIndex);
-  const dealCols = [...cols, 'batch_id', 'price_type_code', 'status', 'updated_at'];
-  const insertSql = `INSERT INTO deals (${dealCols.join(',')}) VALUES (${dealCols.map(() => '?').join(',')})`;
+export function contentHashOf(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
 
-  const { lastInsertRowid: batchId } = await db.run(
-    'INSERT INTO import_batches (filename, row_count, imported_by, content_hash) VALUES (?,?,?,?)',
-    [filename, 0, userId ?? null, contentHash]
+/** 同じ内容が取り込み済みなら DuplicateImportError を投げる */
+export async function assertNotDuplicate(contentHash) {
+  const dup = await db.get(
+    'SELECT id, filename, row_count, imported_at FROM import_batches WHERE content_hash = ? ORDER BY id LIMIT 1',
+    [contentHash]
   );
+  if (dup) throw new DuplicateImportError(dup);
+}
 
+export async function createBatch(filename, userId, contentHash) {
+  const { lastInsertRowid } = await db.run(
+    'INSERT INTO import_batches (filename, row_count, imported_by, content_hash) VALUES (?,?,?,?)',
+    [filename, 0, userId ?? null, contentHash ?? null]
+  );
+  return Number(lastInsertRowid);
+}
+
+/**
+ * 変換済みの行をまとめて登録する。
+ * 呼び出し側は buildRow で作った行の配列を渡す。
+ */
+export async function insertRows(batchId, rows) {
+  if (!rows.length) return 0;
   const stamp = new Date().toISOString();
-  const warnings = new Map(); // 数値として解釈できなかった値の記録
-  let pending = [];
-  let count = 0;
-
-  for (let i = headerRow + 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || row[colIndex.sales_ym] == null) continue; // 空行スキップ
-    // 書き出したファイルを取り込み直したとき、末尾の合計行をデータとして拾わないようにする
-    if (String(row[colIndex.sales_ym]).trim() === '合計') continue;
-    const d = {};
-    for (const c of cols) d[c] = normalize(c, row[colIndex[c]], warnings);
-    const values = cols.map((c) => d[c]);
-    values.push(batchId, inferPriceType(d), deriveStatus(d), stamp);
-    pending.push({ sql: insertSql, params: values });
-    count++;
-
-    if (pending.length >= CHUNK_SIZE) {
-      await db.batch(pending);
-      pending = [];
-      // 途中で中断（サーバーレスの実行時間切れなど）しても、
-      // どこまで入ったかが取込履歴に残るようにここで件数を更新する
-      await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [count, batchId]);
-      onProgress?.(count);
-    }
+  // 列の並びは行ごとに変わらないよう、全行の和集合で固定する
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  const dealCols = [...cols, 'batch_id', 'price_type_code', 'status', 'updated_at'];
+  const sql = `INSERT INTO deals (${dealCols.join(',')}) VALUES (${dealCols.map(() => '?').join(',')})`;
+  const statements = rows.map((d) => ({
+    sql,
+    params: [...cols.map((c) => d[c] ?? null), batchId, inferPriceType(d), deriveStatus(d), stamp],
+  }));
+  for (let i = 0; i < statements.length; i += CHUNK_SIZE) {
+    await db.batch(statements.slice(i, i + CHUNK_SIZE));
   }
-  if (pending.length) await db.batch(pending);
+  return rows.length;
+}
 
+/** 取込履歴の件数を現在値へ更新する */
+export async function updateBatchCount(batchId, count) {
   await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [count, batchId]);
-  onProgress?.(count);
+}
 
-  // 数値として読めなかった値は取り込まずnullにしている。件数を返して気づけるようにする
-  const skipped = [...warnings.entries()].map(([column, w]) => ({
-    column,
+/**
+ * 取込履歴の件数を加算する。
+ * 分割送信では読み出してから書き戻すと、送信が前後したときに件数がずれる。
+ */
+export async function addBatchCount(batchId, added) {
+  await db.run('UPDATE import_batches SET row_count = row_count + ? WHERE id = ?', [added, batchId]);
+  const row = await db.get('SELECT row_count FROM import_batches WHERE id = ?', [batchId]);
+  return Number(row?.row_count ?? 0);
+}
+
+/** 数値として読めなかった値の集計を、画面に出せる形へ */
+export function summarizeWarnings(warnings) {
+  return [...warnings.entries()].map(([key, w]) => ({
+    column: key,
+    label: FIELDS.find((f) => f.key === key)?.label ?? key,
     count: w.count,
     samples: [...w.samples],
   }));
-  return { batchId, count, skipped };
+}
+
+/** 合計行など、データではない行を除く */
+export function isSkippableRow(cells, mapping) {
+  const ymIdx = mapping.sales_ym;
+  if (ymIdx == null || ymIdx < 0) return false;
+  const v = cells[ymIdx];
+  if (v == null || String(v).trim() === '') return true;
+  return String(v).trim() === '合計';
+}
+
+/**
+ * 管理表を取り込む（サーバー側でファイル全体を読む経路）。
+ * 同じ内容のファイルが既に取り込まれている場合は DuplicateImportError を投げる
+ * （明細がそのまま二重になり、値上げ金額の集計が二倍になってしまうため）。
+ * 意図的に再取込したいときは force を立てる。
+ * mapping を渡すと、自動判定ではなくその対応で取り込む。
+ */
+export async function importWorkbook(buffer, filename, userId, onProgress, { force = false, mapping } = {}) {
+  await initDb();
+
+  const contentHash = contentHashOf(buffer);
+  if (!force) await assertNotDuplicate(contentHash);
+
+  const info = inspectWorkbook(buffer);
+  const useMapping = mapping ?? info.mapping;
+  validateMapping(useMapping);
+
+  const batchId = await createBatch(filename, userId, contentHash);
+
+  const warnings = new Map();
+  let pending = [];
+  let count = 0;
+
+  for (let i = info.headerRow + 1; i < info.grid.length; i++) {
+    const cells = info.grid[i];
+    if (!cells || isSkippableRow(cells, useMapping)) continue;
+    pending.push(buildRow(cells, useMapping, warnings));
+    count++;
+
+    if (pending.length >= CHUNK_SIZE) {
+      await insertRows(batchId, pending);
+      pending = [];
+      // 途中で中断（サーバーレスの実行時間切れなど）しても、
+      // どこまで入ったかが取込履歴に残るようにここで件数を更新する
+      await updateBatchCount(batchId, count);
+      onProgress?.(count);
+    }
+  }
+  if (pending.length) await insertRows(batchId, pending);
+
+  await updateBatchCount(batchId, count);
+  onProgress?.(count);
+
+  return { batchId, count, skipped: summarizeWarnings(warnings), mapping: useMapping };
 }
