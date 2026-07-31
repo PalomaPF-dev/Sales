@@ -6,8 +6,9 @@
 -- 名前が衝突しないようにする。スキーマ名は DB_SCHEMA で変更できる。
 -- =============================================================
 
-CREATE SCHEMA IF NOT EXISTS "{{SCHEMA}}";
-SET search_path TO "{{SCHEMA}}";
+-- スキーマの作成と search_path の確認は server/db.js が接続時に行う。
+-- ここで SET search_path を書くと、接続オプションが効いていないことに
+-- 気づけなくなる（接続プーラー経由で起きうる）ため、あえて書かない。
 
 -- ユーザー（営業担当者 / 支店長 / 営業企画部 / 管理者）
 CREATE TABLE IF NOT EXISTS users (

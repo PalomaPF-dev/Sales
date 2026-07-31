@@ -190,7 +190,7 @@ function createPostgresDb() {
     },
     async exec(sql) {
       // スキーマ適用。パラメータを含まないため、まとめて実行できる
-      await pool.query(sql.replaceAll('{{SCHEMA}}', PG_SCHEMA));
+      await pool.query(sql);
     },
     async batch(statements) {
       const client = await pool.connect();
@@ -275,6 +275,7 @@ let initialized = null;
 export async function initDb() {
   if (initialized) return initialized;
   initialized = (async () => {
+    if (isPostgres) await preparePostgresSchema();
     const schemaFile = isPostgres ? 'schema.postgres.sql' : 'schema.sql';
     const schema = readFileSync(path.join(__dirname, schemaFile), 'utf8');
     await db.exec(schema);
@@ -287,6 +288,29 @@ export async function initDb() {
     initialized = null; // 失敗を記憶せず、設定修正後の再試行を可能にする
     throw e;
   }
+}
+
+/**
+ * 専用スキーマを用意し、接続時の search_path が実際に効いているかを確認する。
+ *
+ * PgBouncer等の接続プーラーを経由すると、接続オプション（-c search_path=...）が
+ * 無視されることがある。その状態で進めると「テーブルが存在しない」という
+ * 原因の分かりにくい失敗になるため、先に検知して対処法を示す。
+ */
+async function preparePostgresSchema() {
+  // スキーマ名は識別子なのでプレースホルダを使えない。想定外の文字は弾く
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(PG_SCHEMA)) {
+    throw new DbConfigError(`DB_SCHEMA に使用できない文字が含まれています: ${PG_SCHEMA}`);
+  }
+  await db.exec(`CREATE SCHEMA IF NOT EXISTS "${PG_SCHEMA}"`);
+
+  const row = await db.get('SELECT current_schema() AS schema');
+  if (row?.schema === PG_SCHEMA) return;
+  throw new DbConfigError(
+    `テーブルの作成先が「${row?.schema ?? '不明'}」になっており、想定の「${PG_SCHEMA}」が適用されていません。`
+    + ' 接続プーラー（PgBouncer等）を経由すると接続時のオプションが無視されることがあります。'
+    + ' プーラーを経由しない接続文字列（Neonの場合はホスト名に -pooler が付かない方）をお試しください。'
+  );
 }
 
 /**
