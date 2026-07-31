@@ -128,6 +128,53 @@ npm run set-password -- planning1     # 仮パスワードを生成して表示
    静的ファイルを含む全リクエストの手前で認証します。`/api/health` のみ免除しています。
    インターネットに公開する場合の追加の壁で、社内ネットワーク限定なら不要です。
 
+3. **Vercel Authentication**（Vercelの機能）
+   `*.vercel.app` のURLに対して、Vercelアカウントを持つチームメンバーのみ
+   アクセスを許可する保護です。**カスタムドメインには適用されません**（後述）。
+
+## 独自ドメイン（例: sales.paloma-pf.com）の設定
+
+### 1. Vercelにドメインを追加
+
+Vercelのプロジェクト → Settings → Domains で `sales.paloma-pf.com` を追加します。
+
+### 2. DNSレコードを追加
+
+`paloma-pf.com` のDNSに、Vercelの画面に表示される内容でレコードを追加します。
+サブドメインの場合は通常CNAMEです。
+
+```
+種別    名前     値
+CNAME   sales    cname.vercel-dns.com
+```
+
+反映後、Vercelが自動でTLS証明書を発行します（数分〜数十分）。
+
+### 3. 保護の見直し（重要）
+
+Vercel Authentication の適用範囲は既定で **`*.vercel.app` のみ（カスタムドメインは対象外）** です。
+そのため独自ドメインを割り当てると、**そのURLはインターネットから到達可能になります**。
+
+アプリ自身のログインで保護されているため価格データが漏れることはありませんが、
+ログイン画面自体は社外からも見える状態になります。社内限定で運用したい場合は、
+次のいずれかを併用してください。
+
+| 方法 | 内容 |
+|---|---|
+| Basic認証 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定する。Edge Middlewareはカスタムドメインにも適用されるため、これが最も簡単な方法です |
+| Vercelの保護範囲を変更 | Settings → Deployment Protection で、保護対象にカスタムドメインを含める（プランにより可否あり） |
+| IP制限 | Vercelの Trusted IPs で社内グローバルIPからのみ許可（Enterpriseプラン） |
+
+### 4. 確認
+
+```bash
+curl -o /dev/null -w "%{http_code}\n" https://sales.paloma-pf.com/api/deals   # → 401
+curl https://sales.paloma-pf.com/api/health                                    # → status: ok
+```
+
+なお、アプリ側にホスト名の直書きはなく、CookieにもDomain属性を付けていないため、
+ドメイン変更にともなうコード修正は不要です。
+
 ## バックアップ
 
 Turso側にも自動バックアップ（PITR）がありますが、論理バックアップも取得できます。
