@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, getUser, yen, pct } from '../api';
+import { api, yen, pct } from '../api';
 import type { Application } from '../types';
+import { useUser } from '../user';
 import { AppStatusBadge, RouteBadge } from '../components/ui';
 
 export default function Applications({ mode }: { mode: 'all' | 'inbox' }) {
@@ -10,7 +11,7 @@ export default function Applications({ mode }: { mode: 'all' | 'inbox' }) {
   const [mine, setMine] = useState(false);
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const user = getUser();
+  const user = useUser();
 
   useEffect(() => {
     const qs = new URLSearchParams();

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, yen, pct, getUser } from '../api';
+import { api, yen, pct } from '../api';
 import type { Deal, Meta } from '../types';
+import { useUser } from '../user';
 import { AppStatusBadge, Card, DealStatusBadge } from '../components/ui';
 
 interface DealRes {
@@ -16,7 +17,7 @@ export default function DealDetail() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [form, setForm] = useState({ status: '', negotiation_note: '', negotiated_date: '', price_type_code: '' });
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
-  const user = getUser();
+  const user = useUser();
 
   useEffect(() => {
     api<Meta>('/meta').then(setMeta);

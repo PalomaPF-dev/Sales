@@ -2,6 +2,11 @@ import { Router } from 'express';
 import multer from 'multer';
 import { db, initDb } from './db.js';
 import { importWorkbook } from './importer.js';
+import { hashPassword, verifyPassword, generateTempPassword, validatePassword } from './passwords.js';
+import {
+  COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
+  readCookie, setSessionCookie, clearSessionCookie,
+} from './session.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -14,19 +19,36 @@ const num = (v) => (v == null ? 0 : Number(v));
 // 非同期ハンドラのエラーをExpressのエラーハンドラへ渡す
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// ---- 認証（プロトタイプ: x-user-id ヘッダー。実運用ではSSO等に置換） ----
+// ---- 認証（ログインID/パスワード + セッションCookie） ----
 api.use(wrap(async (req, res, next) => {
   await initDb();
-  const uid = Number(req.header('x-user-id'));
-  req.user = uid
-    ? await db.get('SELECT * FROM users WHERE id = ? AND active = 1', [uid])
-    : null;
+  req.sessionToken = readCookie(req, COOKIE_NAME);
+  req.user = await resolveSession(req.sessionToken);
   next();
 }));
+
+// ログイン前に到達してよいパス。これ以外は既定で拒否する。
+// 個別のハンドラに requireLogin を書き忘れても素通りしないようにするための関門。
+const PUBLIC_PATHS = new Set(['/login', '/logout', '/me']);
+
+api.use((req, res, next) => {
+  if (PUBLIC_PATHS.has(req.path)) return next();
+  if (!req.user) return res.status(401).json({ error: 'ログインしてください' });
+  // 仮パスワードのままでは、パスワード変更以外の操作をさせない
+  if (req.user.must_change_password && req.path !== '/password') {
+    return res.status(403).json({ error: 'パスワードの変更が必要です', mustChangePassword: true });
+  }
+  next();
+});
 
 function requireLogin(req, res) {
   if (!req.user) {
     res.status(401).json({ error: 'ログインしてください' });
+    return false;
+  }
+  // 仮パスワードのまま業務操作をさせない
+  if (req.user.must_change_password && !req.allowWhileMustChange) {
+    res.status(403).json({ error: 'パスワードの変更が必要です', mustChangePassword: true });
     return false;
   }
   return true;
@@ -41,8 +63,187 @@ function requireRole(req, res, roles) {
   return true;
 }
 
+// ---- ログイン / ログアウト ----
+
+// 連続失敗時のロック設定
+const MAX_FAILED = 5;
+const LOCK_MINUTES = 15;
+
+const publicUser = (u) => ({
+  id: u.id, name: u.name, role: u.role, branch: u.branch, office: u.office,
+  loginId: u.login_id, mustChangePassword: Boolean(u.must_change_password),
+});
+
+api.post('/login', wrap(async (req, res) => {
+  const loginId = String(req.body?.loginId ?? '').trim();
+  const password = String(req.body?.password ?? '');
+  if (!loginId || !password) {
+    return res.status(400).json({ error: 'ログインIDとパスワードを入力してください' });
+  }
+
+  const user = await db.get('SELECT * FROM users WHERE login_id = ?', [loginId]);
+
+  // ユーザーの有無を推測されないよう、失敗時の応答は区別しない
+  const deny = () => res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
+
+  if (!user || !user.active) {
+    await verifyPassword(password, null); // 応答時間を揃える
+    return deny();
+  }
+  if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
+    const until = new Date(user.locked_until);
+    return res.status(423).json({
+      error: `ログインの試行回数が上限を超えました。${until.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}以降に再度お試しください`,
+    });
+  }
+
+  const ok = await verifyPassword(password, user.password_hash);
+  if (!ok) {
+    const failed = Number(user.failed_attempts || 0) + 1;
+    const lockUntil = failed >= MAX_FAILED
+      ? new Date(Date.now() + LOCK_MINUTES * 60 * 1000).toISOString()
+      : null;
+    await db.run('UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?',
+      [failed, lockUntil, user.id]);
+    return deny();
+  }
+
+  await db.run(
+    'UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?',
+    [now(), user.id]
+  );
+  const { token, expires } = await createSession(user.id);
+  setSessionCookie(req, res, token, expires);
+  res.json(publicUser(user));
+}));
+
+api.post('/logout', wrap(async (req, res) => {
+  await destroySession(req.sessionToken);
+  clearSessionCookie(req, res);
+  res.json({ ok: true });
+}));
+
+api.get('/me', wrap(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'ログインしてください' });
+  res.json(publicUser(req.user));
+}));
+
+// パスワード変更（本人のみ。仮パスワード状態でも実行できる）
+api.post('/password', wrap(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'ログインしてください' });
+  const current = String(req.body?.currentPassword ?? '');
+  const next = String(req.body?.newPassword ?? '');
+
+  if (!await verifyPassword(current, req.user.password_hash)) {
+    return res.status(401).json({ error: '現在のパスワードが違います' });
+  }
+  const problem = validatePassword(next);
+  if (problem) return res.status(400).json({ error: problem });
+  if (current === next) return res.status(400).json({ error: '現在と異なるパスワードを設定してください' });
+
+  await db.run(
+    'UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+    [await hashPassword(next), req.user.id]
+  );
+  // 変更前のセッションは全て無効化し、この端末だけ再発行する
+  await destroyUserSessions(req.user.id);
+  const { token, expires } = await createSession(req.user.id);
+  setSessionCookie(req, res, token, expires);
+  res.json({ ok: true });
+}));
+
+// ---- ユーザー管理（管理者・営業企画部） ----
+api.get('/admin/users', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const rows = await db.all(`
+    SELECT id, name, role, branch, office, active, login_id, last_login_at,
+           must_change_password, locked_until,
+           CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
+    FROM users ORDER BY id`);
+  res.json(rows);
+}));
+
+api.post('/admin/users', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const { name, role, branch, office, loginId } = req.body || {};
+  if (!name || !role || !loginId) {
+    return res.status(400).json({ error: '氏名・役割・ログインIDは必須です' });
+  }
+  if (!['sales', 'branch_manager', 'planning', 'admin'].includes(role)) {
+    return res.status(400).json({ error: '役割の指定が不正です' });
+  }
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
+    return res.status(400).json({ error: 'ログインIDは半角英数字・._- の3〜32文字で指定してください' });
+  }
+  const dup = await db.get('SELECT id FROM users WHERE login_id = ?', [loginId]);
+  if (dup) return res.status(409).json({ error: 'そのログインIDは既に使われています' });
+
+  const temp = generateTempPassword();
+  const { lastInsertRowid } = await db.run(
+    `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password)
+     VALUES (?,?,?,?,?,?,1)`,
+    [name, role, nv(branch), nv(office), loginId, await hashPassword(temp)]
+  );
+  // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
+  res.status(201).json({ id: Number(lastInsertRowid), loginId, tempPassword: temp });
+}));
+
+api.post('/admin/users/:id/reset-password', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
+  if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+
+  const temp = generateTempPassword();
+  await db.run(
+    `UPDATE users SET password_hash = ?, must_change_password = 1,
+            failed_attempts = 0, locked_until = NULL WHERE id = ?`,
+    [await hashPassword(temp), user.id]
+  );
+  await destroyUserSessions(user.id); // 既存のログインを打ち切る
+  res.json({ id: user.id, loginId: user.login_id, tempPassword: temp });
+}));
+
+api.patch('/admin/users/:id', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
+  if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+
+  const sets = [];
+  const params = [];
+  for (const [field, col] of [['name', 'name'], ['role', 'role'], ['branch', 'branch'], ['office', 'office']]) {
+    if (field in (req.body || {})) { sets.push(`${col} = ?`); params.push(nv(req.body[field])); }
+  }
+  if ('loginId' in (req.body || {})) {
+    const loginId = String(req.body.loginId ?? '').trim();
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
+      return res.status(400).json({ error: 'ログインIDは半角英数字・._- の3〜32文字で指定してください' });
+    }
+    const dup = await db.get('SELECT id FROM users WHERE login_id = ? AND id <> ?', [loginId, user.id]);
+    if (dup) return res.status(409).json({ error: 'そのログインIDは既に使われています' });
+    sets.push('login_id = ?');
+    params.push(loginId);
+  }
+  if ('active' in (req.body || {})) {
+    if (Number(req.params.id) === req.user.id && !req.body.active) {
+      return res.status(400).json({ error: '自分自身を無効化することはできません' });
+    }
+    sets.push('active = ?');
+    params.push(req.body.active ? 1 : 0);
+  }
+  if (!sets.length) return res.status(400).json({ error: '更新項目がありません' });
+  params.push(user.id);
+  await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+  if (req.body?.active === false) await destroyUserSessions(user.id);
+  res.json(await db.get(
+    `SELECT id, name, role, branch, office, active, login_id, last_login_at,
+            CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
+     FROM users WHERE id = ?`, [user.id]));
+}));
+
 // ---- ユーザー / メタ情報 ----
+// 社員名簿にあたるため、ログイン前には返さない
 api.get('/users', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
   res.json(await db.all('SELECT id, name, role, branch, office FROM users WHERE active = 1 ORDER BY id'));
 }));
 

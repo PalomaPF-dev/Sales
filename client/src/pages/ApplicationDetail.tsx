@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, getUser, yen, pct } from '../api';
+import { api, yen, pct } from '../api';
 import type { Application } from '../types';
+import { useUser } from '../user';
 import { AppStatusBadge, Card, RouteBadge } from '../components/ui';
 
 export default function ApplicationDetail({ onChanged }: { onChanged?: () => void }) {
@@ -10,7 +11,7 @@ export default function ApplicationDetail({ onChanged }: { onChanged?: () => voi
   const [comment, setComment] = useState('');
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const user = getUser();
+  const user = useUser();
 
   const load = () => {
     api<Application>(`/applications/${id}`).then(setApp).catch((e) => setMsg({ kind: 'error', text: e.message }));

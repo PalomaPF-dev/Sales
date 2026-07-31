@@ -1,37 +1,64 @@
-import { useEffect, useState } from 'react';
-import { api } from '../api';
+import { useState } from 'react';
+import { login } from '../api';
 import type { User } from '../types';
-import { ROLE_NAMES } from '../types';
 
 export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
-  const [users, setUsers] = useState<User[]>([]);
+  const [loginId, setLoginId] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    api<User[]>('/users').then(setUsers).catch((e) => setError(e.message));
-  }, []);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      onLogin(await login(loginId, password));
+    } catch (err) {
+      setError((err as Error).message);
+      setPassword('');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="login-wrap">
-      <div className="login-card">
+      <form className="login-card" onSubmit={submit}>
         <h1>値上げ交渉管理システム</h1>
-        <p>ログインするユーザーを選択してください（プロトタイプ版）</p>
+        <p>ログインIDとパスワードを入力してください</p>
         {error && <div className="alert error">{error}</div>}
-        <div className="user-pick">
-          {users.map((u) => (
-            <button key={u.id} onClick={() => onLogin(u)}>
-              <span>
-                <strong>{u.name}</strong>
-                <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: 12 }}>
-                  {u.branch}
-                  {u.office ? ` / ${u.office}` : ''}
-                </span>
-              </span>
-              <span className="badge blue">{ROLE_NAMES[u.role]}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+
+        <label className="fld" style={{ marginBottom: 12 }}>
+          ログインID
+          <input
+            type="text"
+            value={loginId}
+            onChange={(e) => setLoginId(e.target.value)}
+            autoComplete="username"
+            autoFocus
+            required
+          />
+        </label>
+        <label className="fld" style={{ marginBottom: 18 }}>
+          パスワード
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </label>
+
+        <button className="btn" type="submit" disabled={busy} style={{ width: '100%' }}>
+          {busy ? 'ログイン中...' : 'ログイン'}
+        </button>
+
+        <p className="pt-note" style={{ marginTop: 16, textAlign: 'center' }}>
+          パスワードが分からない場合は営業企画部にお問い合わせください
+        </p>
+      </form>
     </div>
   );
 }

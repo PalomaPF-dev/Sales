@@ -4,6 +4,8 @@ export interface User {
   role: 'sales' | 'branch_manager' | 'planning' | 'admin';
   branch: string | null;
   office: string | null;
+  loginId?: string | null;
+  mustChangePassword?: boolean;
 }
 
 export interface PriceType {

@@ -14,6 +14,7 @@
     "build": "cd client && npm install && npm run build",
     "import": "node scripts/import.js",
     "reset-db": "node scripts/reset-db.js",
+    "set-password": "node scripts/set-password.js",
     "backup": "node scripts/backup.js",
     "vercel-build": "cd client && npm install && npm run build"
   },

@@ -204,6 +204,7 @@ export async function initDb() {
   initialized = (async () => {
     const schema = readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
     await db.exec(schema);
+    await migrate();
     await seedMasters();
   })();
   try {
@@ -211,6 +212,46 @@ export async function initDb() {
   } catch (e) {
     initialized = null; // 失敗を記憶せず、設定修正後の再試行を可能にする
     throw e;
+  }
+}
+
+/**
+ * 既存DBへの列追加。
+ * CREATE TABLE IF NOT EXISTS は既存テーブルを変更しないため、
+ * 認証機能の追加前に作られたDBには列が無い。既にある場合のエラーは無視する。
+ */
+async function migrate() {
+  const additions = [
+    'ALTER TABLE users ADD COLUMN login_id TEXT',
+    'ALTER TABLE users ADD COLUMN password_hash TEXT',
+    'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN locked_until TEXT',
+    'ALTER TABLE users ADD COLUMN last_login_at TEXT',
+  ];
+  for (const sql of additions) {
+    try {
+      await db.run(sql);
+    } catch (e) {
+      // 「duplicate column name」以外は設計上の問題なので気づけるようにする
+      if (!/duplicate column/i.test(e?.message || '')) {
+        console.warn(`マイグレーション警告: ${sql} → ${e.message}`);
+      }
+    }
+  }
+  // 認証機能より前から居るユーザーはログインIDを持たないため補完する。
+  // これが無いとログインもパスワード設定もできない状態になる。
+  try {
+    await db.run("UPDATE users SET login_id = 'user' || id WHERE login_id IS NULL OR login_id = ''");
+  } catch (e) {
+    console.warn(`マイグレーション警告: ログインIDを補完できませんでした → ${e.message}`);
+  }
+
+  // 列追加後でないとインデックスを張れないため、ここで実行する
+  try {
+    await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id)');
+  } catch (e) {
+    console.warn(`マイグレーション警告: login_id の一意制約を作成できませんでした → ${e.message}`);
   }
 }
 
@@ -230,13 +271,16 @@ async function seedMasters() {
 
   const { c: userCount } = await db.get('SELECT COUNT(*) AS c FROM users');
   if (Number(userCount) === 0) {
-    const sql = 'INSERT INTO users (name, role, branch, office) VALUES (?,?,?,?)';
+    // password_hash は意図的にNULLのまま。既定パスワードを埋め込むと
+    // 設定変更を忘れたときにそのまま入られてしまうため、
+    // 初回は `npm run set-password` で明示的に設定させる。
+    const sql = 'INSERT INTO users (name, role, branch, office, login_id) VALUES (?,?,?,?,?)';
     await db.batch([
-      { sql, params: ['営業 太郎', 'sales', '東京中央', '東京中央営業所'] },
-      { sql, params: ['営業 花子', 'sales', '東京中央', '東京中央営業所'] },
-      { sql, params: ['支店長 一郎', 'branch_manager', '東京中央', null] },
-      { sql, params: ['企画 次郎', 'planning', '本社', '営業企画部'] },
-      { sql, params: ['管理者', 'admin', '本社', null] },
+      { sql, params: ['営業 太郎', 'sales', '東京中央', '東京中央営業所', 'sales1'] },
+      { sql, params: ['営業 花子', 'sales', '東京中央', '東京中央営業所', 'sales2'] },
+      { sql, params: ['支店長 一郎', 'branch_manager', '東京中央', null, 'branch1'] },
+      { sql, params: ['企画 次郎', 'planning', '本社', '営業企画部', 'planning1'] },
+      { sql, params: ['管理者', 'admin', '本社', null, 'admin'] },
     ]);
   }
 

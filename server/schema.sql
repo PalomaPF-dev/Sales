@@ -12,8 +12,30 @@ CREATE TABLE IF NOT EXISTS users (
   role       TEXT NOT NULL CHECK (role IN ('sales','branch_manager','planning','admin')),
   branch     TEXT,
   office     TEXT,
-  active     INTEGER NOT NULL DEFAULT 1
+  active     INTEGER NOT NULL DEFAULT 1,
+  login_id   TEXT,               -- ログインID（社内で一意）
+  password_hash TEXT,            -- scrypt形式。NULLの間はログイン不可
+  must_change_password INTEGER NOT NULL DEFAULT 0, -- 仮パスワードの初回変更を強制
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,             -- 連続失敗による一時ロックの解除時刻
+  last_login_at TEXT
 );
+
+-- ※ login_id の一意インデックスは server/db.js の migrate() で作成する。
+--    認証機能より前に作られたDBでは、この時点でまだ列が存在しないため。
+
+-- ログインセッション
+-- サーバーレスでは各リクエストが別プロセスになるため、セッションはDBで共有する
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,   -- ランダムトークン（Cookieに保存する値のハッシュ）
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  last_seen_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
 -- マスター単価種別（6種類）
 CREATE TABLE IF NOT EXISTS price_types (
