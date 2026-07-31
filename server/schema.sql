@@ -182,6 +182,63 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
+-- 交渉履歴（商談の経緯を時系列で残す）
+CREATE TABLE IF NOT EXISTS negotiation_logs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id      INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+  user_id      INTEGER REFERENCES users(id),
+  contact_date TEXT,             -- 商談日
+  channel      TEXT,             -- 訪問 / 電話 / メール / 本部商談 など
+  proposed_price REAL,           -- その場で提示した単価
+  result       TEXT,             -- 継続交渉 / 合意 / 保留 / 不可
+  note         TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_deal ON negotiation_logs(deal_id);
+
+-- 添付ファイル（見積書・稟議書類など）
+-- 外部ストレージを増やさずに済むよう、実体はbase64でDBに保存する
+CREATE TABLE IF NOT EXISTS attachments (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id        INTEGER REFERENCES deals(id) ON DELETE CASCADE,
+  application_id INTEGER REFERENCES applications(id) ON DELETE CASCADE,
+  filename       TEXT NOT NULL,
+  mime_type      TEXT,
+  size           INTEGER,
+  content        TEXT NOT NULL,
+  uploaded_by    INTEGER REFERENCES users(id),
+  uploaded_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
+CREATE INDEX IF NOT EXISTS idx_attach_app  ON attachments(application_id);
+
+-- アプリ内通知
+CREATE TABLE IF NOT EXISTS notifications (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,   -- submitted / approved / rejected / forwarded
+  title      TEXT NOT NULL,
+  body       TEXT,
+  link       TEXT,            -- 画面内のリンク先（例: /applications/12）
+  read_at    TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read_at);
+
+-- 値上げ目標（支店 / 営業所 / 担当者の単位で設定）
+CREATE TABLE IF NOT EXISTS targets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope       TEXT NOT NULL CHECK (scope IN ('branch','office','person')),
+  scope_value TEXT NOT NULL,
+  round       INTEGER NOT NULL CHECK (round IN (1,2)),
+  amount      REAL NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_key ON targets(scope, scope_value, round);
+
 -- 計算列ビュー（Excelの意味合いを再現）
 --   ❹ r1_raise_unit   = ❸値上後単価 - ❶出荷単価         (BO列)
 --   ❺ r1_raise_amount = ❹ × 台数                          (BP列)

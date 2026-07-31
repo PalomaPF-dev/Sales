@@ -14,12 +14,14 @@ import Applications from './pages/Applications';
 import ApplicationDetail from './pages/ApplicationDetail';
 import Settings from './pages/Settings';
 import Users from './pages/Users';
+import Notifications from './pages/Notifications';
 import ImportPage from './pages/ImportPage';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [inboxCount, setInboxCount] = useState(0);
+  const [unread, setUnread] = useState(0);
   const navigate = useNavigate();
 
   // Cookieのセッションから復元する
@@ -35,6 +37,9 @@ export default function App() {
     api<Application[]>('/applications?inbox=1')
       .then((rows) => setInboxCount(rows.length))
       .catch(() => setInboxCount(0));
+    api<{ unread: number }>('/notifications')
+      .then((r) => setUnread(r.unread))
+      .catch(() => setUnread(0));
   }, [user]);
 
   useEffect(() => {
@@ -88,6 +93,10 @@ export default function App() {
                 {inboxCount > 0 && <span className="badge red">{inboxCount}</span>}
               </NavLink>
             )}
+            <NavLink to="/notifications">
+              通知
+              {unread > 0 && <span className="badge red">{unread}</span>}
+            </NavLink>
             <NavLink to="/import">Excel取込</NavLink>
             {canConfig && <NavLink to="/settings">設定</NavLink>}
             {canConfig && <NavLink to="/users">ユーザー管理</NavLink>}
@@ -114,6 +123,7 @@ export default function App() {
             <Route path="/applications" element={<Applications mode="all" />} />
             <Route path="/inbox" element={<Applications mode="inbox" />} />
             <Route path="/applications/:id" element={<ApplicationDetail onChanged={refreshInbox} />} />
+            <Route path="/notifications" element={<Notifications onChanged={refreshInbox} />} />
             <Route path="/import" element={<ImportPage />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/users" element={<Users />} />

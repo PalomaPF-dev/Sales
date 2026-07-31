@@ -4,6 +4,7 @@ import { api, yen, pct } from '../api';
 import type { Application } from '../types';
 import { useUser } from '../user';
 import { AppStatusBadge, Card, RouteBadge } from '../components/ui';
+import Attachments from '../components/Attachments';
 
 export default function ApplicationDetail({ onChanged }: { onChanged?: () => void }) {
   const { id } = useParams();
@@ -155,6 +156,8 @@ export default function ApplicationDetail({ onChanged }: { onChanged?: () => voi
           </table>
         </div>
       </Card>
+
+      <Attachments applicationId={app.id} title="添付ファイル（稟議書類など）" />
 
       <Card title="承認履歴">
         {app.approvals?.length ? (

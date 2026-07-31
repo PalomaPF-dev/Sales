@@ -4,6 +4,8 @@ import { api, yen, pct } from '../api';
 import type { Deal, Meta } from '../types';
 import { useUser } from '../user';
 import { AppStatusBadge, Card, DealStatusBadge } from '../components/ui';
+import NegotiationLog from '../components/NegotiationLog';
+import Attachments from '../components/Attachments';
 
 interface DealRes {
   deal: Deal;
@@ -130,6 +132,10 @@ export default function DealDetail() {
           </p>
         )}
       </Card>
+
+      <NegotiationLog dealId={d.id} />
+
+      <Attachments dealId={d.id} title="添付ファイル（見積書など）" />
 
       <Card title="この明細に関する申請">
         {data.applications.length === 0 ? (

@@ -125,6 +125,9 @@ export interface Meta {
   equips: { name: string; count: number }[];
   persons: { name: string; count: number }[];
   customers: { code: string; name: string; count: number }[];
+  branches: { name: string; count: number }[];
+  offices: { branch: string; name: string; count: number }[];
+  exportMaxRows?: number;
   statuses: { code: string; name: string }[];
 }
 

@@ -168,6 +168,8 @@ export async function importWorkbook(buffer, filename, userId, onProgress) {
   for (let i = headerRow + 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || row[colIndex.sales_ym] == null) continue; // 空行スキップ
+    // 書き出したファイルを取り込み直したとき、末尾の合計行をデータとして拾わないようにする
+    if (String(row[colIndex.sales_ym]).trim() === '合計') continue;
     const d = {};
     for (const c of cols) d[c] = normalize(c, row[colIndex[c]]);
     const values = cols.map((c) => d[c]);

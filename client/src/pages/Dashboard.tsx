@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import { Card, Meter } from '../components/ui';
 import { STATUS_NAMES, APP_STATUS_NAMES } from '../types';
+import type { Meta } from '../types';
+import { useUser } from '../user';
 
 interface Row {
   equip_name?: string;
   sales_person?: string;
+  branch?: string;
+  office?: string;
   deals: number;
   r1_amount: number;
   r2_amount: number;
@@ -18,11 +22,13 @@ interface Dash {
   progress: { r1: number; r2: number; deals: number };
   byEquip: Row[];
   byPerson: Row[];
+  byOffice: Row[];
+  scope: { branch: string | null; office: string | null };
   statusCounts: { status: string; count: number }[];
   appCounts: { status: string; count: number }[];
 }
 
-function BarRows({ rows, nameKey }: { rows: Row[]; nameKey: 'equip_name' | 'sales_person' }) {
+function BarRows({ rows, nameKey }: { rows: Row[]; nameKey: 'equip_name' | 'sales_person' | 'office' }) {
   const max = Math.max(1, ...rows.map((r) => Math.max(0, r.r1_amount) + Math.max(0, r.r2_amount)));
   return (
     <div>
@@ -49,12 +55,40 @@ function BarRows({ rows, nameKey }: { rows: Row[]; nameKey: 'equip_name' | 'sale
 }
 
 export default function Dashboard() {
+  const [params, setParams] = useSearchParams();
+  const me = useUser();
   const [d, setD] = useState<Dash | null>(null);
+  const [meta, setMeta] = useState<Meta | null>(null);
   const [error, setError] = useState('');
 
+  const branch = params.get('branch') || '';
+  const office = params.get('office') || '';
+
+  const setParam = (key: string, value: string) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    if (key === 'branch') next.delete('office');
+    setParams(next, { replace: true });
+  };
+
   useEffect(() => {
-    api<Dash>('/dashboard').then(setD).catch((e) => setError(e.message));
+    api<Meta>('/meta').then((m) => {
+      setMeta(m);
+      // 営業担当者・支店長は自分の支店を初期表示にする
+      if (!params.get('branch') && me.branch && me.role !== 'planning' && me.role !== 'admin'
+          && m.branches.some((b) => b.name === me.branch)) {
+        setParam('branch', me.branch);
+      }
+    }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const qs = new URLSearchParams();
+    if (branch) qs.set('branch', branch);
+    if (office) qs.set('office', office);
+    api<Dash>(`/dashboard?${qs}`).then(setD).catch((e) => setError(e.message));
+  }, [branch, office]);
 
   if (error) return <div className="alert error">{error}</div>;
   if (!d) return <p>読み込み中...</p>;
@@ -67,7 +101,27 @@ export default function Dashboard() {
   return (
     <div>
       <h1 className="page-title">ダッシュボード</h1>
-      <p className="page-sub">東京中央支店 値上げ活動の進捗（第1弾 ❺ ＋ 第2弾 ❾ ＝ 値上げ金額総数）</p>
+      <p className="page-sub">
+        {office || branch || '全社'} の値上げ活動の進捗（第1弾 ❺ ＋ 第2弾 ❾ ＝ 値上げ金額総数）
+      </p>
+
+      <div className="filters">
+        <label className="fld">
+          支店
+          <select value={branch} onChange={(e) => setParam('branch', e.target.value)}>
+            <option value="">全社</option>
+            {meta?.branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          営業所
+          <select value={office} onChange={(e) => setParam('office', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.offices.filter((o) => !branch || o.branch === branch)
+              .map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
+          </select>
+        </label>
+      </div>
 
       <div className="tiles">
         <div className="tile">
@@ -108,6 +162,12 @@ export default function Dashboard() {
       <Card title="器具区分別の値上げ進捗">
         <BarRows rows={d.byEquip} nameKey="equip_name" />
       </Card>
+
+      {d.byOffice.length > 1 && (
+        <Card title="支店・営業所別の値上げ進捗">
+          <BarRows rows={d.byOffice} nameKey="office" />
+        </Card>
+      )}
 
       <Card title="担当者別の値上げ進捗">
         <BarRows rows={d.byPerson} nameKey="sales_person" />
