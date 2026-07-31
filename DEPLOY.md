@@ -111,6 +111,9 @@ export DATABASE_URL="postgres://..."
 
 npm run set-password -- --list        # ログインIDの一覧
 npm run set-password -- planning1     # 仮パスワードを生成して表示
+
+# 一覧に該当者がいない場合は、作成と同時にパスワードを設定できます
+npm run set-password -- --create devadmin "開発者" --role admin
 ```
 
 表示された仮パスワードでログインし、画面の指示に従って変更してください。

@@ -47,6 +47,9 @@ npm start            # http://localhost:3000 で起動
 npm run set-password -- --list                 # ユーザーとログインIDの一覧
 npm run set-password -- planning1              # 仮パスワードを生成して表示
 npm run set-password -- planning1 <パスワード>  # パスワードを直接指定
+
+# ユーザーを作って同時にパスワードを設定する（開発用の管理者アカウントなど）
+npm run set-password -- --create devadmin "開発者" --role admin
 ```
 
 いずれの方法でも、以降の担当者は画面の「管理者画面」から追加できます。

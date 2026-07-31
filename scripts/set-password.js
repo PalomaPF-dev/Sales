@@ -2,8 +2,11 @@
 //
 //   npm run set-password -- <ログインID> [パスワード]
 //   npm run set-password -- --list            … ユーザー一覧を表示
+//   npm run set-password -- --create <ログインID> <氏名> [--role <役割>] [パスワード]
+//                                             … ユーザーを作って同時にパスワードを設定
 //
 // パスワードを省略すると安全な仮パスワードを生成し、初回ログイン時に変更を求めます。
+// --role は sales / branch_manager / planning / admin（既定は admin）。
 // 本番DBに対して実行する場合は DATABASE_URL を設定してください。
 import { db, initDb } from '../server/db.js';
 import { hashPassword, generateTempPassword, validatePassword } from '../server/passwords.js';
@@ -38,12 +41,55 @@ if (args.includes('--list') || args.length === 0) {
   process.exit(0);
 }
 
-const [loginId, explicitPassword] = args.filter((a) => !a.startsWith('--'));
-const user = await db.get('SELECT * FROM users WHERE login_id = ?', [loginId]);
-if (!user) {
-  console.error(`ログインID "${loginId}" のユーザーが見つかりません。--list で一覧を確認してください。`);
+const ROLES = ['sales', 'branch_manager', 'planning', 'admin'];
+const create = args.includes('--create');
+
+// --role の値はフラグの直後に来る。位置引数と混ざらないよう先に取り除く
+const roleIndex = args.indexOf('--role');
+const role = roleIndex >= 0 ? args[roleIndex + 1] : 'admin';
+if (roleIndex >= 0 && !ROLES.includes(role)) {
+  console.error(`--role は ${ROLES.join(' / ')} のいずれかを指定してください（受け取った値: ${role}）`);
   db.close?.();
   process.exit(1);
+}
+// --role が無いときは roleIndex が -1 になる。そのまま roleIndex+1 を除くと
+// 先頭の引数（ログインID）まで落ちてしまうので、指定があるときだけ除く。
+const roleValueIndex = roleIndex >= 0 ? roleIndex + 1 : -1;
+const positional = args.filter((a, i) => !a.startsWith('--') && i !== roleValueIndex);
+
+let user;
+let explicitPassword;
+
+if (create) {
+  const [newLoginId, name, pw] = positional;
+  explicitPassword = pw;
+  if (!newLoginId || !name) {
+    console.error('使い方: npm run set-password -- --create <ログインID> <氏名> [--role <役割>] [パスワード]');
+    db.close?.();
+    process.exit(1);
+  }
+  const exists = await db.get('SELECT id FROM users WHERE login_id = ?', [newLoginId]);
+  if (exists) {
+    console.error(`ログインID "${newLoginId}" は既に使われています。作成せずに終了します。`);
+    db.close?.();
+    process.exit(1);
+  }
+  const created = await db.run(
+    `INSERT INTO users (name, role, branch, office, active, login_id, must_change_password)
+     VALUES (?,?,?,?,1,?,0)`,
+    [name, role, null, null, newLoginId]);
+  user = await db.get('SELECT * FROM users WHERE id = ?', [created.lastInsertRowid]);
+  console.log(`\nユーザーを作成しました: ${name}（${role}）`);
+} else {
+  const [loginId, pw] = positional;
+  explicitPassword = pw;
+  user = await db.get('SELECT * FROM users WHERE login_id = ?', [loginId]);
+  if (!user) {
+    console.error(`ログインID "${loginId}" のユーザーが見つかりません。--list で一覧を確認してください。`);
+    console.error('新しく作る場合は --create を付けてください。');
+    db.close?.();
+    process.exit(1);
+  }
 }
 
 let password = explicitPassword;
