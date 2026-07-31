@@ -74,26 +74,29 @@ Vercelダッシュボードから設定する場合は **Settings → Environmen
 | 変数 | 必須 | 内容 |
 |---|---|---|
 | `DATABASE_URL` | ○ | PostgreSQLの接続文字列。未設定だとローカルSQLiteを見に行き、データが保存されません |
+| `BASIC_AUTH_USER` | ○ | サイト全体にかけるBasic認証のユーザー名（例: `sales`） |
+| `BASIC_AUTH_PASS` | ○ | 同上のパスワード。半角英数32文字程度を推奨（下記「本番の認証設定」参照） |
 | `DB_SCHEMA` | | テーブルを作成するスキーマ名（既定: `sales_pricing`） |
 | `DB_SSL_NO_VERIFY` | | `true` でTLS証明書の検証を緩める（社内認証局を使っている場合） |
-| `BASIC_AUTH_USER` | 任意 | サイト全体にかける追加のBasic認証。インターネット公開時に推奨 |
-| `BASIC_AUTH_PASS` | 任意 | 同上。十分に長いパスワードを設定してください |
+| `DISPLAY_TZ` | | 画面に出す時刻の時間帯（既定: `Asia/Tokyo`）。通常は設定不要 |
 
-アプリ本体は個人ごとのログインID/パスワードで保護されており、未ログインでは
-価格データを含む全APIが401を返します。`BASIC_AUTH_*` はその手前に置く任意の追加の壁です。
+`DISABLE_AUTH` と `DEV_LOGIN_AS` は認証を省略するための開発用の設定です。
+**本番（Vercel）では設定されていても無視され、必ずログインを求めます。**
+取り違えて設定したときに価格データが認証なしで公開されてしまうためです。
 
 ## 4. デプロイ後の確認
 
 ```bash
 # ヘルスチェック（認証不要・DB接続と件数を返す）
 curl https://<デプロイ先>/api/health
-# → {"status":"ok","db":"postgres","deals":23024,"authProtected":false,...}
+# → {"status":"ok","db":"postgres","deals":23024,"authProtected":true,...}
 
 # 未ログインでは価格データが返らないこと（401であること）
-curl -o /dev/null -w "%{http_code}\n" https://<デプロイ先>/api/deals
+curl -o /dev/null -w "%{http_code}\n" -u 'sales:<パスワード>' https://<デプロイ先>/api/deals
 ```
 
 `deals` が 0 の場合は取込（手順2）が未実行か、環境変数の設定先（Production/Preview）が違います。
+認証まわりの詳しい確認方法は「本番の認証設定」を参照してください。
 
 ## 5. 最初のログインユーザーを作る
 
@@ -112,23 +115,82 @@ npm run set-password -- planning1     # 仮パスワードを生成して表示
 
 ---
 
-## アクセス保護について
+## 本番の認証設定
 
-保護は2層になっています。
+### 設定するもの
 
-1. **アプリのログイン**（必須・常時有効）
-   個人ごとのログインID/パスワード。未ログインでは全APIが401を返します。
-   パスワードはscryptでハッシュ化して保存し、セッションはHttpOnly Cookieで管理します。
-   承認操作は本人のセッションに紐づくため、「誰が承認したか」が記録として残ります。
+Vercelの **Settings → Environment Variables** に、Production / Preview の双方へ登録します。
 
-2. **Basic認証**（任意）
-   `BASIC_AUTH_*` を設定した場合のみ有効。Edge Middleware（`middleware.js`）が
-   静的ファイルを含む全リクエストの手前で認証します。`/api/health` のみ免除しています。
-   インターネットに公開する場合の追加の壁で、社内ネットワーク限定なら不要です。
+```
+BASIC_AUTH_USER=sales
+BASIC_AUTH_PASS=<半角英数32文字程度のパスワード>
+```
+
+パスワードは使い回さず、下記のように生成した値を使ってください。
+
+```bash
+node -e "const{randomBytes:r}=require('node:crypto');const c='abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';const b=r(32);let s='';for(let i=0;i<32;i++)s+=c[b[i]%c.length];console.log(s)"
+```
+
+半角英数のみにしているのは、Basic認証のパスワードに日本語や記号を使うと、
+ブラウザや機器によって送られ方が変わり、入力しても通らないことがあるためです。
+
+### 設定する順番（重要）
+
+**Basic認証は、利用者にURLを知らせる前に設定してください。**
+
+アプリはまだ誰もパスワードを持っていない間だけ「初期セットアップ」画面を開きます。
+この画面は、その時点ではログインなしで到達できます（誰も入れない状態を解消するために必要なため）。
+URLが知られている状態でここが開いていると、先に管理者のパスワードを設定されてしまいます。
+Basic認証を先に入れておけば、その手前で止まります。
+
+1. `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定してデプロイする
+2. 初期セットアップ、または `npm run set-password` で最初の管理者のパスワードを決める
+3. そのあとで利用者にURLとBasic認証の情報を伝える
+
+一度セットアップが済むと初期セットアップ画面は無効になり、以降は開きません。
+
+### 保護の構成
+
+保護は3層になっています。
+
+1. **Basic認証**（サイト全体の入口）
+   Edge Middleware（`middleware.js`）が、画面ファイルを含む全リクエストの手前で認証します。
+   監視から到達できるよう `/api/health` のみ免除しています。
+   Vercelは既定でインターネットに公開されるため、社外からURLを踏まれてもここで止まります。
+
+2. **アプリのログイン**（常時有効・止められません）
+   個人ごとのログインID/パスワード。未ログインでは価格データを含む全APIが401を返します。
+   - パスワードは bcrypt でハッシュ化して保存（社内ポータルのNextAuthと同方式のため、
+     同じ `users` 表を共有しても双方で検証・更新できます）
+   - セッションはDBで管理し、Cookieは HttpOnly / SameSite=Lax / HTTPS時は Secure
+   - Cookieの値そのものはDBに保存せず、SHA-256にして保管（DBが漏れても乗っ取れません）
+   - 有効期間は8時間。パスワード変更時はそのユーザーの全セッションを無効化
+   - ログインに5回失敗すると15分ロック（解除時刻は日本時間で表示）
+   - 変更操作は本人のセッションに紐づくため、「誰が変更したか」が記録として残ります
 
 3. **Vercel Authentication**（Vercelの機能）
    `*.vercel.app` のURLに対して、Vercelアカウントを持つチームメンバーのみ
    アクセスを許可する保護です。**カスタムドメインには適用されません**（後述）。
+
+### 確認方法
+
+デプロイ後、次の3つを確認してください。
+
+```bash
+# 1. Basic認証なしでは入れない（401であること）
+curl -o /dev/null -w "%{http_code}\n" https://<デプロイ先>/
+
+# 2. Basic認証だけでは価格データが取れない（401であること）
+curl -o /dev/null -w "%{http_code}\n" -u 'sales:<パスワード>' https://<デプロイ先>/api/deals
+
+# 3. ヘルスチェックは認証なしで到達でき、保護が有効と出ること
+curl https://<デプロイ先>/api/health
+# → {"status":"ok","db":"postgres","deals":23024,"authProtected":true,...}
+```
+
+`authProtected` が `false` の場合は `BASIC_AUTH_*` が設定されていないか、
+設定先（Production / Preview）が違います。
 
 ## 独自ドメイン（例: sales.paloma-pf.com）の設定
 
@@ -154,12 +216,13 @@ Vercel Authentication の適用範囲は既定で **`*.vercel.app` のみ（カ�
 そのため独自ドメインを割り当てると、**そのURLはインターネットから到達可能になります**。
 
 アプリ自身のログインで保護されているため価格データが漏れることはありませんが、
-ログイン画面自体は社外からも見える状態になります。社内限定で運用したい場合は、
-次のいずれかを併用してください。
+ログイン画面自体は社外からも見える状態になります。社内限定で運用するため、
+本アプリでは下表の**Basic認証を標準の構成として設定します**（「本番の認証設定」参照）。
+より強く絞りたい場合は他の方法も併用できます。
 
 | 方法 | 内容 |
 |---|---|
-| Basic認証 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定する。Edge Middlewareはカスタムドメインにも適用されるため、これが最も簡単な方法です |
+| Basic認証（本アプリの標準） | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定する。Edge Middlewareはカスタムドメインにも適用されるため、これが最も簡単で確実な方法です |
 | Vercelの保護範囲を変更 | Settings → Deployment Protection で、保護対象にカスタムドメインを含める（プランにより可否あり） |
 | IP制限 | Vercelの Trusted IPs で社内グローバルIPからのみ許可（Enterpriseプラン） |
 

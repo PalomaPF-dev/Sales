@@ -25,7 +25,7 @@ export default function middleware(request) {
   if (header.startsWith('Basic ')) {
     let decoded = '';
     try {
-      decoded = atob(header.slice(6));
+      decoded = decodeBase64Utf8(header.slice(6));
     } catch {
       decoded = '';
     }
@@ -43,6 +43,21 @@ export default function middleware(request) {
       'Content-Type': 'text/plain; charset=utf-8',
     },
   });
+}
+
+/**
+ * Basic認証の値を復号する。
+ *
+ * atob はバイト列をそのまま文字コードとして扱うため、
+ * 日本語を含むパスワードだと文字化けし、UTF-8として復号するExpress側
+ * （server/auth.js）と判定が食い違ってしまう。
+ * WWW-Authenticate に charset="UTF-8" を宣言している以上、こちらもUTF-8で読む。
+ */
+function decodeBase64Utf8(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder('utf-8').decode(bytes);
 }
 
 // 長さの差で早期returnしないよう、比較回数を揃える

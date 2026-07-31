@@ -68,22 +68,31 @@ const DEV_LOGIN_AS = (() => {
 })();
 
 /**
- * 認証の無効化（本番でも有効になる設定）。
+ * 認証の無効化。
  *
  * DISABLE_AUTH=true を設定すると、ログインを求めずに全員が同じユーザーとして操作する。
- * DEV_LOGIN_AS と違い本番でも効くため、明示的に "true" と書いたときだけ有効にする。
+ * 動作確認用の設定であり、有効にするとURLを知っている人は誰でも価格データを
+ * 閲覧・変更でき、誰が変更したのかも記録されない。
  *
- * 注意: 有効にすると、URLを知っている人は誰でも価格データを閲覧・変更でき、
- * 承認操作も誰の名義か区別できなくなる。画面上部に常時警告を表示する。
+ * 本番（Vercel / NODE_ENV=production）では設定されていても無視する。
+ * 取り違えて設定したときに、価格データが認証なしで公開されてしまうため。
  */
-const AUTH_DISABLED = String(process.env.DISABLE_AUTH ?? '').toLowerCase() === 'true';
-if (AUTH_DISABLED) {
+const AUTH_DISABLED = (() => {
+  if (String(process.env.DISABLE_AUTH ?? '').toLowerCase() !== 'true') return false;
+  if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+    console.error(
+      '\n*** DISABLE_AUTH は本番環境では使用できません。無視してログインを求めます。***\n' +
+      '*** 認証を止めたい場合は本番以外の環境で行ってください。***\n'
+    );
+    return false;
+  }
   console.warn(
     '\n*** 警告: DISABLE_AUTH=true のため認証が無効です。***\n' +
-    '*** URLを知っている全員が価格データを閲覧・変更でき、承認者も記録されません。***\n' +
+    '*** URLを知っている全員が価格データを閲覧・変更でき、変更者も記録されません。***\n' +
     '*** 社外から到達できる環境では設定を解除してください。***\n'
   );
-}
+  return true;
+})();
 
 /** 認証無効時に全員が名乗るユーザー（管理者→営業企画部の順で選ぶ） */
 async function fallbackUser() {
@@ -168,6 +177,18 @@ function requireAdmin(req, res) {
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 
+/**
+ * 利用者に見せる時刻。
+ *
+ * サーバーの時計はVercelではUTCのため、そのまま整形すると
+ * 「あと何分待てばよいか」が9時間ずれて伝わってしまう。
+ * 国内利用のアプリなので日本時間で表示する（DISPLAY_TZ で変更可）。
+ */
+const DISPLAY_TZ = process.env.DISPLAY_TZ || 'Asia/Tokyo';
+const localTime = (value) => new Date(value).toLocaleTimeString('ja-JP', {
+  hour: '2-digit', minute: '2-digit', timeZone: DISPLAY_TZ,
+});
+
 const publicUser = (u) => ({
   id: u.id, name: u.name, role: u.role, branch: u.branch, office: u.office,
   loginId: u.login_id, mustChangePassword: Boolean(u.must_change_password),
@@ -241,9 +262,8 @@ api.post('/login', wrap(async (req, res) => {
     return deny();
   }
   if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
-    const until = new Date(user.locked_until);
     return res.status(423).json({
-      error: `ログインの試行回数が上限を超えました。${until.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}以降に再度お試しください`,
+      error: `ログインの試行回数が上限を超えました。${localTime(user.locked_until)}以降に再度お試しください`,
     });
   }
 
