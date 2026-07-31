@@ -19,9 +19,9 @@
     "vercel-build": "cd client && npm install && npm run build"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.4",
     "express": "^5.2.1",
     "multer": "^2.2.0",
+    "pg": "^8.22.0",
     "xlsx": "^0.18.5"
   }
 }

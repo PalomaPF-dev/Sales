@@ -70,19 +70,21 @@ npm run backup                             # DBバックアップ
 
 ## デプロイ
 
-**Vercel（アプリ）＋ Turso（DB）** で公開できます。
+**Vercel（アプリ）＋ PostgreSQL（DB）** で公開できます。
 
 - **[SETUP-WEB.md](SETUP-WEB.md)** — ブラウザの管理画面だけで公開する手順（ターミナル不要）
 - **[DEPLOY.md](DEPLOY.md)** — CLIを使う場合の詳細手順・独自ドメイン・バックアップ
 
 自社サーバー向けにDocker / systemdの構成も同梱しています。
 
-環境変数 `TURSO_DATABASE_URL` を設定するとTursoへ、未設定ならローカルのSQLiteファイルへ接続します
+環境変数 `DATABASE_URL` を設定するとPostgreSQLへ、未設定ならローカルのSQLiteファイルへ接続します
 （アプリのコードは共通で、接続先だけが切り替わります）。
 
 | 変数 | 用途 |
 |---|---|
-| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Turso接続情報。未設定時はローカルSQLite |
+| `DATABASE_URL` | PostgreSQLの接続文字列。未設定時はローカルSQLite |
+| `DB_SCHEMA` | テーブルを作成するスキーマ名（既定: `sales_pricing`）。既存DBと衝突させないため |
+| `DB_SSL_NO_VERIFY` | `true` で接続時のTLS証明書検証を緩める（社内認証局を使っている場合） |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | アクセス保護。公開環境では必須 |
 | `PORT` / `DATA_DIR` | 待受ポート / ローカルDBの保存先 |
 | `NOTIFY_WEBHOOK_URL` | 通知の外部送信先（Teams / Slack の Incoming Webhook など）。未設定ならアプリ内通知のみ |
@@ -172,8 +174,9 @@ CB列（商談結果 記号入力）が「〇」の明細のみ第2弾の値上�
 
 ```
 server/
-  db.js          データアクセス層（ローカルSQLite / Turso を同一APIで抽象化）
-  schema.sql     スキーマ・計算ビュー（deal_calc: ❹❺❽❾を自動計算）
+  db.js          データアクセス層（ローカルSQLite / PostgreSQL を同一APIで抽象化）
+  schema.sql     スキーマ（SQLite用）・計算ビュー（deal_calc: ❹❺❽❾を自動計算）
+  schema.postgres.sql  スキーマ（PostgreSQL用。専用スキーマに配置）
   importer.js    現行管理表パーサー（ヘッダー名で列を自動対応付け）
   api.js         REST API（案件・申請・承認・ルール・設定・取込）
   auth.js        Basic認証・セキュリティヘッダー

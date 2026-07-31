@@ -18,7 +18,7 @@ const TABLES = ['price_types', 'users', 'settings', 'approval_rules', 'import_ba
   'deals', 'applications', 'application_items', 'approvals'];
 
 let dest;
-if (process.env.TURSO_DATABASE_URL) {
+if (process.env.DATABASE_URL || process.env.POSTGRES_URL) {
   const { db, initDb } = await import('../server/db.js');
   await initDb();
   const dump = { exportedAt: new Date().toISOString(), source: 'turso', tables: {} };

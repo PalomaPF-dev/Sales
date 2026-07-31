@@ -4,14 +4,14 @@
 //   npm run set-password -- --list            … ユーザー一覧を表示
 //
 // パスワードを省略すると安全な仮パスワードを生成し、初回ログイン時に変更を求めます。
-// Turso本番に対して実行する場合は TURSO_DATABASE_URL / TURSO_AUTH_TOKEN を設定してください。
-import { db, initDb, isTurso } from '../server/db.js';
+// 本番DBに対して実行する場合は DATABASE_URL を設定してください。
+import { db, initDb } from '../server/db.js';
 import { hashPassword, generateTempPassword, validatePassword } from '../server/passwords.js';
 import { destroyUserSessions } from '../server/session.js';
 
 const args = process.argv.slice(2);
 await initDb();
-console.log(`接続先: ${isTurso ? 'Turso' : 'ローカルSQLite'}`);
+console.log(`接続先: ${db.kind === 'postgres' ? 'PostgreSQL' : 'ローカルSQLite'}`);
 
 if (args.includes('--list') || args.length === 0) {
   const rows = await db.all(`

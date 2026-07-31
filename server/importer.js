@@ -74,7 +74,7 @@ const DATEISH_COLS = new Set([
 
 const CONFIRM_SYMBOLS = ['〇', '○', '◯'];
 
-// 1回のトランザクションで送る行数。Tursoのリクエストサイズ上限を考慮した値。
+// 1回のトランザクションで送る行数。1リクエストが大きくなりすぎないようにする。
 const CHUNK_SIZE = 400;
 
 function excelSerialToISO(n) {
@@ -84,12 +84,51 @@ function excelSerialToISO(n) {
   return d.toISOString().slice(0, 10);
 }
 
-function normalize(col, v) {
+// 数値列（HEADER_MAPの対象のうちTEXT_COLSでないもの）
+const NUMERIC_COLS = new Set(
+  Object.values(HEADER_MAP).filter((c) => !TEXT_COLS.has(c))
+);
+
+/**
+ * 数値列の値を数値へ寄せる。
+ * 現行Excelには数値列にメモ書きや「48,9％」のような表記が混ざっており、
+ * そのままでは数値として扱えない。桁区切りなど機械的に判断できるものだけ
+ * 変換し、判断できないものは null にして呼び出し側へ件数を報告する
+ * （誤った数値を入れて金額計算が狂う方が問題になるため）。
+ */
+function toNumber(s) {
+  let t = String(s).trim()
+    .replace(/[０-９．，％]/g, (c) => '0123456789.,%'['０１２３４５６７８９．，％'.indexOf(c)]) // 全角→半角
+    .replace(/[\s　]/g, '');
+  if (t === '') return { value: null, ambiguous: false };
+  // 末尾の % は割合表記。掛率列は小数（0.16=16%）で保持しているため 100 で割る
+  let isPercent = false;
+  if (t.endsWith('%')) { isPercent = true; t = t.slice(0, -1); }
+  // 桁区切りのカンマ（カンマの後ろがちょうど3桁）だけ除去する。
+  // 「48,9」のような小数点代わりのカンマは判断できないので変換しない
+  if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, '');
+  if (t.includes(',')) return { value: null, ambiguous: true };
+  const n = Number(t);
+  if (!Number.isFinite(n)) return { value: null, ambiguous: true };
+  return { value: isPercent ? n / 100 : n, ambiguous: false };
+}
+
+function normalize(col, v, warnings) {
   if (v === null || v === undefined) return null;
   if (v instanceof Date) return v.toISOString().slice(0, 10);
   if (typeof v === 'string') {
     const s = v.trim();
     if (s === '' || s === '< NULL >' || s === '-' || s === '－') return null;
+    if (NUMERIC_COLS.has(col)) {
+      const { value, ambiguous } = toNumber(s);
+      if (ambiguous && warnings) {
+        const w = warnings.get(col) || { count: 0, samples: new Set() };
+        w.count++;
+        if (w.samples.size < 3) w.samples.add(s.slice(0, 40));
+        warnings.set(col, w);
+      }
+      return value;
+    }
     return s;
   }
   if (typeof v === 'number') {
@@ -98,7 +137,7 @@ function normalize(col, v) {
     }
     return TEXT_COLS.has(col) ? String(v) : v;
   }
-  return String(v);
+  return TEXT_COLS.has(col) ? String(v) : null;
 }
 
 // 商談状況から管理ステータスを導出
@@ -162,6 +201,7 @@ export async function importWorkbook(buffer, filename, userId, onProgress) {
   );
 
   const stamp = new Date().toISOString();
+  const warnings = new Map(); // 数値として解釈できなかった値の記録
   let pending = [];
   let count = 0;
 
@@ -171,7 +211,7 @@ export async function importWorkbook(buffer, filename, userId, onProgress) {
     // 書き出したファイルを取り込み直したとき、末尾の合計行をデータとして拾わないようにする
     if (String(row[colIndex.sales_ym]).trim() === '合計') continue;
     const d = {};
-    for (const c of cols) d[c] = normalize(c, row[colIndex[c]]);
+    for (const c of cols) d[c] = normalize(c, row[colIndex[c]], warnings);
     const values = cols.map((c) => d[c]);
     values.push(batchId, inferPriceType(d), deriveStatus(d), stamp);
     pending.push({ sql: insertSql, params: values });
@@ -187,5 +227,12 @@ export async function importWorkbook(buffer, filename, userId, onProgress) {
 
   await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [count, batchId]);
   onProgress?.(count);
-  return { batchId, count };
+
+  // 数値として読めなかった値は取り込まずnullにしている。件数を返して気づけるようにする
+  const skipped = [...warnings.entries()].map(([column, w]) => ({
+    column,
+    count: w.count,
+    samples: [...w.samples],
+  }));
+  return { batchId, count, skipped };
 }

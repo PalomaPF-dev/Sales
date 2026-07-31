@@ -1,7 +1,8 @@
-// データアクセス層。ローカル開発は node:sqlite、本番(Vercel)は Turso(libSQL) を
+// データアクセス層。ローカル開発は node:sqlite、本番は PostgreSQL を
 // 同一の非同期インターフェースで扱う。
 //
-//   TURSO_DATABASE_URL が設定されていれば Turso、未設定ならローカルのSQLiteファイル。
+//   DATABASE_URL（または POSTGRES_URL）が設定されていれば PostgreSQL、
+//   未設定ならローカルのSQLiteファイル。
 //
 // 提供するメソッド:
 //   get(sql, params)   -> 1行 or undefined
@@ -15,8 +16,11 @@ import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const TURSO_URL = process.env.TURSO_DATABASE_URL;
-export const isTurso = Boolean(TURSO_URL);
+const PG_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+export const isPostgres = Boolean(PG_URL);
+
+// 相乗り先のDBで既存テーブルと衝突しないよう、専用スキーマに配置する
+const PG_SCHEMA = process.env.DB_SCHEMA || 'sales_pricing';
 
 // SQLiteは boolean をそのまま扱えないため数値へ、undefined は null へ正規化する
 function normalizeParams(params = []) {
@@ -56,7 +60,7 @@ function splitStatements(sql) {
 }
 
 function createLocalDb() {
-  // 動的インポート: Vercel(Turso)環境では node:sqlite を読み込まない
+  // 動的インポート: PostgreSQL利用時は node:sqlite を読み込まない
   const { DatabaseSync } = require('node:sqlite');
   const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
   mkdirSync(DATA_DIR, { recursive: true });
@@ -99,50 +103,119 @@ function createLocalDb() {
   };
 }
 
-function createTursoDb() {
-  const { createClient } = require('@libsql/client');
-  const client = createClient({
-    url: TURSO_URL,
-    authToken: process.env.TURSO_AUTH_TOKEN,
+/**
+ * SQLiteの `?` プレースホルダを PostgreSQL の `$1, $2...` へ変換する。
+ * 文字列リテラル内の `?` は変換しない。
+ */
+function toPgPlaceholders(sql) {
+  let out = '';
+  let n = 0;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inSingle) { out += ch; if (ch === "'") inSingle = false; continue; }
+    if (inDouble) { out += ch; if (ch === '"') inDouble = false; continue; }
+    if (ch === "'") { inSingle = true; out += ch; continue; }
+    if (ch === '"') { inDouble = true; out += ch; continue; }
+    if (ch === '?') { out += '$' + (++n); continue; }
+    out += ch;
+  }
+  return out;
+}
+
+// id列を持たないテーブル。INSERT時に RETURNING id を付けるとエラーになる。
+const TABLES_WITHOUT_ID = new Set(['settings', 'price_types']);
+
+/** SQLiteの方言をPostgreSQLへ寄せる */
+function toPgSql(sql) {
+  let out = sql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, 'INSERT INTO');
+  const wasOrIgnore = out !== sql;
+  if (wasOrIgnore && !/ON\s+CONFLICT/i.test(out)) {
+    out = out.replace(/;?\s*$/, ' ON CONFLICT DO NOTHING');
+  }
+  return toPgPlaceholders(out);
+}
+
+/** INSERTに RETURNING id を足して lastInsertRowid 相当を得られるようにする */
+function withReturningId(sql) {
+  const m = /^\s*insert\s+into\s+"?([a-z_][a-z0-9_]*)"?/i.exec(sql);
+  if (!m) return { sql, hasReturning: false };
+  if (/\breturning\b/i.test(sql)) return { sql, hasReturning: true };
+  if (TABLES_WITHOUT_ID.has(m[1].toLowerCase())) return { sql, hasReturning: false };
+  return { sql: sql.replace(/;?\s*$/, ' RETURNING id'), hasReturning: true };
+}
+
+function createPostgresDb() {
+  const { Pool, types } = require('pg');
+  // COUNT(*) 等の bigint は既定で文字列になるため、数値として受け取る
+  types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+  // numeric も数値へ（金額計算で文字列連結にならないように）
+  types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
+
+  const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(PG_URL) || PG_URL.includes('host=/');
+  const pool = new Pool({
+    connectionString: PG_URL,
+    max: Number(process.env.DB_POOL_MAX || 5),
+    idleTimeoutMillis: 10000,
+    // マネージドDBはTLS必須のことが多い。社内CAで検証が通らない場合は
+    // DB_SSL_NO_VERIFY=true で緩められるようにしておく。
+    ssl: isLocal ? false
+      : (String(process.env.DB_SSL_NO_VERIFY).toLowerCase() === 'true'
+          ? { rejectUnauthorized: false }
+          : true),
+    // 専用スキーマを既定の検索先にする
+    options: `-c search_path=${PG_SCHEMA},public`,
   });
 
-  const toRow = (row) => (row === undefined ? undefined : { ...row });
+  const query = async (sql, params = []) =>
+    pool.query(toPgSql(sql), normalizeParams(params));
 
   return {
-    kind: 'turso',
+    kind: 'postgres',
     async get(sql, params = []) {
-      const rs = await client.execute({ sql, args: normalizeParams(params) });
-      return toRow(rs.rows[0]);
+      const r = await query(sql, params);
+      return r.rows[0];
     },
     async all(sql, params = []) {
-      const rs = await client.execute({ sql, args: normalizeParams(params) });
-      return rs.rows.map(toRow);
+      return (await query(sql, params)).rows;
     },
     async run(sql, params = []) {
-      const rs = await client.execute({ sql, args: normalizeParams(params) });
+      const { sql: withRet, hasReturning } = withReturningId(sql);
+      const r = await pool.query(toPgSql(withRet), normalizeParams(params));
       return {
-        lastInsertRowid: rs.lastInsertRowid != null ? Number(rs.lastInsertRowid) : null,
-        changes: Number(rs.rowsAffected || 0),
+        lastInsertRowid: hasReturning && r.rows[0]?.id != null ? Number(r.rows[0].id) : null,
+        changes: Number(r.rowCount || 0),
       };
     },
     async exec(sql) {
-      for (const stmt of splitStatements(sql)) {
-        await client.execute(stmt);
-      }
+      // スキーマ適用。パラメータを含まないため、まとめて実行できる
+      await pool.query(sql.replaceAll('{{SCHEMA}}', PG_SCHEMA));
     },
     async batch(statements) {
-      // libSQLのbatchは全体が1トランザクションとして実行される
-      const rs = await client.batch(
-        statements.map(({ sql, params }) => ({ sql, args: normalizeParams(params) })),
-        'write'
-      );
-      return rs.map((r) => ({
-        lastInsertRowid: r.lastInsertRowid != null ? Number(r.lastInsertRowid) : null,
-        changes: Number(r.rowsAffected || 0),
-      }));
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const results = [];
+        for (const { sql, params } of statements) {
+          const { sql: withRet, hasReturning } = withReturningId(sql);
+          const r = await client.query(toPgSql(withRet), normalizeParams(params));
+          results.push({
+            lastInsertRowid: hasReturning && r.rows[0]?.id != null ? Number(r.rows[0].id) : null,
+            changes: Number(r.rowCount || 0),
+          });
+        }
+        await client.query('COMMIT');
+        return results;
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
     },
-    close() {
-      client.close();
+    async close() {
+      await pool.end();
     },
   };
 }
@@ -169,13 +242,13 @@ export class DbConfigError extends Error {
 let impl = null;
 function getImpl() {
   if (impl) return impl;
-  if (isTurso) {
-    impl = createTursoDb();
+  if (isPostgres) {
+    impl = createPostgresDb();
   } else if (isServerless) {
     throw new DbConfigError(
-      '環境変数 TURSO_DATABASE_URL が設定されていません。' +
+      '環境変数 DATABASE_URL が設定されていません。' +
       'Vercelではファイルシステムが揮発性のためデータを保存できません。' +
-      'Turso の接続情報（TURSO_DATABASE_URL / TURSO_AUTH_TOKEN）を設定してください。詳細は DEPLOY.md を参照してください。'
+      'PostgreSQL の接続文字列（DATABASE_URL）を設定してください。詳細は SETUP-WEB.md を参照してください。'
     );
   } else {
     impl = createLocalDb();
@@ -185,7 +258,7 @@ function getImpl() {
 
 export const db = {
   get kind() {
-    if (isTurso) return 'turso';
+    if (isPostgres) return 'postgres';
     return isServerless ? 'unconfigured' : 'sqlite';
   },
   async get(sql, params) { return getImpl().get(sql, params); },
@@ -202,7 +275,8 @@ let initialized = null;
 export async function initDb() {
   if (initialized) return initialized;
   initialized = (async () => {
-    const schema = readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+    const schemaFile = isPostgres ? 'schema.postgres.sql' : 'schema.sql';
+    const schema = readFileSync(path.join(__dirname, schemaFile), 'utf8');
     await db.exec(schema);
     await migrate();
     await seedMasters();
@@ -233,8 +307,9 @@ async function migrate() {
     try {
       await db.run(sql);
     } catch (e) {
-      // 「duplicate column name」以外は設計上の問題なので気づけるようにする
-      if (!/duplicate column/i.test(e?.message || '')) {
+      // 列が既にある場合のエラーは想定内（SQLite: duplicate column name /
+      // PostgreSQL: column ... already exists）。それ以外は設計上の問題なので出す
+      if (!/duplicate column|already exists/i.test(e?.message || '')) {
         console.warn(`マイグレーション警告: ${sql} → ${e.message}`);
       }
     }

@@ -1,36 +1,33 @@
 # デプロイ手順
 
-構成は **Vercel（アプリ）＋ Turso（データベース）** です。
-Vercelのサーバーレス関数はファイルシステムが揮発性のため、DBはTurso（SQLite互換のマネージドDB）に置きます。
+構成は **Vercel（アプリ）＋ PostgreSQL（データベース）** です。
+Vercelのサーバーレス関数はファイルシステムが揮発性のため、データはPostgreSQLに保存します。
+
+> ブラウザだけで設定を完了したい場合は **[SETUP-WEB.md](SETUP-WEB.md)** を参照してください。
 
 ```
 利用者 ──▶ Vercel Edge Middleware（Basic認証）
               ├─▶ 静的ファイル（画面）      … Vercel CDN
-              └─▶ /api/*（Express関数）──▶ Turso（データ永続化）
+              └─▶ /api/*（Express関数）──▶ PostgreSQL（データ永続化）
 ```
 
 ---
 
-## 1. Turso データベースの作成
+## 1. データベースの用意
 
-```bash
-# CLIのインストール（初回のみ）
-curl -sSfL https://tur.so/install.sh | bash
-turso auth login
+社内のPostgreSQLに接続します。次の形式の接続文字列を用意してください。
 
-# DBを作成（リージョンは東京 nrt。アプリ側も東京 hnd1 で動かすため合わせる）
-turso db create sales-pricing --location nrt
-
-# 接続情報を取得（この2つをVercelの環境変数に設定します）
-turso db show sales-pricing --url        # → TURSO_DATABASE_URL
-turso db tokens create sales-pricing     # → TURSO_AUTH_TOKEN
+```
+postgres://ユーザー名:パスワード@ホスト名:5432/データベース名
 ```
 
-無料プランで動作します（本アプリのデータ量は23,000行・約3MB程度）。
+テーブルは専用スキーマ **`sales_pricing`**（`DB_SCHEMA` で変更可）に作成されるため、
+同じDBにある既存テーブル（ポータルの `users` / `sessions` など）と衝突しません。
+スキーマは初回アクセス時に自動作成されるので、事前のSQL実行は不要です。
 
-> **リージョンを揃えてください。** `vercel.json` でアプリの実行リージョンを東京（`hnd1`）に指定しています。
-> DBを別リージョン（例: 米国）に作ると1リクエストごとに複数回の太平洋往復が発生し、
-> 画面表示が目に見えて遅くなります。
+> **接続経路の確認**: VercelはインターネットからPostgreSQLへ接続します。
+> 社内ネットワーク内にしか無いDBの場合は到達できないため、情報システム部門に
+> 接続可否をご確認ください。難しい場合は末尾の「自社サーバーで運用する場合」に切り替えられます。
 
 ## 2. 初期データの投入
 
@@ -41,8 +38,7 @@ turso db tokens create sales-pricing     # → TURSO_AUTH_TOKEN
 git clone <このリポジトリ> && cd Sales
 npm install
 
-export TURSO_DATABASE_URL="libsql://sales-pricing-xxxx.turso.io"
-export TURSO_AUTH_TOKEN="eyJ..."
+export DATABASE_URL="postgres://ユーザー:パスワード@ホスト:5432/DB名"
 
 # 現行の管理表を投入（器具ごとのファイルを順に指定）
 npm run import -- FH風呂釜.xlsx 業務部品.xlsx ビルトイン.xlsx
@@ -61,22 +57,22 @@ npm i -g vercel
 vercel link            # プロジェクト prj_2PBLXhb6epFtiM3t5xAdKCMknjBT を選択
 
 # 環境変数（Production / Preview 双方に設定）
-vercel env add TURSO_DATABASE_URL production
-vercel env add TURSO_AUTH_TOKEN production
+vercel env add DATABASE_URL production
 vercel env add BASIC_AUTH_USER production
 vercel env add BASIC_AUTH_PASS production
 
 vercel --prod
 ```
 
-Vercelダッシュボードから設定する場合は **Settings → Environment Variables** に同じ4つを登録します。
+Vercelダッシュボードから設定する場合は **Settings → Environment Variables** に同じものを登録します。
 
 ### 環境変数
 
 | 変数 | 必須 | 内容 |
 |---|---|---|
-| `TURSO_DATABASE_URL` | ○ | `libsql://...` 未設定だとローカルSQLiteを見に行き、データが保存されません |
-| `TURSO_AUTH_TOKEN` | ○ | Tursoのアクセストークン |
+| `DATABASE_URL` | ○ | PostgreSQLの接続文字列。未設定だとローカルSQLiteを見に行き、データが保存されません |
+| `DB_SCHEMA` | | テーブルを作成するスキーマ名（既定: `sales_pricing`） |
+| `DB_SSL_NO_VERIFY` | | `true` でTLS証明書の検証を緩める（社内認証局を使っている場合） |
 | `BASIC_AUTH_USER` | 任意 | サイト全体にかける追加のBasic認証。インターネット公開時に推奨 |
 | `BASIC_AUTH_PASS` | 任意 | 同上。十分に長いパスワードを設定してください |
 
@@ -88,7 +84,7 @@ Vercelダッシュボードから設定する場合は **Settings → Environmen
 ```bash
 # ヘルスチェック（認証不要・DB接続と件数を返す）
 curl https://<デプロイ先>/api/health
-# → {"status":"ok","db":"turso","deals":23024,"authProtected":false,...}
+# → {"status":"ok","db":"postgres","deals":23024,"authProtected":false,...}
 
 # 未ログインでは価格データが返らないこと（401であること）
 curl -o /dev/null -w "%{http_code}\n" https://<デプロイ先>/api/deals
@@ -102,8 +98,7 @@ curl -o /dev/null -w "%{http_code}\n" https://<デプロイ先>/api/deals
 手元から本番DBに対してパスワードを設定します。
 
 ```bash
-export TURSO_DATABASE_URL="libsql://..."
-export TURSO_AUTH_TOKEN="..."
+export DATABASE_URL="postgres://..."
 
 npm run set-password -- --list        # ログインIDの一覧
 npm run set-password -- planning1     # 仮パスワードを生成して表示
@@ -177,10 +172,10 @@ curl https://sales.paloma-pf.com/api/health                                    #
 
 ## バックアップ
 
-Turso側にも自動バックアップ（PITR）がありますが、論理バックアップも取得できます。
+PostgreSQL側のバックアップ運用に加えて、論理バックアップも取得できます。
 
 ```bash
-export TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=...
+export DATABASE_URL=postgres://...
 npm run backup                 # backups/app-<日時>.json に全テーブルを出力
 BACKUP_KEEP=30 npm run backup  # 保持世代数を変更（既定14）
 ```
@@ -190,7 +185,7 @@ BACKUP_KEEP=30 npm run backup  # 保持世代数を変更（既定14）
 ## 別案: 自社サーバー / コンテナで運用する場合
 
 Vercelを使わず、永続ディスクのあるサーバーで運用する構成も同梱しています。
-この場合Tursoは不要で、SQLiteファイルをそのまま使います。
+この場合は外部DBが不要で、SQLiteファイルをそのまま使えます。
 
 ### Docker
 

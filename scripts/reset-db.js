@@ -1,13 +1,13 @@
 // DBを初期化（データ削除→マスタ再seed）
 //   ローカル: npm run reset-db      … DBファイルごと削除して作り直す
-//   Turso   : npm run reset-db      … 全テーブルの中身を削除して再seed
+//   本番(PG) : npm run reset-db      … 全テーブルの中身を削除して再seed
 import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-if (process.env.TURSO_DATABASE_URL) {
+if (process.env.DATABASE_URL || process.env.POSTGRES_URL) {
   const { db, initDb } = await import('../server/db.js');
   await initDb();
   for (const sql of [
@@ -20,7 +20,7 @@ if (process.env.TURSO_DATABASE_URL) {
   // seedを再実行するためモジュールキャッシュを迂回して初期化し直す
   const fresh = await import(`../server/db.js?reset=${Date.now()}`);
   await fresh.initDb();
-  console.log('Turso のDBを初期化しました。');
+  console.log('PostgreSQL のDBを初期化しました。');
   db.close?.();
 } else {
   const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
