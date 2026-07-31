@@ -12,7 +12,6 @@ import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
-import { approversFor, notify } from './notify.js';
 import { buildWorkbook } from './export.js';
 
 export const api = Router();
@@ -20,6 +19,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 
 // 分割取込で1回に送る行数。JSONにして数百KBに収まる大きさにする
 const IMPORT_CHUNK_ROWS = 500;
+
+// Excel書き出しの上限。サーバーレスは応答サイズに制限があるため控えめにする
+const EXPORT_MAX_ROWS = process.env.VERCEL ? 6000 : 100000;
 
 const nv = (v) => (v === undefined ? null : v);
 const now = () => new Date().toISOString();
@@ -145,34 +147,6 @@ function requireAdmin(req, res) {
   return true;
 }
 
-/** 決裁できる支店の一覧。空配列なら所属支店のみ */
-export function approvableBranches(user) {
-  return String(user?.approve_branches || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/**
- * 支店長決裁ができるか。
- * 役割ではなく決裁権限で判定する（副支店長などにも付与できるようにするため）。
- * 対象支店の指定は、明示的に許可された支店か、無指定なら自分の所属支店。
- */
-export function canApproveBranch(user, branch) {
-  if (!user) return false;
-  if (user.role === 'admin') return true;
-  if (!Number(user.can_approve_branch)) return false;
-  const allowed = approvableBranches(user);
-  return allowed.length ? allowed.includes(branch) : user.branch === branch;
-}
-
-/** 営業企画部決裁ができるか */
-export function canApprovePlanning(user) {
-  if (!user) return false;
-  if (user.role === 'admin') return true;
-  return Boolean(Number(user.can_approve_planning));
-}
-
 // ---- ログイン / ログアウト ----
 
 // 連続失敗時のロック設定
@@ -182,10 +156,6 @@ const LOCK_MINUTES = 15;
 const publicUser = (u) => ({
   id: u.id, name: u.name, role: u.role, branch: u.branch, office: u.office,
   loginId: u.login_id, mustChangePassword: Boolean(u.must_change_password),
-  // 決裁権限。承認ボタンや承認箱の出し分けに使う（判定はサーバー側でも行う）
-  canApproveBranch: Boolean(Number(u.can_approve_branch)),
-  canApprovePlanning: Boolean(Number(u.can_approve_planning)),
-  approveBranches: approvableBranches(u),
   // 認証が無効な状態を画面側で気づけるようにする
   authDisabled: AUTH_DISABLED || undefined,
 });
@@ -346,22 +316,11 @@ function parseFlag(v) {
   return ['1', 'true', 'yes', 'y', 'o', '○', '〇', '◯', '✓', 'はい', '有', '可', 'あり'].includes(s);
 }
 
-/** 決裁できる支店の指定を正規化する（全角カンマ・読点・空白区切りも受ける） */
-function normalizeBranchList(v) {
-  if (Array.isArray(v)) v = v.join(',');
-  const list = String(v ?? '')
-    .split(/[,、，\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return list.length ? [...new Set(list)].join(',') : null;
-}
-
 api.get('/admin/users', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const rows = await db.all(`
     SELECT id, name, role, branch, office, active, login_id, last_login_at,
            must_change_password, locked_until,
-           can_approve_branch, can_approve_planning, approve_branches,
            CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
     FROM users ORDER BY id`);
   res.json(rows);
@@ -434,25 +393,13 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
     sets.push('active = ?');
     params.push(req.body.active ? 1 : 0);
   }
-  // 決裁権限
-  for (const [field, col] of [
-    ['canApproveBranch', 'can_approve_branch'],
-    ['canApprovePlanning', 'can_approve_planning'],
-  ]) {
-    if (field in (req.body || {})) { sets.push(`${col} = ?`); params.push(req.body[field] ? 1 : 0); }
-  }
-  if ('approveBranches' in (req.body || {})) {
-    sets.push('approve_branches = ?');
-    params.push(normalizeBranchList(req.body.approveBranches));
-  }
   if (!sets.length) return res.status(400).json({ error: '更新項目がありません' });
   params.push(user.id);
   await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
   if (req.body?.active === false) await destroyUserSessions(user.id);
   res.json(await db.get(
     `SELECT id, name, role, branch, office, active, login_id, last_login_at,
-            can_approve_branch, can_approve_planning, approve_branches,
-            CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
+             CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
      FROM users WHERE id = ?`, [user.id]));
 }));
 
@@ -465,9 +412,6 @@ const USER_HEADER_MAP = {
   '役割': 'role', '権限': 'role', 'ロール': 'role', 'role': 'role',
   '支店': 'branch', '支店名': 'branch', 'branch': 'branch',
   '営業所': 'office', '営業所名': 'office', 'office': 'office',
-  '支店長決裁': 'canApproveBranch', '支店決裁': 'canApproveBranch',
-  '営業企画部決裁': 'canApprovePlanning', '企画決裁': 'canApprovePlanning',
-  '決裁できる支店': 'approveBranches', '決裁対象支店': 'approveBranches',
   '有効': 'active',
 };
 
@@ -525,15 +469,6 @@ function parseUserRows(buffer) {
     }
 
     const branch = nv(cell('branch'));
-    // 決裁権限は列があればその値、無ければ役割から補う
-    const canBranch = colIndex.canApproveBranch !== undefined
-      ? parseFlag(cell('canApproveBranch')) : role === 'branch_manager';
-    const canPlanning = colIndex.canApprovePlanning !== undefined
-      ? parseFlag(cell('canApprovePlanning')) : role === 'planning';
-    if (canBranch && !branch && !normalizeBranchList(cell('approveBranches'))) {
-      errors.push({ line: lineNo, loginId, message: '支店長決裁を与えるには、支店または決裁できる支店の指定が必要です' });
-      continue;
-    }
 
     // 「有効」列が無い、または空欄なら有効として扱う
     const activeRaw = colIndex.active === undefined ? '' : String(cell('active') ?? '').trim();
@@ -544,9 +479,6 @@ function parseUserRows(buffer) {
       role,
       branch,
       office: nv(cell('office')),
-      canApproveBranch: canBranch,
-      canApprovePlanning: canPlanning,
-      approveBranches: normalizeBranchList(cell('approveBranches')),
       active: activeRaw === '' ? true : parseFlag(activeRaw),
     });
   }
@@ -597,11 +529,8 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
     }
     if (existing) {
       await db.run(
-        `UPDATE users SET name = ?, role = ?, branch = ?, office = ?, active = ?,
-                can_approve_branch = ?, can_approve_planning = ?, approve_branches = ?
-           WHERE id = ?`,
-        [r.name, r.role, r.branch, r.office, r.active ? 1 : 0,
-         r.canApproveBranch ? 1 : 0, r.canApprovePlanning ? 1 : 0, r.approveBranches, existing.id]
+        'UPDATE users SET name = ?, role = ?, branch = ?, office = ?, active = ? WHERE id = ?',
+        [r.name, r.role, r.branch, r.office, r.active ? 1 : 0, existing.id]
       );
       updated.push({ id: existing.id, loginId: r.loginId, name: r.name });
       continue;
@@ -609,11 +538,9 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
     // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
     const temp = generateTempPassword();
     const { lastInsertRowid } = await db.run(
-      `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password,
-                          active, can_approve_branch, can_approve_planning, approve_branches)
-       VALUES (?,?,?,?,?,?,1,?,?,?,?)`,
-      [r.name, r.role, r.branch, r.office, r.loginId, await hashPassword(temp),
-       r.active ? 1 : 0, r.canApproveBranch ? 1 : 0, r.canApprovePlanning ? 1 : 0, r.approveBranches]
+      `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password, active)
+       VALUES (?,?,?,?,?,?,1,?)`,
+      [r.name, r.role, r.branch, r.office, r.loginId, await hashPassword(temp), r.active ? 1 : 0]
     );
     created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name, tempPassword: temp });
   }
@@ -625,15 +552,15 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
 api.get('/admin/users/template', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const rows = [
-    ['ログインID', '氏名', '役割', '支店', '営業所', '支店長決裁', '営業企画部決裁', '決裁できる支店', '有効'],
-    ['yamada.t', '山田 太郎', '営業担当者', '東京中央', '東京中央営業所', '', '', '', '〇'],
-    ['suzuki.i', '鈴木 一郎', '支店長', '東京中央', '', '〇', '', '', '〇'],
-    ['tanaka.j', '田中 次郎', '営業企画部', '本社', '営業企画部', '', '〇', '', '〇'],
-    ['sato.s', '佐藤 三郎', '支店長', '東京中央', '', '〇', '', '東京中央,横浜', '〇'],
+    ['ログインID', '氏名', '役割', '支店', '営業所', '有効'],
+    ['yamada.t', '山田 太郎', '営業担当者', '東京中央', '東京中央営業所', '〇'],
+    ['suzuki.i', '鈴木 一郎', '支店長', '東京中央', '', '〇'],
+    ['tanaka.j', '田中 次郎', '営業企画部', '本社', '営業企画部', '〇'],
+    ['sato.s', '佐藤 三郎', '管理者', '本社', '', '〇'],
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 6 }];
+  ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 18 }, { wch: 6 }];
   XLSX.utils.book_append_sheet(wb, ws, 'ユーザー');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -649,25 +576,26 @@ api.get('/users', wrap(async (req, res) => {
 }));
 
 api.get('/meta', wrap(async (req, res) => {
-  const [priceTypes, equips, persons, customers, branches, offices] = await Promise.all([
+  const [priceTypes, equips, persons, customers, branches, offices, corps] = await Promise.all([
     db.all('SELECT * FROM price_types ORDER BY code'),
     db.all('SELECT equip_name AS name, COUNT(*) AS count FROM deals WHERE equip_name IS NOT NULL GROUP BY equip_name ORDER BY count DESC'),
     db.all('SELECT sales_person AS name, COUNT(*) AS count FROM deals WHERE sales_person IS NOT NULL GROUP BY sales_person ORDER BY count DESC'),
     db.all('SELECT customer_code AS code, customer_name AS name, COUNT(*) AS count FROM deals WHERE customer_code IS NOT NULL GROUP BY customer_code, customer_name ORDER BY count DESC LIMIT 500'),
     db.all('SELECT branch AS name, COUNT(*) AS count FROM deals WHERE branch IS NOT NULL GROUP BY branch ORDER BY count DESC'),
     db.all('SELECT DISTINCT branch, office AS name, COUNT(*) AS count FROM deals WHERE office IS NOT NULL GROUP BY branch, office ORDER BY count DESC'),
+    db.all('SELECT corp_code AS code, corp_name AS name, COUNT(*) AS count FROM deals WHERE corp_code IS NOT NULL GROUP BY corp_code, corp_name ORDER BY count DESC LIMIT 500'),
   ]);
   res.json({
     priceTypes, equips, persons, customers, branches, offices,
+    corps,
     exportMaxRows: EXPORT_MAX_ROWS,
-    statuses: [
-      { code: 'not_started', name: '未着手' },
-      { code: 'negotiating', name: '交渉中' },
-      { code: 'r1_agreed', name: '第1弾妥結' },
-      { code: 'r2_negotiating', name: '第2弾交渉中' },
-      { code: 'r2_agreed', name: '第2弾妥結' },
-      { code: 'declined', name: '値上げ不可' },
+    // 弾ごとの進み具合。案件一覧の絞り込みに使う
+    states: [
+      { code: 'open', name: '未入力' },
+      { code: 'agreed', name: '合意済（未完了）' },
+      { code: 'done', name: '完了' },
     ],
+    corpStatuses: CORP_STATUSES,
   });
 }));
 
@@ -688,26 +616,15 @@ function dealFilters(q) {
     params.push(like, like, like, like);
   }
   for (const [key, col] of [
-    ['equip', 'equip_name'], ['status', 'status'], ['person', 'sales_person'],
-    ['customer', 'customer_code'], ['priceType', 'price_type_code'],
+    ['equip', 'equip_name'], ['person', 'sales_person'],
+    ['customer', 'customer_code'], ['corp', 'corp_code'], ['priceType', 'price_type_code'],
     ['branch', 'branch'], ['office', 'office'],
   ]) {
     if (q[key]) { where.push(`${col} = ?`); params.push(q[key]); }
   }
-  // 第1弾/第2弾の申請対象になりうる明細だけに絞る（一括申請で使う）
-  if (q.eligible === '1' || q.eligible === '2') {
-    if (q.eligible === '1') {
-      where.push('r1_target_price IS NOT NULL AND base_price IS NOT NULL AND r1_target_price > base_price');
-      where.push("status IN ('not_started','negotiating')");
-    } else {
-      where.push('r2_target_price IS NOT NULL AND r2_target_price > COALESCE(r1_agreed_price, base_price)');
-      where.push("status IN ('r1_agreed','r2_negotiating')");
-    }
-    // 進行中・承認済みの申請が既にある明細は除外する
-    where.push(`id NOT IN (
-      SELECT i.deal_id FROM application_items i JOIN applications a ON a.id = i.application_id
-      WHERE a.round = ? AND a.status IN ('draft','pending_branch','pending_planning','approved'))`);
-    params.push(Number(q.eligible));
+  // 弾ごとの進み具合（未入力 / 合意済 / 完了）。ビューの r1_state / r2_state と同じ条件で絞る
+  for (const [key, col] of [['r1State', 'r1_state'], ['r2State', 'r2_state']]) {
+    if (['open', 'agreed', 'done'].includes(q[key])) { where.push(`${col} = ?`); params.push(q[key]); }
   }
   return { where: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
 }
@@ -717,73 +634,27 @@ api.get('/deals', wrap(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const [totals, rows] = await Promise.all([
+    // 単価だけの管理表のため件数のみ。弾ごとの完了件数が分かれば運用上は足りる
     db.get(`
       SELECT COUNT(*) AS count,
-             COALESCE(SUM(r1_raise_amount), 0) AS r1_amount,
-             COALESCE(SUM(r2_raise_amount), 0) AS r2_amount,
-             COALESCE(SUM(r1_target_amount), 0) AS r1_target,
-             COALESCE(SUM(r2_target_amount), 0) AS r2_target
+             SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
+             SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done
       FROM deal_calc ${where}`, params),
-    // 交渉の直近状況を一覧で分かるようにするため、最新の交渉履歴を添える。
+    // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
     // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
     // （LATERAL join はSQLiteが解釈できない）。
     db.all(`
       SELECT deal_calc.*,
-        (SELECT l.contact_date FROM negotiation_logs l WHERE l.deal_id = deal_calc.id
-         ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC LIMIT 1) AS last_contact_date,
-        (SELECT l.result FROM negotiation_logs l WHERE l.deal_id = deal_calc.id
-         ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC LIMIT 1) AS last_result,
-        (SELECT l.note FROM negotiation_logs l WHERE l.deal_id = deal_calc.id
-         ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC LIMIT 1) AS last_note,
-        (SELECT COUNT(*) FROM negotiation_logs l WHERE l.deal_id = deal_calc.id) AS log_count
+        (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status,
+        (SELECT c.contact_date FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_contact_date,
+        (SELECT c.note FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_note,
+        (SELECT COUNT(*) FROM negotiation_logs l WHERE l.corp_code = deal_calc.corp_code) AS corp_log_count
       FROM deal_calc ${where}
-      ORDER BY customer_name, equip_name, model_name, id
+      ORDER BY corp_name, customer_name, equip_name, model_name, id
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   res.json({ rows, totals, page, size });
 }));
-
-// 集計。絞り込み条件をそのまま引き継ぎ、支店・営業所・器具区分などの単位でまとめる。
-const SUMMARY_GROUPS = {
-  branch:   { sql: 'branch',                        label: 'branch' },
-  office:   { sql: 'branch, office',                label: 'office' },
-  equip:    { sql: 'equip_name',                    label: 'equip_name' },
-  customer: { sql: 'customer_code, customer_name',  label: 'customer_name' },
-  person:   { sql: 'sales_person',                  label: 'sales_person' },
-  status:   { sql: 'status',                        label: 'status' },
-};
-
-api.get('/deals/summary', wrap(async (req, res) => {
-  const g = SUMMARY_GROUPS[req.query.group] || SUMMARY_GROUPS.branch;
-  const { where, params } = dealFilters(req.query);
-  const select = `
-    SELECT COUNT(*) AS deals, COALESCE(SUM(qty),0) AS qty,
-           COALESCE(SUM(r1_target_amount),0) AS r1_target,
-           COALESCE(SUM(r2_target_amount),0) AS r2_target,
-           COALESCE(SUM(r1_target_amount),0) + COALESCE(SUM(r2_target_amount),0) AS total_target,
-           COALESCE(SUM(r1_raise_amount),0) AS r1_amount,
-           COALESCE(SUM(r2_raise_amount),0) AS r2_amount,
-           COALESCE(SUM(r1_raise_amount),0) + COALESCE(SUM(r2_raise_amount),0) AS total_amount,
-           -- 交渉の進み具合（明細数）
-           SUM(CASE WHEN status = 'not_started' THEN 1 ELSE 0 END) AS cnt_not_started,
-           SUM(CASE WHEN status = 'negotiating' THEN 1 ELSE 0 END) AS cnt_negotiating,
-           SUM(CASE WHEN status = 'r1_agreed' THEN 1 ELSE 0 END) AS cnt_r1_agreed,
-           SUM(CASE WHEN status = 'r2_negotiating' THEN 1 ELSE 0 END) AS cnt_r2_negotiating,
-           SUM(CASE WHEN status = 'r2_agreed' THEN 1 ELSE 0 END) AS cnt_r2_agreed,
-           SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END) AS cnt_declined`;
-
-  const [rows, total] = await Promise.all([
-    db.all(`${select}, ${g.sql} FROM deal_calc ${where}
-            GROUP BY ${g.sql} ORDER BY total_target DESC, total_amount DESC`, params),
-    db.get(`${select} FROM deal_calc ${where}`, params),
-  ]);
-  res.json({ group: req.query.group || 'branch', labelKey: g.label, rows, total });
-}));
-
-// 現行管理表フォーマットでのExcel書き出し。
-// Vercelは応答サイズに上限（約4.5MB）があり、実測で約690バイト/行のため
-// 安全側に倒して6,000行までとする。自社サーバー運用では制限がゆるい。
-const EXPORT_MAX_ROWS = process.env.VERCEL ? 6000 : 100000;
 
 api.get('/deals/export', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query);
@@ -796,7 +667,11 @@ api.get('/deals/export', wrap(async (req, res) => {
     });
   }
   const [rows, priceTypes] = await Promise.all([
-    db.all(`SELECT * FROM deal_calc ${where} ORDER BY customer_name, equip_name, model_name, id`, params),
+    db.all(`
+      SELECT deal_calc.*,
+        (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
+      FROM deal_calc ${where}
+      ORDER BY corp_name, customer_name, equip_name, model_name, id`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
   ]);
   const buffer = buildWorkbook(rows, priceTypes);
@@ -807,26 +682,102 @@ api.get('/deals/export', wrap(async (req, res) => {
 }));
 
 api.get('/deals/:id', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
   const deal = await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]);
   if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
-  const apps = await db.all(`
-    SELECT a.id, a.round, a.status, a.achievement_rate, a.route, a.created_at, i.agreed_price
-    FROM application_items i JOIN applications a ON a.id = i.application_id
-    WHERE i.deal_id = ? ORDER BY a.id DESC`, [req.params.id]);
-  res.json({ deal, applications: apps });
+  // 交渉は法人単位で進むため、法人の交渉情報と履歴を一緒に返す
+  const negotiation = deal.corp_code
+    ? await db.get('SELECT * FROM corp_negotiations WHERE corp_code = ?', [deal.corp_code])
+    : null;
+  const logs = deal.corp_code
+    ? await db.all(`
+        SELECT l.*, u.name AS user_name FROM negotiation_logs l
+        LEFT JOIN users u ON u.id = l.user_id
+        WHERE l.corp_code = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`,
+        [deal.corp_code])
+    : [];
+  res.json({ deal, negotiation: negotiation ?? null, logs });
 }));
 
-const EDITABLE = ['status', 'negotiation_note', 'negotiated_date', 'price_type_code',
-  'offer1_date', 'offer1_rate', 'offer1_price', 'r2_result_symbol'];
+// 営業担当者が案件一覧から直接入れる項目。
+// 弾ごとに「合意単価・適用年月・完了」を入れて、それぞれ独立して完了にできる。
+const EDITABLE = [
+  'r1_agreed_price', 'r1_applied_ym', 'r1_done',
+  'r2_agreed_price', 'r2_applied_ym', 'r2_done',
+  'price_type_code',
+];
+
+// 目標値上げ単価は管理者だけが直せる。
+// 誰でも直せると目標そのものが動いてしまい、進捗の意味が無くなるため。
+const ADMIN_ONLY_EDITABLE = ['r1_target_price', 'r2_target_price'];
+
+const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/** 適用年月は「YYYY-MM」に寄せる（2026/4 や 202604 も受ける） */
+function normalizeYm(v) {
+  const raw = String(v ?? '').trim();
+  if (!raw) return null;
+  const m = /^(\d{4})\D?(\d{1,2})$/.exec(raw.replace(/\s/g, ''));
+  if (m) {
+    const mm = String(Number(m[2])).padStart(2, '0');
+    const ym = `${m[1]}-${mm}`;
+    if (YM_RE.test(ym)) return ym;
+  }
+  throw new Error(`適用年月は「2026-04」の形式で入力してください（受け取った値: ${raw}）`);
+}
+
+function toPrice(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new Error('単価は数値で入力してください');
+  if (n < 0) throw new Error('単価に負の数は指定できません');
+  return n;
+}
 
 api.patch('/deals/:id', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['sales', 'branch_manager', 'planning'])) return;
+  if (!requireLogin(req, res)) return;
+  const deal = await db.get('SELECT * FROM deals WHERE id = ?', [req.params.id]);
+  if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
+
   const sets = [];
   const params = [];
-  for (const f of EDITABLE) {
-    if (f in req.body) { sets.push(`${f} = ?`); params.push(nv(req.body[f])); }
+  try {
+    for (const f of EDITABLE) {
+      if (!(f in req.body)) continue;
+      let v = req.body[f];
+      if (f.endsWith('_agreed_price')) v = toPrice(v);
+      else if (f.endsWith('_applied_ym')) v = normalizeYm(v);
+      else if (f.endsWith('_done')) v = v ? 1 : 0;
+      else v = nv(v);
+      sets.push(`${f} = ?`);
+      params.push(v);
+    }
+    for (const f of ADMIN_ONLY_EDITABLE) {
+      if (!(f in req.body)) continue;
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: '目標値上げ単価を変更できるのは管理者のみです' });
+      }
+      sets.push(`${f} = ?`);
+      params.push(toPrice(req.body[f]));
+    }
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
   }
   if (!sets.length) return res.status(400).json({ error: '更新項目がありません' });
+
+  // 完了にするには合意単価が要る。空や0のまま完了にできると、
+  // 何で妥結したのか分からない行が「完了」として残ってしまう。
+  const next = { ...deal };
+  sets.forEach((set, i) => { next[set.split(' =')[0]] = params[i]; });
+  for (const [doneCol, priceCol, label] of [
+    ['r1_done', 'r1_agreed_price', '第1弾'],
+    ['r2_done', 'r2_agreed_price', '第2弾'],
+  ]) {
+    if (Number(next[doneCol]) === 1 && !(Number(next[priceCol]) > 0)) {
+      return res.status(400).json({ error: `${label}を完了にするには合意単価を入力してください` });
+    }
+  }
+
   sets.push('updated_at = ?');
   params.push(now(), req.params.id);
   await db.run(`UPDATE deals SET ${sets.join(', ')} WHERE id = ?`, params);
@@ -844,27 +795,107 @@ function contentDisposition(filename, asciiFallback) {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
-// ---- 交渉履歴 ----
-api.get('/deals/:id/logs', wrap(async (req, res) => {
+// ---- 法人ごとの交渉情報・交渉履歴 ----
+// 単価は器種ごとでも、交渉そのものは法人（本部）単位で進むため、
+// 交渉状況とメモ・履歴は法人に紐づけて持つ。
+
+const CORP_STATUSES = [
+  { code: 'not_started', name: '未着手' },
+  { code: 'negotiating', name: '交渉中' },
+  { code: 'agreed', name: '合意' },
+  { code: 'declined', name: '値上げ不可' },
+];
+const CORP_STATUS_CODES = new Set(CORP_STATUSES.map((x) => x.code));
+
+/** 法人の概要（案件件数・弾ごとの完了件数）と交渉情報 */
+api.get('/corps', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const where = [];
+  const params = [];
+  if (req.query.q) {
+    where.push('(d.corp_name LIKE ? OR d.corp_code LIKE ?)');
+    params.push(`%${req.query.q}%`, `%${req.query.q}%`);
+  }
+  if (req.query.branch) { where.push('d.branch = ?'); params.push(req.query.branch); }
   const rows = await db.all(`
-    SELECT l.*, u.name AS user_name FROM negotiation_logs l
-    LEFT JOIN users u ON u.id = l.user_id
-    WHERE l.deal_id = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`,
-    [req.params.id]);
+    SELECT d.corp_code, MIN(d.corp_name) AS corp_name,
+           COUNT(*) AS deals,
+           SUM(CASE WHEN d.r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
+           SUM(CASE WHEN d.r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
+           (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = d.corp_code) AS status,
+           (SELECT c.contact_date FROM corp_negotiations c WHERE c.corp_code = d.corp_code) AS contact_date,
+           (SELECT c.note FROM corp_negotiations c WHERE c.corp_code = d.corp_code) AS note,
+           (SELECT COUNT(*) FROM negotiation_logs l WHERE l.corp_code = d.corp_code) AS log_count
+      FROM deals d
+     WHERE d.corp_code IS NOT NULL ${where.length ? 'AND ' + where.join(' AND ') : ''}
+     GROUP BY d.corp_code
+     ORDER BY MIN(d.corp_name)`, params);
   res.json(rows);
 }));
 
-api.post('/deals/:id/logs', wrap(async (req, res) => {
-  const deal = await db.get('SELECT id FROM deals WHERE id = ?', [req.params.id]);
-  if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
+api.get('/corps/:code', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const code = String(req.params.code);
+  const summary = await db.get(`
+    SELECT corp_code, MIN(corp_name) AS corp_name, COUNT(*) AS deals,
+           SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
+           SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done
+      FROM deals WHERE corp_code = ? GROUP BY corp_code`, [code]);
+  if (!summary) return res.status(404).json({ error: '法人が見つかりません' });
+  const negotiation = await db.get('SELECT * FROM corp_negotiations WHERE corp_code = ?', [code]);
+  const logs = await db.all(`
+    SELECT l.*, u.name AS user_name FROM negotiation_logs l
+    LEFT JOIN users u ON u.id = l.user_id
+    WHERE l.corp_code = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`, [code]);
+  res.json({ ...summary, negotiation: negotiation ?? null, logs });
+}));
+
+/** 法人の交渉情報（状況・直近商談日・メモ）を更新する */
+api.put('/corps/:code/negotiation', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const code = String(req.params.code);
+  const corp = await db.get('SELECT MIN(corp_name) AS corp_name FROM deals WHERE corp_code = ?', [code]);
+  if (!corp?.corp_name) return res.status(404).json({ error: '法人が見つかりません' });
+
+  const status = String(req.body?.status ?? 'not_started');
+  if (!CORP_STATUS_CODES.has(status)) return res.status(400).json({ error: '交渉状況の指定が不正です' });
+
+  const existing = await db.get('SELECT corp_code FROM corp_negotiations WHERE corp_code = ?', [code]);
+  const args = [corp.corp_name, status, nv(req.body?.contact_date) || null,
+                nv(req.body?.note) || null, now(), req.user.id];
+  if (existing) {
+    await db.run(`UPDATE corp_negotiations
+                     SET corp_name = ?, status = ?, contact_date = ?, note = ?, updated_at = ?, updated_by = ?
+                   WHERE corp_code = ?`, [...args, code]);
+  } else {
+    await db.run(`INSERT INTO corp_negotiations
+                    (corp_name, status, contact_date, note, updated_at, updated_by, corp_code)
+                  VALUES (?,?,?,?,?,?,?)`, [...args, code]);
+  }
+  res.json(await db.get('SELECT * FROM corp_negotiations WHERE corp_code = ?', [code]));
+}));
+
+api.get('/corps/:code/logs', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  res.json(await db.all(`
+    SELECT l.*, u.name AS user_name FROM negotiation_logs l
+    LEFT JOIN users u ON u.id = l.user_id
+    WHERE l.corp_code = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`,
+    [String(req.params.code)]));
+}));
+
+api.post('/corps/:code/logs', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const code = String(req.params.code);
+  const corp = await db.get('SELECT MIN(corp_name) AS corp_name FROM deals WHERE corp_code = ?', [code]);
+  if (!corp?.corp_name) return res.status(404).json({ error: '法人が見つかりません' });
   const note = String(req.body?.note ?? '').trim();
   if (!note) return res.status(400).json({ error: '内容を入力してください' });
 
   const { lastInsertRowid } = await db.run(
-    `INSERT INTO negotiation_logs (deal_id, user_id, contact_date, channel, proposed_price, result, note, created_at)
-     VALUES (?,?,?,?,?,?,?,?)`,
-    [deal.id, req.user.id, nv(req.body.contact_date) || null, nv(req.body.channel) || null,
-     req.body.proposed_price != null && req.body.proposed_price !== '' ? Number(req.body.proposed_price) : null,
+    `INSERT INTO negotiation_logs (corp_code, user_id, contact_date, channel, result, note, created_at)
+     VALUES (?,?,?,?,?,?,?)`,
+    [code, req.user.id, nv(req.body.contact_date) || null, nv(req.body.channel) || null,
      nv(req.body.result) || null, note, now()]
   );
   res.status(201).json(await db.get(
@@ -873,6 +904,7 @@ api.post('/deals/:id/logs', wrap(async (req, res) => {
 }));
 
 api.delete('/logs/:id', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
   const log = await db.get('SELECT * FROM negotiation_logs WHERE id = ?', [req.params.id]);
   if (!log) return res.status(404).json({ error: '履歴が見つかりません' });
   if (log.user_id !== req.user.id && !['planning', 'admin'].includes(req.user.role)) {
@@ -887,33 +919,33 @@ api.delete('/logs/:id', wrap(async (req, res) => {
 const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 
 api.get('/attachments', wrap(async (req, res) => {
-  const { dealId, applicationId } = req.query;
-  if (!dealId && !applicationId) return res.status(400).json({ error: '対象を指定してください' });
-  const rows = await db.all(`
-    SELECT a.id, a.filename, a.mime_type, a.size, a.uploaded_at, u.name AS uploaded_by_name
+  if (!requireLogin(req, res)) return;
+  const dealId = Number(req.query.dealId);
+  if (!Number.isFinite(dealId)) return res.status(400).json({ error: '案件を指定してください' });
+  res.json(await db.all(`
+    SELECT a.id, a.deal_id, a.filename, a.mime_type, a.size, a.uploaded_at, u.name AS uploaded_by_name
     FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
-    WHERE ${dealId ? 'a.deal_id = ?' : 'a.application_id = ?'}
-    ORDER BY a.id DESC`, [dealId || applicationId]);
-  res.json(rows);
+    WHERE a.deal_id = ? ORDER BY a.id DESC`, [dealId]));
 }));
 
 api.post('/attachments', upload.single('file'), wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: 'ファイルを選択してください' });
-  const { dealId, applicationId } = req.body;
-  if (!dealId && !applicationId) return res.status(400).json({ error: '添付先を指定してください' });
   if (req.file.size > MAX_ATTACHMENT_BYTES) {
-    return res.status(413).json({
-      error: `ファイルサイズの上限は ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB です`,
-    });
+    return res.status(413).json({ error: `1ファイル${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MBまでです` });
   }
+  const dealId = Number(req.body?.dealId);
+  if (!Number.isFinite(dealId)) return res.status(400).json({ error: '案件を指定してください' });
+
   const { lastInsertRowid } = await db.run(
-    `INSERT INTO attachments (deal_id, application_id, filename, mime_type, size, content, uploaded_by, uploaded_at)
-     VALUES (?,?,?,?,?,?,?,?)`,
-    [dealId ? Number(dealId) : null, applicationId ? Number(applicationId) : null,
-     req.file.originalname, req.file.mimetype, req.file.size,
+    `INSERT INTO attachments (deal_id, filename, mime_type, size, content, uploaded_by, uploaded_at)
+     VALUES (?,?,?,?,?,?,?)`,
+    [dealId, decodeUploadName(req.file.originalname), req.file.mimetype, req.file.size,
      req.file.buffer.toString('base64'), req.user.id, now()]
   );
-  res.status(201).json({ id: Number(lastInsertRowid), filename: req.file.originalname, size: req.file.size });
+  res.status(201).json(await db.get(
+    `SELECT a.id, a.deal_id, a.filename, a.mime_type, a.size, a.uploaded_at, u.name AS uploaded_by_name
+     FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.id = ?`, [Number(lastInsertRowid)]));
 }));
 
 api.get('/attachments/:id/download', wrap(async (req, res) => {
@@ -934,534 +966,6 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// ---- 通知 ----
-api.get('/notifications', wrap(async (req, res) => {
-  const rows = await db.all(
-    'SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100', [req.user.id]);
-  const { c } = await db.get(
-    'SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read_at IS NULL', [req.user.id]);
-  res.json({ rows, unread: Number(c) });
-}));
-
-api.post('/notifications/read', wrap(async (req, res) => {
-  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Number.isFinite) : null;
-  if (ids && ids.length) {
-    await db.run(
-      `UPDATE notifications SET read_at = ? WHERE user_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
-      [now(), req.user.id, ...ids]);
-  } else {
-    await db.run('UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL',
-      [now(), req.user.id]);
-  }
-  res.json({ ok: true });
-}));
-
-// ---- 承認ルート判定 ----
-async function determineRoute(rate) {
-  const rules = await db.all('SELECT * FROM approval_rules WHERE active = 1 ORDER BY priority, id');
-  for (const r of rules) {
-    if (r.min_rate != null && rate < r.min_rate) continue;
-    if (r.max_rate != null && rate >= r.max_rate) continue;
-    return { route: r.final_step, ruleName: r.name };
-  }
-  return { route: 'planning', ruleName: '既定（該当ルールなし→営業企画部決裁）' };
-}
-
-async function computeAppTotals(appId) {
-  return db.get(`
-    SELECT COALESCE(SUM((target_price - base_price) * qty), 0) AS target_amount,
-           COALESCE(SUM((agreed_price - base_price) * qty), 0) AS agreed_amount
-    FROM application_items WHERE application_id = ?`, [appId]);
-}
-
-// ---- 申請（applications） ----
-api.post('/applications', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['sales', 'branch_manager'])) return;
-  const { round, items, price_type_code, title, comment } = req.body;
-  if (![1, 2].includes(round)) return res.status(400).json({ error: 'round は 1 または 2 を指定してください' });
-  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: '対象明細を選択してください' });
-
-  const deals = [];
-  for (const it of items) {
-    const d = await db.get('SELECT * FROM deals WHERE id = ?', [it.deal_id]);
-    deals.push(d ? { deal: d, agreed: Number(it.agreed_price) } : null);
-  }
-  if (deals.some((x) => !x || !Number.isFinite(x.agreed))) {
-    return res.status(400).json({ error: '明細または合意単価が不正です' });
-  }
-  const customers = new Set(deals.map((x) => x.deal.customer_code));
-  if (customers.size > 1) return res.status(400).json({ error: '申請は同一の得意先単位で作成してください' });
-
-  // 同一明細・同一弾の進行中申請の重複を防止
-  const dupRow = await db.get(`
-    SELECT COUNT(*) AS c FROM application_items i
-    JOIN applications a ON a.id = i.application_id
-    WHERE a.round = ? AND a.status IN ('draft','pending_branch','pending_planning','approved')
-      AND i.deal_id IN (${deals.map(() => '?').join(',')})`,
-    [round, ...deals.map((x) => x.deal.id)]);
-  if (num(dupRow.c) > 0) return res.status(409).json({ error: '選択明細に進行中または承認済みの申請が既に存在します' });
-
-  const d0 = deals[0].deal;
-  const { lastInsertRowid: appId } = await db.run(`
-    INSERT INTO applications (round, title, customer_code, customer_name, applicant_id, branch, office, price_type_code, comment, status)
-    VALUES (?,?,?,?,?,?,?,?,?,'draft')`,
-    [round, nv(title) || `${d0.customer_name} 第${round}弾 値上げ申請`, d0.customer_code, d0.customer_name,
-      req.user.id, req.user.branch, req.user.office, nv(price_type_code) ?? d0.price_type_code, nv(comment)]);
-
-  const itemSql = `
-    INSERT INTO application_items (application_id, deal_id, base_price, target_price, agreed_price, qty)
-    VALUES (?,?,?,?,?,?)`;
-  await db.batch(deals.map(({ deal, agreed }) => {
-    // 基準単価: 第1弾は❶出荷単価、第2弾は❸値上後単価（未妥結なら出荷単価）
-    const base = round === 1 ? deal.base_price : (deal.r1_agreed_price ?? deal.base_price);
-    const target = round === 1 ? deal.r1_target_price : deal.r2_target_price;
-    return { sql: itemSql, params: [appId, deal.id, nv(base), nv(target), agreed, nv(deal.qty)] };
-  }));
-
-  const t = await computeAppTotals(appId);
-  const targetAmount = num(t.target_amount);
-  const agreedAmount = num(t.agreed_amount);
-  const rate = targetAmount > 0 ? Math.round((agreedAmount / targetAmount) * 1000) / 10 : 100;
-  await db.run('UPDATE applications SET target_amount = ?, agreed_amount = ?, achievement_rate = ?, updated_at = ? WHERE id = ?',
-    [targetAmount, agreedAmount, rate, now(), appId]);
-  res.status(201).json(await getApplication(appId));
-}));
-
-// 得意先単位の一括申請。対象明細をサーバー側で選ぶため、明細を1件ずつ選ぶ必要がない
-api.post('/applications/bulk', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['sales', 'branch_manager'])) return;
-  const round = Number(req.body?.round);
-  const customerCode = String(req.body?.customerCode ?? '');
-  if (![1, 2].includes(round)) return res.status(400).json({ error: 'round は 1 または 2 を指定してください' });
-  if (!customerCode) return res.status(400).json({ error: '得意先を指定してください' });
-
-  const { where, params } = dealFilters({
-    customer: customerCode,
-    eligible: String(round),
-    equip: req.body?.equip,
-    branch: req.body?.branch,
-    office: req.body?.office,
-  });
-  const deals = await db.all(`SELECT * FROM deals ${where}`, params);
-  if (!deals.length) {
-    return res.status(400).json({ error: '申請できる明細がありません（目標単価が未設定、または既に申請済みです）' });
-  }
-
-  const d0 = deals[0];
-  const { lastInsertRowid } = await db.run(
-    `INSERT INTO applications (round, title, customer_code, customer_name, applicant_id, branch, office, price_type_code, comment, status)
-     VALUES (?,?,?,?,?,?,?,?,?,'draft')`,
-    [round, nv(req.body?.title) || `${d0.customer_name} 第${round}弾 値上げ申請（一括）`,
-     d0.customer_code, d0.customer_name, req.user.id, req.user.branch, req.user.office,
-     nv(req.body?.price_type_code) ?? d0.price_type_code, nv(req.body?.comment)]);
-  const appId = Number(lastInsertRowid);
-
-  // 既定の合意単価は目標単価。提出前に画面で調整できる
-  await db.batch(deals.map((deal) => {
-    const base = round === 1 ? deal.base_price : (deal.r1_agreed_price ?? deal.base_price);
-    const target = round === 1 ? deal.r1_target_price : deal.r2_target_price;
-    return {
-      sql: `INSERT INTO application_items (application_id, deal_id, base_price, target_price, agreed_price, qty)
-            VALUES (?,?,?,?,?,?)`,
-      params: [appId, deal.id, nv(base), nv(target), target, nv(deal.qty)],
-    };
-  }));
-
-  const t = await computeAppTotals(appId);
-  const rate = t.target_amount > 0 ? Math.round((t.agreed_amount / t.target_amount) * 1000) / 10 : 100;
-  await db.run(
-    'UPDATE applications SET target_amount = ?, agreed_amount = ?, achievement_rate = ?, updated_at = ? WHERE id = ?',
-    [t.target_amount, t.agreed_amount, rate, now(), appId]);
-  res.status(201).json(await getApplication(appId));
-}));
-
-// 一括申請の対象件数を事前に見せる
-api.get('/applications/bulk-preview', wrap(async (req, res) => {
-  const round = Number(req.query.round);
-  if (![1, 2].includes(round)) return res.status(400).json({ error: 'round は 1 または 2 を指定してください' });
-  const { where, params } = dealFilters({
-    customer: req.query.customer, eligible: String(round),
-    equip: req.query.equip, branch: req.query.branch, office: req.query.office,
-  });
-  const row = await db.get(`
-    SELECT COUNT(*) AS count, COALESCE(SUM(qty),0) AS qty,
-           COALESCE(SUM(${round === 1
-             ? '(r1_target_price - base_price) * qty'
-             : '(r2_target_price - COALESCE(r1_agreed_price, base_price)) * qty'}), 0) AS target_amount
-    FROM deals ${where}`, params);
-  res.json({ count: Number(row.count), qty: Number(row.qty), targetAmount: Number(row.target_amount) });
-}));
-
-async function getApplication(id) {
-  const app = await db.get(`
-    SELECT a.*, u.name AS applicant_name, p.name AS price_type_name, p.category AS price_type_category
-    FROM applications a
-    LEFT JOIN users u ON u.id = a.applicant_id
-    LEFT JOIN price_types p ON p.code = a.price_type_code
-    WHERE a.id = ?`, [id]);
-  if (!app) return null;
-  app.items = await db.all(`
-    SELECT i.*, d.customer_name, d.model_name, d.equip_name, d.gas_type, d.sales_ym, d.delivery_name
-    FROM application_items i JOIN deals d ON d.id = i.deal_id
-    WHERE i.application_id = ? ORDER BY i.id`, [id]);
-  app.approvals = await db.all(`
-    SELECT ap.*, u.name AS approver_name FROM approvals ap
-    LEFT JOIN users u ON u.id = ap.approver_id
-    WHERE ap.application_id = ? ORDER BY ap.id`, [id]);
-  return app;
-}
-
-api.get('/applications', wrap(async (req, res) => {
-  const where = [];
-  const params = [];
-  if (req.query.status) { where.push('a.status = ?'); params.push(req.query.status); }
-  if (req.query.mine === '1' && req.user) { where.push('a.applicant_id = ?'); params.push(req.user.id); }
-  if (req.query.inbox === '1' && req.user) {
-    // 承認箱: 自分が決裁できるものだけを出す（承認APIの判定と同じ条件にする）
-    const clauses = [];
-    if (req.user.role === 'admin') {
-      clauses.push("a.status IN ('pending_branch','pending_planning')");
-    } else {
-      if (canApproveBranch(req.user, req.user.branch) || approvableBranches(req.user).length) {
-        const branches = approvableBranches(req.user);
-        const targets = branches.length ? branches : [req.user.branch];
-        const usable = targets.filter(Boolean);
-        if (usable.length) {
-          clauses.push(`(a.status = 'pending_branch' AND a.branch IN (${usable.map(() => '?').join(',')}))`);
-          params.push(...usable);
-        }
-      }
-      if (canApprovePlanning(req.user)) clauses.push("a.status = 'pending_planning'");
-    }
-    where.push(clauses.length ? `(${clauses.join(' OR ')})` : '1 = 0');
-  }
-  const rows = await db.all(`
-    SELECT a.*, u.name AS applicant_name, p.name AS price_type_name,
-           (SELECT COUNT(*) FROM application_items i WHERE i.application_id = a.id) AS item_count
-    FROM applications a
-    LEFT JOIN users u ON u.id = a.applicant_id
-    LEFT JOIN price_types p ON p.code = a.price_type_code
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY a.id DESC LIMIT 300`, params);
-  res.json(rows);
-}));
-
-api.get('/applications/:id', wrap(async (req, res) => {
-  const app = await getApplication(req.params.id);
-  if (!app) return res.status(404).json({ error: '申請が見つかりません' });
-  res.json(app);
-}));
-
-api.post('/applications/:id/submit', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['sales', 'branch_manager'])) return;
-  const app = await db.get('SELECT * FROM applications WHERE id = ?', [req.params.id]);
-  if (!app) return res.status(404).json({ error: '申請が見つかりません' });
-  if (!['draft', 'rejected'].includes(app.status)) return res.status(400).json({ error: 'この申請は提出できません' });
-  if (app.applicant_id !== req.user.id && req.user.role !== 'admin') {
-    return res.status(403).json({ error: '申請者本人のみ提出できます' });
-  }
-  // 提出時点のルールで承認ルートを判定（達成率により承認権限が変わる）
-  const { route, ruleName } = await determineRoute(num(app.achievement_rate));
-  await db.run("UPDATE applications SET status = 'pending_branch', route = ?, rule_name = ?, updated_at = ? WHERE id = ?",
-    [route, ruleName, now(), app.id]);
-
-  await notify(await approversFor('branch', app.branch), {
-    kind: 'submitted',
-    title: `承認依頼: ${app.title}`,
-    body: `${req.user.name} から第${app.round}弾の値上げ申請が提出されました（達成率 ${num(app.achievement_rate).toFixed(1)}%）`,
-    link: `/applications/${app.id}`,
-  });
-  res.json(await getApplication(app.id));
-}));
-
-// 承認時に妥結単価を案件へ反映（目標値上げ単価がマスター単価となる）
-async function applyToDeals(app) {
-  const items = await db.all('SELECT * FROM application_items WHERE application_id = ?', [app.id]);
-  const ringi = `APP-${app.id}`;
-  const statements = items.map((it) => app.round === 1
-    ? {
-      sql: `
-        UPDATE deals SET r1_agreed_price = ?, r1_ringi_no = ?, r1_raise_date = ?,
-          price_type_code = COALESCE(?, price_type_code),
-          status = CASE WHEN ? > COALESCE(base_price, 0) THEN 'r1_agreed' ELSE status END,
-          updated_at = ?
-        WHERE id = ?`,
-      params: [it.agreed_price, ringi, today(), nv(app.price_type_code), it.agreed_price, now(), it.deal_id],
-    }
-    : {
-      sql: `
-        UPDATE deals SET r2_agreed_price = ?, r2_ringi_no = ?, r2_result_symbol = '〇',
-          final_confirm_date = ?, final_raise_date = ?,
-          price_type_code = COALESCE(?, price_type_code),
-          status = 'r2_agreed', updated_at = ?
-        WHERE id = ?`,
-      params: [it.agreed_price, ringi, today(), today(), nv(app.price_type_code), now(), it.deal_id],
-    });
-  if (statements.length) await db.batch(statements);
-}
-
-api.post('/applications/:id/approve', wrap(async (req, res) => {
-  if (!requireLogin(req, res)) return;
-  const app = await db.get('SELECT * FROM applications WHERE id = ?', [req.params.id]);
-  if (!app) return res.status(404).json({ error: '申請が見つかりません' });
-
-  let step;
-  if (app.status === 'pending_branch') {
-    step = 'branch';
-    if (!canApproveBranch(req.user, app.branch)) {
-      return res.status(403).json({ error: `${app.branch} の支店長決裁の権限がありません` });
-    }
-  } else if (app.status === 'pending_planning') {
-    step = 'planning';
-    if (!canApprovePlanning(req.user)) {
-      return res.status(403).json({ error: '営業企画部決裁の権限がありません' });
-    }
-  } else {
-    return res.status(400).json({ error: '承認待ちの申請ではありません' });
-  }
-
-  await db.run('INSERT INTO approvals (application_id, step, approver_id, action, comment) VALUES (?,?,?,?,?)',
-    [app.id, step, req.user.id, 'approved', nv(req.body?.comment)]);
-
-  if (step === 'branch' && app.route === 'planning') {
-    await db.run("UPDATE applications SET status = 'pending_planning', updated_at = ? WHERE id = ?", [now(), app.id]);
-    await notify(await approversFor('planning'), {
-      kind: 'forwarded',
-      title: `承認依頼: ${app.title}`,
-      body: `支店長承認が完了しました。営業企画部の承認をお願いします（達成率 ${num(app.achievement_rate).toFixed(1)}%）`,
-      link: `/applications/${app.id}`,
-    });
-    await notify(app.applicant_id, {
-      kind: 'approved',
-      title: `支店長が承認しました: ${app.title}`,
-      body: '営業企画部の承認待ちに進みました',
-      link: `/applications/${app.id}`,
-    });
-  } else {
-    await db.run("UPDATE applications SET status = 'approved', decided_at = ?, updated_at = ? WHERE id = ?",
-      [now(), now(), app.id]);
-    await applyToDeals(app);
-    await notify(app.applicant_id, {
-      kind: 'approved',
-      title: `承認されました: ${app.title}`,
-      body: `合意単価が案件へ反映されました（稟議番号 APP-${app.id}）`,
-      link: `/applications/${app.id}`,
-    });
-  }
-  res.json(await getApplication(app.id));
-}));
-
-api.post('/applications/:id/reject', wrap(async (req, res) => {
-  if (!requireLogin(req, res)) return;
-  const app = await db.get('SELECT * FROM applications WHERE id = ?', [req.params.id]);
-  if (!app) return res.status(404).json({ error: '申請が見つかりません' });
-  let step;
-  if (app.status === 'pending_branch') {
-    step = 'branch';
-    if (!canApproveBranch(req.user, app.branch)) {
-      return res.status(403).json({ error: `${app.branch} の支店長決裁の権限がありません` });
-    }
-  } else if (app.status === 'pending_planning') {
-    step = 'planning';
-    if (!canApprovePlanning(req.user)) {
-      return res.status(403).json({ error: '営業企画部決裁の権限がありません' });
-    }
-  } else {
-    return res.status(400).json({ error: '承認待ちの申請ではありません' });
-  }
-  await db.run('INSERT INTO approvals (application_id, step, approver_id, action, comment) VALUES (?,?,?,?,?)',
-    [app.id, step, req.user.id, 'rejected', nv(req.body?.comment)]);
-  await db.run("UPDATE applications SET status = 'rejected', updated_at = ? WHERE id = ?", [now(), app.id]);
-  await notify(app.applicant_id, {
-    kind: 'rejected',
-    title: `差戻し: ${app.title}`,
-    body: [`${req.user.name}（${step === 'branch' ? '支店長' : '営業企画部'}）から差し戻されました`,
-           nv(req.body?.comment)].filter(Boolean).join(' / '),
-    link: `/applications/${app.id}`,
-  });
-  res.json(await getApplication(app.id));
-}));
-
-api.post('/applications/:id/withdraw', wrap(async (req, res) => {
-  if (!requireLogin(req, res)) return;
-  const app = await db.get('SELECT * FROM applications WHERE id = ?', [req.params.id]);
-  if (!app) return res.status(404).json({ error: '申請が見つかりません' });
-  if (app.applicant_id !== req.user.id && req.user.role !== 'admin') {
-    return res.status(403).json({ error: '申請者本人のみ取下げできます' });
-  }
-  if (!['draft', 'pending_branch', 'pending_planning', 'rejected'].includes(app.status)) {
-    return res.status(400).json({ error: 'この申請は取下げできません' });
-  }
-  await db.run("UPDATE applications SET status = 'withdrawn', updated_at = ? WHERE id = ?", [now(), app.id]);
-  res.json(await getApplication(app.id));
-}));
-
-// ---- 承認ルール（別途設定可能） ----
-api.get('/rules', wrap(async (req, res) => {
-  res.json(await db.all('SELECT * FROM approval_rules ORDER BY priority, id'));
-}));
-
-api.put('/rules', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
-  const rules = req.body;
-  if (!Array.isArray(rules)) return res.status(400).json({ error: 'ルールの配列を指定してください' });
-  for (const r of rules) {
-    if (!['branch', 'planning'].includes(r.final_step)) {
-      return res.status(400).json({ error: 'final_step は branch / planning のいずれかです' });
-    }
-  }
-  const sql = 'INSERT INTO approval_rules (name, min_rate, max_rate, final_step, priority, active) VALUES (?,?,?,?,?,?)';
-  await db.batch([
-    { sql: 'DELETE FROM approval_rules', params: [] },
-    ...rules.map((r, i) => ({
-      sql,
-      params: [nv(r.name) || `ルール${i + 1}`, nv(r.min_rate), nv(r.max_rate), r.final_step, i + 1, r.active === false ? 0 : 1],
-    })),
-  ]);
-  res.json(await db.all('SELECT * FROM approval_rules ORDER BY priority, id'));
-}));
-
-// ---- 設定（目標金額など） ----
-api.get('/settings', wrap(async (req, res) => {
-  const rows = await db.all('SELECT key, value FROM settings');
-  res.json(Object.fromEntries(rows.map((r) => [r.key, r.value])));
-}));
-
-api.put('/settings', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
-  const entries = Object.entries(req.body || {});
-  if (entries.length) {
-    await db.batch(entries.map(([k, v]) => ({
-      sql: 'INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-      params: [k, String(v)],
-    })));
-  }
-  const rows = await db.all('SELECT key, value FROM settings');
-  res.json(Object.fromEntries(rows.map((r) => [r.key, r.value])));
-}));
-
-// ---- ダッシュボード ----
-api.get('/dashboard', wrap(async (req, res) => {
-  // 支店・営業所で絞り込める（未指定なら全社）
-  const scopeWhere = [];
-  const scopeParams = [];
-  if (req.query.branch) { scopeWhere.push('branch = ?'); scopeParams.push(req.query.branch); }
-  if (req.query.office) { scopeWhere.push('office = ?'); scopeParams.push(req.query.office); }
-  const w = scopeWhere.length ? `WHERE ${scopeWhere.join(' AND ')}` : '';
-  const andW = scopeWhere.length ? `AND ${scopeWhere.join(' AND ')}` : '';
-
-  const [settingRows, targetRows, totals, byEquip, byPerson, byOffice, statusCounts, appCounts] = await Promise.all([
-    db.all('SELECT key, value FROM settings'),
-    db.all('SELECT * FROM targets'),
-    db.get(`
-      SELECT COUNT(*) AS deals,
-             COALESCE(SUM(r1_raise_amount), 0) AS r1_amount,
-             COALESCE(SUM(r2_raise_amount), 0) AS r2_amount
-      FROM deal_calc ${w}`, scopeParams),
-    db.all(`
-      SELECT equip_name, COUNT(*) AS deals,
-             COALESCE(SUM(r1_raise_amount), 0) AS r1_amount,
-             COALESCE(SUM(r2_raise_amount), 0) AS r2_amount,
-             COALESCE(SUM(r1_raise_amount), 0) + COALESCE(SUM(r2_raise_amount), 0) AS total_amount
-      FROM deal_calc WHERE equip_name IS NOT NULL ${andW}
-      GROUP BY equip_name ORDER BY total_amount DESC`, scopeParams),
-    db.all(`
-      SELECT sales_person, COUNT(*) AS deals,
-             COALESCE(SUM(r1_raise_amount), 0) AS r1_amount,
-             COALESCE(SUM(r2_raise_amount), 0) AS r2_amount,
-             COALESCE(SUM(r1_raise_amount), 0) + COALESCE(SUM(r2_raise_amount), 0) AS total_amount
-      FROM deal_calc WHERE sales_person IS NOT NULL ${andW}
-      GROUP BY sales_person ORDER BY total_amount DESC`, scopeParams),
-    db.all(`
-      SELECT branch, office, COUNT(*) AS deals,
-             COALESCE(SUM(r1_raise_amount), 0) AS r1_amount,
-             COALESCE(SUM(r2_raise_amount), 0) AS r2_amount,
-             COALESCE(SUM(r1_raise_amount), 0) + COALESCE(SUM(r2_raise_amount), 0) AS total_amount
-      FROM deal_calc WHERE branch IS NOT NULL ${andW}
-      GROUP BY branch, office ORDER BY total_amount DESC`, scopeParams),
-    db.all(`SELECT status, COUNT(*) AS count FROM deals ${w} GROUP BY status`, scopeParams),
-    db.all('SELECT status, COUNT(*) AS count FROM applications GROUP BY status'),
-  ]);
-
-  const settings = Object.fromEntries(settingRows.map((r) => [r.key, r.value]));
-
-  // 目標は絞り込みに合わせて解決する。
-  // 営業所指定 → その営業所の目標、支店指定 → 支店の目標、
-  // 未指定 → 支店目標の合計（無ければ settings の全社値）
-  const pick = (round) => {
-    if (req.query.office) {
-      const t = targetRows.find((x) => x.scope === 'office' && x.scope_value === req.query.office && x.round === round);
-      if (t) return Number(t.amount);
-    }
-    if (req.query.branch) {
-      const t = targetRows.find((x) => x.scope === 'branch' && x.scope_value === req.query.branch && x.round === round);
-      if (t) return Number(t.amount);
-    }
-    if (!req.query.branch && !req.query.office) {
-      const branchTotals = targetRows.filter((x) => x.scope === 'branch' && x.round === round);
-      if (branchTotals.length) return branchTotals.reduce((s, x) => s + Number(x.amount), 0);
-    }
-    return Number(settings[`r${round}_target_total`] || 0);
-  };
-
-  res.json({
-    targets: { r1: pick(1), r2: pick(2) },
-    progress: { r1: num(totals.r1_amount), r2: num(totals.r2_amount), deals: num(totals.deals) },
-    scope: { branch: req.query.branch || null, office: req.query.office || null },
-    byEquip, byPerson, byOffice, statusCounts, appCounts,
-  });
-}));
-
-// ---- 目標設定（支店 / 営業所 / 担当者別） ----
-api.get('/targets', wrap(async (req, res) => {
-  res.json(await db.all('SELECT * FROM targets ORDER BY scope, scope_value, round'));
-}));
-
-api.put('/targets', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
-  const rows = req.body;
-  if (!Array.isArray(rows)) return res.status(400).json({ error: '目標の配列を指定してください' });
-  for (const r of rows) {
-    if (!['branch', 'office', 'person'].includes(r.scope)) {
-      return res.status(400).json({ error: 'scope は branch / office / person のいずれかです' });
-    }
-    if (![1, 2].includes(Number(r.round))) {
-      return res.status(400).json({ error: 'round は 1 または 2 です' });
-    }
-    if (!String(r.scope_value ?? '').trim()) {
-      return res.status(400).json({ error: '対象（支店名・営業所名・担当者名）を入力してください' });
-    }
-    if (!Number.isFinite(Number(r.amount))) {
-      return res.status(400).json({ error: '目標金額は数値で入力してください' });
-    }
-  }
-  await db.run('DELETE FROM targets');
-  if (rows.length) {
-    await db.batch(rows.map((r) => ({
-      sql: 'INSERT INTO targets (scope, scope_value, round, amount) VALUES (?,?,?,?)',
-      params: [r.scope, String(r.scope_value).trim(), Number(r.round), Number(r.amount)],
-    })));
-  }
-  res.json(await db.all('SELECT * FROM targets ORDER BY scope, scope_value, round'));
-}));
-
-// ---- Excel取込 ----
-
-/**
- * multerのoriginalnameはUTF-8のバイト列をlatin-1として解釈した文字列で渡ってくるため、
- * 日本語のファイル名が「çµ¦æ¹¯å™¨…」のように化ける。バイト列へ戻してUTF-8で読み直す。
- */
-function decodeUploadName(name) {
-  if (!name) return name;
-  try {
-    const decoded = Buffer.from(name, 'latin1').toString('utf8');
-    // 復元に失敗すると U+FFFD が出る。その場合は元の文字列のままにする
-    return decoded.includes('�') ? name : decoded;
-  } catch {
-    return name;
-  }
-}
-// 取り込める項目の一覧。画面で列を合わせるときの選択肢になる
 api.get('/import/fields', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   res.json({

@@ -1,30 +1,37 @@
 import type { ReactNode } from 'react';
-import { APP_STATUS_NAMES, STATUS_NAMES } from '../types';
+import { CORP_STATUS_NAMES, ROUND_STATE_NAMES } from '../types';
+import type { RoundState } from '../types';
 
-const DEAL_STATUS_COLOR: Record<string, string> = {
+const ROUND_STATE_COLOR: Record<string, string> = {
+  open: 'gray',
+  agreed: 'blue',
+  done: 'green',
+};
+
+const CORP_STATUS_COLOR: Record<string, string> = {
   not_started: 'gray',
   negotiating: 'blue',
-  r1_agreed: 'green',
-  r2_negotiating: 'orange',
-  r2_agreed: 'green',
+  agreed: 'green',
   declined: 'red',
 };
 
-const APP_STATUS_COLOR: Record<string, string> = {
-  draft: 'gray',
-  pending_branch: 'yellow',
-  pending_planning: 'orange',
-  approved: 'green',
-  rejected: 'red',
-  withdrawn: 'gray',
-};
-
-export function DealStatusBadge({ status }: { status: string }) {
-  return <span className={`badge ${DEAL_STATUS_COLOR[status] || 'gray'}`}>{STATUS_NAMES[status] || status}</span>;
+/** 弾ごとの進み具合（未入力 / 合意済 / 完了） */
+export function RoundStateBadge({ state }: { state: RoundState | string }) {
+  return (
+    <span className={`badge ${ROUND_STATE_COLOR[state] || 'gray'}`}>
+      {ROUND_STATE_NAMES[state] || state}
+    </span>
+  );
 }
 
-export function AppStatusBadge({ status }: { status: string }) {
-  return <span className={`badge ${APP_STATUS_COLOR[status] || 'gray'}`}>{APP_STATUS_NAMES[status] || status}</span>;
+/** 法人の交渉状況 */
+export function CorpStatusBadge({ status }: { status?: string | null }) {
+  const s = status || 'not_started';
+  return (
+    <span className={`badge ${CORP_STATUS_COLOR[s] || 'gray'}`}>
+      {CORP_STATUS_NAMES[s] || s}
+    </span>
+  );
 }
 
 export function PriceTypeBadge({ code, name, category }: { code: number | null; name?: string; category?: string }) {
@@ -34,15 +41,6 @@ export function PriceTypeBadge({ code, name, category }: { code: number | null; 
     <span className={`badge ${color}`} title={category}>
       {code}. {name || ''}
     </span>
-  );
-}
-
-export function RouteBadge({ route }: { route: string | null }) {
-  if (!route) return null;
-  return route === 'branch' ? (
-    <span className="badge blue">支店長決裁</span>
-  ) : (
-    <span className="badge orange">営業企画部決裁</span>
   );
 }
 
@@ -60,66 +58,6 @@ export function Card({ title, children }: { title?: string; children: ReactNode 
     <div className="card">
       {title && <h3>{title}</h3>}
       {children}
-    </div>
-  );
-}
-
-const STAGE_STEPS = [
-  { key: 'negotiating', label: '交渉' },
-  { key: 'r1_agreed', label: '第1弾' },
-  { key: 'r2_negotiating', label: '第2弾交渉' },
-  { key: 'r2_agreed', label: '第2弾' },
-];
-
-// ステータスがどこまで進んだかの段階（-1 は未着手 / 値上げ不可は別扱い）
-const STAGE_INDEX: Record<string, number> = {
-  not_started: -1,
-  negotiating: 0,
-  r1_agreed: 1,
-  r2_negotiating: 2,
-  r2_agreed: 3,
-};
-
-/**
- * 値上げ交渉がどこまで進んでいるかを一覧上で示す。
- * 段階のドットに加えて、直近の商談日と結果を添える。
- */
-export function NegotiationStage({ deal }: {
-  deal: {
-    status: string;
-    last_contact_date?: string | null;
-    last_result?: string | null;
-    last_note?: string | null;
-    log_count?: number;
-    negotiated_date?: string | null;
-    r2_result_symbol?: string | null;
-  };
-}) {
-  const declined = deal.status === 'declined';
-  const current = STAGE_INDEX[deal.status] ?? -1;
-  const lastDate = deal.last_contact_date || deal.negotiated_date;
-
-  return (
-    <div className="stage">
-      <div className="stage-dots" title={STATUS_NAMES[deal.status] || deal.status}>
-        {STAGE_STEPS.map((s, i) => (
-          <span
-            key={s.key}
-            className={declined ? 'declined' : i <= current ? 'done' : ''}
-            title={s.label}
-          />
-        ))}
-      </div>
-      <span className="stage-label">
-        {declined ? '値上げ不可' : STATUS_NAMES[deal.status] || deal.status}
-      </span>
-      {(lastDate || deal.last_result) && (
-        <span className="stage-sub" title={deal.last_note || ''}>
-          {lastDate ? String(lastDate).slice(0, 10) : ''}
-          {deal.last_result ? ` ${deal.last_result}` : ''}
-          {deal.log_count ? `（履歴${deal.log_count}）` : ''}
-        </span>
-      )}
     </div>
   );
 }

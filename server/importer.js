@@ -88,15 +88,17 @@ export function normalize(col, v, warnings) {
   return TEXT_KEYS.has(col) ? String(v) : null;
 }
 
-// 商談状況から管理ステータスを導出
-export function deriveStatus(d) {
+/**
+ * 取込時点で弾ごとに完了とみなせるかを判定する。
+ * 現行の管理表では、第1弾は値上後単価が出荷単価を上回っていれば妥結済み、
+ * 第2弾は商談結果の記号が「〇」なら確定、という運用になっている。
+ */
+export function deriveDone(d) {
   const sym = (d.r2_result_symbol || '').trim();
-  const confirmed = CONFIRM_SYMBOLS.some((s) => sym.startsWith(s));
-  if (confirmed && d.r2_agreed_price > 0) return 'r2_agreed';
-  if (sym || d.offer1_date) return 'r2_negotiating';
-  if (d.r1_agreed_price != null && d.base_price != null && d.r1_agreed_price > d.base_price) return 'r1_agreed';
-  if (d.negotiation_note || d.negotiated_date) return 'negotiating';
-  return 'not_started';
+  const r2Confirmed = CONFIRM_SYMBOLS.some((c) => sym.startsWith(c)) && Number(d.r2_agreed_price) > 0;
+  const r1Agreed = d.r1_agreed_price != null && d.base_price != null
+    && Number(d.r1_agreed_price) > Number(d.base_price);
+  return { r1_done: r1Agreed ? 1 : 0, r2_done: r2Confirmed ? 1 : 0 };
 }
 
 // マスター単価種別の初期推定（画面から変更可能）
@@ -195,12 +197,15 @@ export async function insertRows(batchId, rows) {
   const stamp = new Date().toISOString();
   // 列の並びは行ごとに変わらないよう、全行の和集合で固定する
   const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const dealCols = [...cols, 'batch_id', 'price_type_code', 'status', 'updated_at'];
+  const dealCols = [...cols, 'batch_id', 'price_type_code', 'r1_done', 'r2_done', 'updated_at'];
   const sql = `INSERT INTO deals (${dealCols.join(',')}) VALUES (${dealCols.map(() => '?').join(',')})`;
-  const statements = rows.map((d) => ({
-    sql,
-    params: [...cols.map((c) => d[c] ?? null), batchId, inferPriceType(d), deriveStatus(d), stamp],
-  }));
+  const statements = rows.map((d) => {
+    const done = deriveDone(d);
+    return {
+      sql,
+      params: [...cols.map((c) => d[c] ?? null), batchId, inferPriceType(d), done.r1_done, done.r2_done, stamp],
+    };
+  });
   for (let i = 0; i < statements.length; i += CHUNK_SIZE) {
     await db.batch(statements.slice(i, i + CHUNK_SIZE));
   }

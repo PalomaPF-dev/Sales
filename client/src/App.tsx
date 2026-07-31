@@ -1,34 +1,25 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Route, Routes, useNavigate } from 'react-router-dom';
 import { api, fetchMe, logout } from './api';
-import type { Application, User } from './types';
+import type { User } from './types';
 import { ROLE_NAMES } from './types';
 import { UserContext } from './user';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
-import Dashboard from './pages/Dashboard';
 import Deals from './pages/Deals';
 import DealDetail from './pages/DealDetail';
-import NewApplication from './pages/NewApplication';
-import Applications from './pages/Applications';
-import ApplicationDetail from './pages/ApplicationDetail';
+import CorpDetail from './pages/CorpDetail';
 import Settings from './pages/Settings';
 import Users from './pages/Users';
-import Notifications from './pages/Notifications';
 import ImportPage from './pages/ImportPage';
-import {
-  IconApplications, IconBell, IconBrand, IconDashboard, IconDeals,
-  IconImport, IconInbox, IconSettings, IconUsers,
-} from './components/icons';
+import { IconBrand, IconDeals, IconImport, IconSettings, IconUsers } from './components/icons';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [setupCandidates, setSetupCandidates] = useState<{ login_id: string; name: string; role: string }[] | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [inboxCount, setInboxCount] = useState(0);
-  const [unread, setUnread] = useState(0);
   const navigate = useNavigate();
 
   // Cookieのセッションから復元する。
@@ -50,22 +41,6 @@ export default function App() {
         setLoading(false);
       });
   }, []);
-
-  const refreshInbox = useCallback(() => {
-    if (!user || user.mustChangePassword) return;
-    api<Application[]>('/applications?inbox=1')
-      .then((rows) => setInboxCount(rows.length))
-      .catch(() => setInboxCount(0));
-    api<{ unread: number }>('/notifications')
-      .then((r) => setUnread(r.unread))
-      .catch(() => setUnread(0));
-  }, [user]);
-
-  useEffect(() => {
-    refreshInbox();
-    const t = setInterval(refreshInbox, 30000);
-    return () => clearInterval(t);
-  }, [refreshInbox]);
 
   const signOut = async () => {
     await logout().catch(() => {});
@@ -114,8 +89,6 @@ export default function App() {
     );
   }
 
-  // 承認箱は「決裁権限を持つ人」に出す（役割ではなく権限で判断する）
-  const canApprove = user.role === 'admin' || user.canApproveBranch || user.canApprovePlanning;
   const canConfig = user.role === 'planning' || user.role === 'admin';
   const isAdmin = user.role === 'admin';
 
@@ -125,31 +98,19 @@ export default function App() {
         {user.authDisabled && (
           <div className="auth-off-banner">
             認証が無効になっています（DISABLE_AUTH）。
-            URLを知っている人は誰でも価格データを閲覧・変更でき、承認者も記録されません。
+            URLを知っている人は誰でも価格データを閲覧・変更できます。
           </div>
         )}
         <aside className="sidebar">
           <div className="brand">
             <span className="mark"><IconBrand /></span>
             <span className="txt">
-              <b>値上げ交渉管理</b>
-              <small>Price Negotiation</small>
+              <b>値上げ単価管理</b>
+              <small>Price Management</small>
             </span>
           </div>
           <nav>
-            <NavLink to="/" end><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
-            <NavLink to="/applications"><IconApplications /><span className="lbl">申請一覧</span></NavLink>
-            {canApprove && (
-              <NavLink to="/inbox">
-                <IconInbox /><span className="lbl">承認箱</span>
-                {inboxCount > 0 && <span className="badge red">{inboxCount}</span>}
-              </NavLink>
-            )}
-            <NavLink to="/notifications">
-              <IconBell /><span className="lbl">通知</span>
-              {unread > 0 && <span className="badge red">{unread}</span>}
-            </NavLink>
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
             {canConfig && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
@@ -170,14 +131,10 @@ export default function App() {
         </aside>
         <main className="main">
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={<Deals />} />
             <Route path="/deals" element={<Deals />} />
             <Route path="/deals/:id" element={<DealDetail />} />
-            <Route path="/applications/new" element={<NewApplication />} />
-            <Route path="/applications" element={<Applications mode="all" />} />
-            <Route path="/inbox" element={<Applications mode="inbox" />} />
-            <Route path="/applications/:id" element={<ApplicationDetail onChanged={refreshInbox} />} />
-            <Route path="/notifications" element={<Notifications onChanged={refreshInbox} />} />
+            <Route path="/corps/:code" element={<CorpDetail />} />
             <Route path="/import" element={<ImportPage />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/users" element={<Users />} />

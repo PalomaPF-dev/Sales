@@ -51,12 +51,10 @@ export const FIELDS = [
   { key: 'gas_code', label: 'ガスコード', group: '商品', type: 'text', aliases: ['ガスコード'] },
   { key: 'gas_type', label: 'ガス種', group: '商品', type: 'text', aliases: ['ガス種', 'ガス種別'] },
 
-  // 数量・価格
-  { key: 'qty', label: '出荷数（台数）', group: '価格', type: 'number', aliases: ['出荷数', '台数', '数量', '出荷台数'], required: true },
+  // 価格
   { key: 'list_price', label: '定価', group: '価格', type: 'number', aliases: ['定価'] },
   { key: 'rate', label: '掛け率', group: '価格', type: 'number', aliases: ['掛け率', '掛率'] },
   { key: 'base_price', label: '❶ 出荷単価', group: '価格', type: 'number', aliases: ['出荷単価', '現行単価'], required: true },
-  { key: 'ship_amount', label: '出荷金額', group: '価格', type: 'number', aliases: ['出荷金額'] },
   { key: 'final_price', label: '最終単価', group: '価格', type: 'number', aliases: ['最終単価'] },
   { key: 'new_list_price', label: '新定価', group: '価格', type: 'number', aliases: ['新定価'] },
 
@@ -68,6 +66,7 @@ export const FIELDS = [
   { key: 'r1_agreed_price', label: '❸ 値上後単価', group: '第1弾', type: 'number', aliases: ['値上後単価', '値上げ後単価'] },
   { key: 'r1_raise_date', label: '値上日時', group: '第1弾', type: 'date', aliases: ['値上日時', '値上げ日時', '値上日'] },
   { key: 'r1_ringi_no', label: '稟議NO', group: '第1弾', type: 'text', aliases: ['稟議NO', '稟議番号'] },
+  { key: 'r1_applied_ym', label: '第1弾 適用年月', group: '第1弾', type: 'text', aliases: ['第1弾適用年月', '値上げ適用年月', '適用年月'] },
   { key: 'r1_after_rate', label: '第1弾値上げ後掛率', group: '第1弾', type: 'number', aliases: ['第1弾値上げ後掛率'] },
 
   // 第2弾
@@ -81,6 +80,7 @@ export const FIELDS = [
   { key: 'r2_ringi_no', label: '第2弾稟議NO', group: '第2弾', type: 'text', aliases: ['第2弾稟議NO', '第2弾稟議番号'] },
   { key: 'final_rate', label: '最終確定掛率', group: '第2弾', type: 'number', aliases: ['最終確定掛率'] },
   { key: 'r2_agreed_price', label: '❼ 最終確定単価', group: '第2弾', type: 'number', aliases: ['最終確定単価'] },
+  { key: 'r2_applied_ym', label: '第2弾 適用年月', group: '第2弾', type: 'text', aliases: ['第2弾適用年月'] },
 
   // 担当
   { key: 'voucher_no', label: '売上伝票NO', group: '担当', type: 'text', aliases: ['売上伝票NO', '売上伝票番号'] },

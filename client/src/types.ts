@@ -7,10 +7,6 @@ export interface User {
   loginId?: string | null;
   mustChangePassword?: boolean;
   authDisabled?: boolean;
-  // 決裁権限（管理者画面で設定する）
-  canApproveBranch?: boolean;
-  canApprovePlanning?: boolean;
-  approveBranches?: string[];
 }
 
 export interface PriceType {
@@ -20,114 +16,86 @@ export interface PriceType {
   note: string;
 }
 
+/** 弾ごとの進み具合 */
+export type RoundState = 'open' | 'agreed' | 'done';
+
 export interface Deal {
   id: number;
   sales_ym: string | null;
+  corp_code: string | null;
   corp_name: string | null;
   customer_code: string | null;
   customer_name: string | null;
   delivery_name: string | null;
+  handler_name: string | null;
   industry: string | null;
   equip_name: string | null;
   category_name: string | null;
   model_name: string | null;
   gas_type: string | null;
-  qty: number | null;
   list_price: number | null;
   rate: number | null;
   base_price: number | null;        // ❶ 出荷単価
-  r1_target_price: number | null;   // ❷ 目標値上げ単価（第1弾）
-  r1_agreed_price: number | null;   // ❸ 値上後単価
-  r1_raise_unit: number;            // ❹
-  r1_raise_amount: number;          // ❺
-  r2_target_price: number | null;   // ❻ 目標値上げ単価（第2弾）
-  r2_agreed_price: number | null;   // ❼ 最終確定単価
-  r2_raise_unit: number;            // ❽
-  r2_raise_amount: number;          // ❾
-  r1_target_amount: number;
-  r2_target_amount: number;
+  // 第1弾
+  r1_target_price: number | null;   // ❷ 目標値上げ単価（管理者のみ変更可）
+  r1_agreed_price: number | null;   // ❸ 合意単価
+  r1_raise_unit: number | null;     // ❹ ❸−❶
+  r1_applied_ym: string | null;     // 適用年月
+  r1_done: number;
+  r1_state: RoundState;
+  // 第2弾
+  r2_target_price: number | null;   // ❻ 目標値上げ単価（管理者のみ変更可）
+  r2_agreed_price: number | null;   // ❼ 合意単価
+  r2_raise_unit: number | null;     // ❽ ❼−❸
+  r2_applied_ym: string | null;
+  r2_done: number;
+  r2_state: RoundState;
+
   voucher_no: string | null;
   quote_no: string | null;
   sales_person: string | null;
   branch: string | null;
   office: string | null;
-  negotiated_date: string | null;
-  negotiation_note: string | null;
-  r1_ringi_no: string | null;
-  r1_raise_date: string | null;
-  new_list_price: number | null;
-  offer1_date: string | null;
-  offer1_rate: number | null;
-  offer1_price: number | null;
-  r2_result_symbol: string | null;
-  r2_ringi_no: string | null;
-  final_confirm_date: string | null;
   price_type_code: number | null;
+  // 法人の交渉情報（一覧で交渉状況を出すために付与される）
+  corp_status?: string | null;
+  corp_contact_date?: string | null;
+  corp_note?: string | null;
+  corp_log_count?: number;
+}
+
+/** 法人ごとの交渉情報 */
+export interface CorpNegotiation {
+  corp_code: string;
+  corp_name: string | null;
   status: string;
-  // 一覧で交渉の直近状況を見せるために付与される
-  last_contact_date?: string | null;
-  last_result?: string | null;
-  last_note?: string | null;
-  log_count?: number;
+  contact_date: string | null;
+  note: string | null;
+  updated_at: string | null;
 }
 
-export interface AppItem {
-  id: number;
-  deal_id: number;
-  base_price: number | null;
-  target_price: number | null;
-  agreed_price: number;
-  qty: number | null;
-  customer_name?: string;
-  model_name?: string;
-  equip_name?: string;
-  gas_type?: string;
-  delivery_name?: string;
+export interface CorpSummary {
+  corp_code: string;
+  corp_name: string | null;
+  deals: number;
+  r1_done: number;
+  r2_done: number;
+  status: string | null;
+  contact_date: string | null;
+  note: string | null;
+  log_count: number;
 }
 
-export interface Approval {
+export interface NegotiationLogEntry {
   id: number;
-  step: 'branch' | 'planning';
-  approver_name: string | null;
-  action: 'approved' | 'rejected';
-  comment: string | null;
-  acted_at: string;
-}
-
-export interface Application {
-  id: number;
-  round: 1 | 2;
-  title: string;
-  customer_code: string | null;
-  customer_name: string | null;
-  applicant_id: number;
-  applicant_name?: string;
-  branch: string | null;
-  price_type_code: number | null;
-  price_type_name?: string;
-  price_type_category?: string;
-  status: 'draft' | 'pending_branch' | 'pending_planning' | 'approved' | 'rejected' | 'withdrawn';
-  route: 'branch' | 'planning' | null;
-  rule_name: string | null;
-  target_amount: number | null;
-  agreed_amount: number | null;
-  achievement_rate: number | null;
-  comment: string | null;
+  corp_code: string;
+  user_id: number | null;
+  user_name: string | null;
+  contact_date: string | null;
+  channel: string | null;
+  result: string | null;
+  note: string;
   created_at: string;
-  decided_at: string | null;
-  item_count?: number;
-  items?: AppItem[];
-  approvals?: Approval[];
-}
-
-export interface Rule {
-  id?: number;
-  name: string;
-  min_rate: number | null;
-  max_rate: number | null;
-  final_step: 'branch' | 'planning';
-  priority?: number;
-  active?: number | boolean;
 }
 
 export interface Meta {
@@ -135,28 +103,25 @@ export interface Meta {
   equips: { name: string; count: number }[];
   persons: { name: string; count: number }[];
   customers: { code: string; name: string; count: number }[];
+  corps: { code: string; name: string; count: number }[];
   branches: { name: string; count: number }[];
   offices: { branch: string; name: string; count: number }[];
   exportMaxRows?: number;
-  statuses: { code: string; name: string }[];
+  states: { code: RoundState; name: string }[];
+  corpStatuses: { code: string; name: string }[];
 }
 
-export const STATUS_NAMES: Record<string, string> = {
-  not_started: '未着手',
-  negotiating: '交渉中',
-  r1_agreed: '第1弾妥結',
-  r2_negotiating: '第2弾交渉中',
-  r2_agreed: '第2弾妥結',
-  declined: '値上げ不可',
+export const ROUND_STATE_NAMES: Record<string, string> = {
+  open: '未入力',
+  agreed: '合意済',
+  done: '完了',
 };
 
-export const APP_STATUS_NAMES: Record<string, string> = {
-  draft: '下書き',
-  pending_branch: '支店長承認待ち',
-  pending_planning: '営業企画部承認待ち',
-  approved: '承認済み',
-  rejected: '差戻し',
-  withdrawn: '取下げ',
+export const CORP_STATUS_NAMES: Record<string, string> = {
+  not_started: '未着手',
+  negotiating: '交渉中',
+  agreed: '合意',
+  declined: '値上げ不可',
 };
 
 export const ROLE_NAMES: Record<string, string> = {

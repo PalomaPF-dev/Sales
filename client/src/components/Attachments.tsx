@@ -17,19 +17,19 @@ const humanSize = (n: number) =>
 
 /** 見積書・稟議書類などの添付。案件・申請のどちらにも付けられる */
 export default function Attachments({
-  dealId, applicationId, title = '添付ファイル',
-}: { dealId?: number; applicationId?: number; title?: string }) {
+  dealId, title = '添付ファイル',
+}: { dealId: number; title?: string }) {
   const me = useUser();
   const [rows, setRows] = useState<Attachment[]>([]);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const query = dealId ? `dealId=${dealId}` : `applicationId=${applicationId}`;
+  const query = `dealId=${dealId}`;
   const load = () => {
     api<Attachment[]>(`/attachments?${query}`).then(setRows).catch(() => {});
   };
-  useEffect(load, [dealId, applicationId]);
+  useEffect(load, [dealId]);
 
   const upload = async () => {
     const file = fileRef.current?.files?.[0];
@@ -43,7 +43,6 @@ export default function Attachments({
       const fd = new FormData();
       fd.append('file', file);
       if (dealId) fd.append('dealId', String(dealId));
-      if (applicationId) fd.append('applicationId', String(applicationId));
       await api('/attachments', { method: 'POST', body: fd });
       if (fileRef.current) fileRef.current.value = '';
       setMsg({ kind: 'ok', text: `${file.name} を添付しました` });

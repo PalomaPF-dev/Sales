@@ -16,9 +16,6 @@ interface AdminUser {
   must_change_password?: number;
   locked_until?: string | null;
   has_password: number;
-  can_approve_branch: number;
-  can_approve_planning: number;
-  approve_branches: string | null;
 }
 
 interface Issued { loginId: string; tempPassword: string; name?: string }
@@ -41,8 +38,6 @@ export default function Users() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
-  const [editing, setEditing] = useState<number | null>(null);
-  const [branchDraft, setBranchDraft] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -107,13 +102,11 @@ export default function Users() {
     }
   };
 
-  const approvers = rows.filter((u) => u.can_approve_branch || u.can_approve_planning);
-
   return (
     <div>
-      <h1 className="page-title">管理者画面（ユーザー・決裁者）</h1>
+      <h1 className="page-title">管理者画面（ユーザー）</h1>
       <p className="page-sub">
-        管理者のみが利用できます。ログインIDの発行・名簿の一括取込・決裁権限の設定を行います。
+        管理者のみが利用できます。ログインIDの発行・名簿の一括取込・利用停止を行います。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -147,13 +140,10 @@ export default function Users() {
           <a className="btn secondary sm" href="/api/admin/users/template">記入例をダウンロード</a>
         </div>
         <p className="pt-note" style={{ marginTop: 10 }}>
-          列: <code>ログインID</code> / <code>氏名</code> / <code>役割</code> / <code>支店</code> / <code>営業所</code> /
-          {' '}<code>支店長決裁</code> / <code>営業企画部決裁</code> / <code>決裁できる支店</code> / <code>有効</code>。
+          列: <code>ログインID</code> / <code>氏名</code> / <code>役割</code> / <code>支店</code> / <code>営業所</code> / <code>有効</code>。
           ログインIDと氏名以外は省略できます（役割を省くと営業担当者）。
         </p>
         <p className="pt-note">
-          決裁の列は「〇」「1」などで有効になります。省略した場合は役割から補います（支店長→支店長決裁、営業企画部→営業企画部決裁）。
-          複数支店を決裁する場合は「決裁できる支店」にカンマ区切りで指定してください。
         </p>
         <p className="pt-note">
           仮パスワードは取込結果の一覧にのみ表示されます。画面を離れると再表示できないため、控えてから閉じてください。
@@ -232,47 +222,6 @@ export default function Users() {
           </label>
           <button className="btn" type="submit" disabled={busy}>追加して仮パスワードを発行</button>
         </form>
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          決裁権限は追加後、下の一覧で設定してください。
-        </p>
-      </Card>
-
-      <Card title={`決裁者（${approvers.length}名）`}>
-        {approvers.length === 0 ? (
-          <p className="pt-note" style={{ margin: 0 }}>
-            決裁権限を持つユーザーがいません。このままでは申請が承認できないため、下の一覧で設定してください。
-          </p>
-        ) : (
-          <div className="tbl-scroll">
-            <table className="tbl">
-              <thead>
-                <tr><th>氏名</th><th>役割</th><th>決裁できる段階</th><th>決裁できる支店</th><th>状態</th></tr>
-              </thead>
-              <tbody>
-                {approvers.map((u) => (
-                  <tr key={u.id}>
-                    <td>{u.name}</td>
-                    <td>{ROLE_NAMES[u.role] || u.role}</td>
-                    <td>
-                      {u.can_approve_branch ? <span className="badge blue">支店長決裁</span> : null}
-                      {u.can_approve_planning ? <span className="badge orange" style={{ marginLeft: 4 }}>営業企画部決裁</span> : null}
-                    </td>
-                    <td>
-                      {u.can_approve_branch
-                        ? (u.approve_branches || u.branch || '（未設定）')
-                        : '—'}
-                    </td>
-                    <td>{u.active ? <span className="badge green">有効</span> : <span className="badge gray">停止</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          承認の段階そのもの（達成率で支店長決裁か営業企画部決裁かを分ける条件）は「設定」画面の承認権限ルールで決めます。
-          ここでは、その決裁を誰が実行できるかを決めます。
-        </p>
       </Card>
 
       <div className="card tbl-scroll">
@@ -280,7 +229,6 @@ export default function Users() {
           <thead>
             <tr>
               <th>ID</th><th>ログインID</th><th>氏名</th><th>役割</th><th>支店 / 営業所</th>
-              <th>支店長決裁</th><th>営業企画部決裁</th><th>決裁できる支店</th>
               <th>パスワード</th><th>最終ログイン</th><th>状態</th><th></th>
             </tr>
           </thead>
@@ -296,36 +244,6 @@ export default function Users() {
                   </select>
                 </td>
                 <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
-                <td style={{ textAlign: 'center' }}>
-                  <input type="checkbox" checked={!!u.can_approve_branch}
-                    onChange={(e) => patch(u, { canApproveBranch: e.target.checked })} />
-                </td>
-                <td style={{ textAlign: 'center' }}>
-                  <input type="checkbox" checked={!!u.can_approve_planning}
-                    onChange={(e) => patch(u, { canApprovePlanning: e.target.checked })} />
-                </td>
-                <td>
-                  {editing === u.id ? (
-                    <span style={{ display: 'flex', gap: 4 }}>
-                      <input type="text" value={branchDraft} style={{ width: 160 }}
-                        placeholder="例: 東京中央,横浜"
-                        onChange={(e) => setBranchDraft(e.target.value)} />
-                      <button className="btn sm" onClick={() => { patch(u, { approveBranches: branchDraft }); setEditing(null); }}>
-                        保存
-                      </button>
-                    </span>
-                  ) : (
-                    <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <span style={{ color: u.approve_branches ? undefined : 'var(--muted)' }}>
-                        {u.approve_branches || (u.can_approve_branch ? `${u.branch || '未設定'}（所属）` : '—')}
-                      </span>
-                      <button className="btn secondary sm"
-                        onClick={() => { setEditing(u.id); setBranchDraft(u.approve_branches || ''); }}>
-                        変更
-                      </button>
-                    </span>
-                  )}
-                </td>
                 <td>
                   {!u.has_password ? <span className="badge red">未設定</span>
                     : u.must_change_password ? <span className="badge yellow">仮</span>

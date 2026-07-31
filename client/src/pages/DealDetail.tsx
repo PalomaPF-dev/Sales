@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, yen, pct } from '../api';
-import type { Deal, Meta } from '../types';
-import { useUser } from '../user';
-import { AppStatusBadge, Card, DealStatusBadge } from '../components/ui';
-import NegotiationLog from '../components/NegotiationLog';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api, yen } from '../api';
+import { Card, CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
 import Attachments from '../components/Attachments';
+import type { CorpNegotiation, Deal, Meta } from '../types';
 
 interface DealRes {
   deal: Deal;
-  applications: { id: number; round: number; status: string; achievement_rate: number | null; created_at: string; agreed_price: number }[];
+  negotiation: CorpNegotiation | null;
 }
 
 export default function DealDetail() {
@@ -17,153 +15,114 @@ export default function DealDetail() {
   const navigate = useNavigate();
   const [data, setData] = useState<DealRes | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [form, setForm] = useState({ status: '', negotiation_note: '', negotiated_date: '', price_type_code: '' });
-  const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
-  const user = useUser();
+  const [msg, setMsg] = useState('');
 
+  const load = () => {
+    api<DealRes>(`/deals/${id}`).then(setData).catch((e) => setMsg(e.message));
+  };
   useEffect(() => {
-    api<Meta>('/meta').then(setMeta);
-    api<DealRes>(`/deals/${id}`).then((r) => {
-      setData(r);
-      setForm({
-        status: r.deal.status,
-        negotiation_note: r.deal.negotiation_note || '',
-        negotiated_date: r.deal.negotiated_date || '',
-        price_type_code: r.deal.price_type_code ? String(r.deal.price_type_code) : '',
-      });
-    }).catch((e) => setMsg({ kind: 'error', text: e.message }));
+    load();
+    api<Meta>('/meta').then(setMeta).catch(() => {});
   }, [id]);
 
-  if (!data) return <p>読み込み中...</p>;
-  const d = data.deal;
+  if (!data) {
+    return <div>{msg ? <div className="alert error">{msg}</div> : <p style={{ color: 'var(--muted)' }}>読み込み中...</p>}</div>;
+  }
 
-  const save = async () => {
-    try {
-      const updated = await api<Deal>(`/deals/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          status: form.status,
-          negotiation_note: form.negotiation_note || null,
-          negotiated_date: form.negotiated_date || null,
-          price_type_code: form.price_type_code ? Number(form.price_type_code) : null,
-        }),
-      });
-      setData({ ...data, deal: updated });
-      setMsg({ kind: 'ok', text: '交渉状況を保存しました' });
-    } catch (e) {
-      setMsg({ kind: 'error', text: (e as Error).message });
-    }
-  };
+  const d = data.deal;
+  const pt = meta?.priceTypes.find((p) => p.code === d.price_type_code);
 
   return (
     <div>
-      <p style={{ marginBottom: 8 }}><Link to="/deals">← 案件一覧へ戻る</Link></p>
-      <h1 className="page-title">{d.customer_name} ／ {d.model_name}</h1>
+      <a href="/deals" onClick={(e) => { e.preventDefault(); navigate('/deals'); }}>← 案件一覧へ戻る</a>
+      <h1 className="page-title" style={{ marginTop: 8 }}>{d.customer_name} ／ {d.model_name}</h1>
       <p className="page-sub">
-        {d.equip_name} ・ {d.gas_type} ・ 売上年月 {d.sales_ym} ・ 担当 {d.sales_person} <DealStatusBadge status={d.status} />
+        {d.equip_name} ・ {d.gas_type} ・ 売上年月 {d.sales_ym} ・ 担当 {d.sales_person}
       </p>
-      {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
+      {msg && <div className="alert error" onClick={() => setMsg('')}>{msg}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
         <Card title="基本情報">
           <dl className="kv">
-            <dt>法人</dt><dd>{d.corp_name || '—'}</dd>
+            <dt>法人</dt>
+            <dd>
+              {d.corp_code ? (
+                <a href={`/corps/${d.corp_code}`}
+                   onClick={(e) => { e.preventDefault(); navigate(`/corps/${d.corp_code}`); }}>
+                  {d.corp_name}
+                </a>
+              ) : (d.corp_name || '—')}
+            </dd>
             <dt>得意先</dt><dd>{d.customer_name}（{d.customer_code}）</dd>
             <dt>納入先</dt><dd>{d.delivery_name || '—'}</dd>
+            <dt>扱い先</dt><dd>{d.handler_name || '—'}</dd>
             <dt>業種</dt><dd>{d.industry || '—'}</dd>
+            <dt>器具区分</dt><dd>{d.equip_name || '—'}</dd>
             <dt>カテゴリー</dt><dd>{d.category_name || '—'}</dd>
-            <dt>台数</dt><dd>{d.qty}</dd>
-            <dt>定価</dt><dd>¥{yen(d.list_price)}（新定価 ¥{yen(d.new_list_price)}）</dd>
-            <dt>掛け率</dt><dd>{d.rate != null ? pct(d.rate * 100) : '—'}</dd>
+            <dt>器種名</dt><dd>{d.model_name}（{d.gas_type}）</dd>
+            <dt>定価</dt><dd>¥{yen(d.list_price)}{d.rate != null && `（掛け率 ${(Number(d.rate) * 100).toFixed(1)}%）`}</dd>
+            <dt>支店 / 営業所</dt><dd>{[d.branch, d.office].filter(Boolean).join(' / ') || '—'}</dd>
             <dt>売上伝票NO</dt><dd>{d.voucher_no || '—'}</dd>
             <dt>見積伝票番号</dt><dd>{d.quote_no || '—'}</dd>
+            <dt>単価種別</dt>
+            <dd><PriceTypeBadge code={d.price_type_code} name={pt?.name} category={pt?.category} /></dd>
           </dl>
         </Card>
 
         <Card title="値上げ状況">
           <dl className="kv">
             <dt>出荷単価 ❶</dt><dd>¥{yen(d.base_price)}</dd>
-            <dt>第1弾 目標 ❷</dt><dd>¥{yen(d.r1_target_price)}</dd>
-            <dt>値上後単価 ❸</dt><dd>¥{yen(d.r1_agreed_price)}{d.r1_ringi_no ? `（稟議 ${d.r1_ringi_no}）` : ''}</dd>
-            <dt>値上がり単価 ❹</dt><dd>¥{yen(d.r1_raise_unit)}</dd>
-            <dt>値上がり金額 ❺</dt><dd><strong>¥{yen(d.r1_raise_amount)}</strong></dd>
-            <dt>第2弾 目標 ❻</dt><dd>¥{yen(d.r2_target_price)}</dd>
-            <dt>1回目提示</dt><dd>{d.offer1_date ? `${d.offer1_date} ¥${yen(d.offer1_price)}` : '—'}</dd>
-            <dt>商談結果記号</dt><dd>{d.r2_result_symbol || '—'}</dd>
-            <dt>最終確定単価 ❼</dt><dd>¥{yen(d.r2_agreed_price)}{d.r2_ringi_no ? `（稟議 ${d.r2_ringi_no}）` : ''}</dd>
-            <dt>更なる値上 ❽</dt><dd>¥{yen(d.r2_raise_unit)}</dd>
-            <dt>値上がり金額 ❾</dt><dd><strong>¥{yen(d.r2_raise_amount)}</strong></dd>
           </dl>
+
+          <div className="section-title">第1弾 <RoundStateBadge state={d.r1_state} /></div>
+          <dl className="kv">
+            <dt>目標値上げ単価 ❷</dt><dd>¥{yen(d.r1_target_price)}</dd>
+            <dt>合意単価 ❸</dt><dd>{d.r1_agreed_price == null ? '—' : `¥${yen(d.r1_agreed_price)}`}</dd>
+            <dt>値上がり単価 ❹</dt>
+            <dd>{d.r1_raise_unit == null ? '—' : `¥${yen(d.r1_raise_unit)}`}</dd>
+            <dt>適用年月</dt><dd>{d.r1_applied_ym || '—'}</dd>
+          </dl>
+
+          <div className="section-title">第2弾 <RoundStateBadge state={d.r2_state} /></div>
+          <dl className="kv">
+            <dt>目標値上げ単価 ❻</dt><dd>¥{yen(d.r2_target_price)}</dd>
+            <dt>合意単価 ❼</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
+            <dt>値上がり単価 ❽</dt>
+            <dd>{d.r2_raise_unit == null ? '—' : `¥${yen(d.r2_raise_unit)}`}</dd>
+            <dt>適用年月</dt><dd>{d.r2_applied_ym || '—'}</dd>
+          </dl>
+
+          <p className="pt-note" style={{ marginTop: 12 }}>
+            合意単価・適用年月・完了の入力は<a href="/deals" onClick={(e) => { e.preventDefault(); navigate('/deals'); }}>案件一覧</a>から行います。
+          </p>
         </Card>
       </div>
 
-      <Card title="交渉状況の更新">
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <label className="fld">
-            ステータス
-            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-              {meta?.statuses.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
-            </select>
-          </label>
-          <label className="fld">
-            確定商談日
-            <input type="text" value={form.negotiated_date} placeholder="例: 2026-07-08"
-              onChange={(e) => setForm({ ...form, negotiated_date: e.target.value })} />
-          </label>
-          <label className="fld">
-            マスター単価種別（目標値上げ単価の登録先）
-            <select value={form.price_type_code} onChange={(e) => setForm({ ...form, price_type_code: e.target.value })}>
-              <option value="">未設定</option>
-              {meta?.priceTypes.map((p) => (
-                <option key={p.code} value={String(p.code)}>{p.code}. {p.name}（{p.category}）</option>
-              ))}
-            </select>
-          </label>
-          <label className="fld" style={{ flex: 1, minWidth: 260 }}>
-            商談メモ
-            <textarea rows={2} value={form.negotiation_note}
-              onChange={(e) => setForm({ ...form, negotiation_note: e.target.value })} />
-          </label>
-          <button className="btn" onClick={save} disabled={!user}>保存</button>
-        </div>
-        {form.price_type_code && meta && (
-          <p className="pt-note">
-            {meta.priceTypes.find((p) => p.code === Number(form.price_type_code))?.note}
-          </p>
-        )}
+      <Card title="交渉状況（法人単位）">
+        <p style={{ margin: 0, fontSize: 13 }}>
+          <CorpStatusBadge status={data.negotiation?.status} />
+          {data.negotiation?.contact_date && (
+            <span style={{ marginLeft: 8, color: 'var(--ink-2)' }}>
+              直近商談日 {String(data.negotiation.contact_date).slice(0, 10)}
+            </span>
+          )}
+        </p>
+        {data.negotiation?.note && <p className="pt-note" style={{ marginTop: 6 }}>{data.negotiation.note}</p>}
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          交渉情報と履歴は法人ごとに記録します。
+          {d.corp_code && (
+            <>
+              {' '}
+              <a href={`/corps/${d.corp_code}`}
+                 onClick={(e) => { e.preventDefault(); navigate(`/corps/${d.corp_code}`); }}>
+                {d.corp_name} の交渉情報を開く
+              </a>
+            </>
+          )}
+        </p>
       </Card>
 
-      <NegotiationLog dealId={d.id} />
-
-      <Attachments dealId={d.id} title="添付ファイル（見積書など）" />
-
-      <Card title="この明細に関する申請">
-        {data.applications.length === 0 ? (
-          <p style={{ color: 'var(--muted)', fontSize: 13 }}>
-            申請はまだありません。案件一覧で明細を選択して申請を作成するか、
-            <a href="#" onClick={(e) => { e.preventDefault(); navigate('/applications/new', { state: { dealIds: [d.id], round: d.r1_agreed_price && d.r1_agreed_price > (d.base_price ?? 0) ? 2 : 1 } }); }}> この明細で申請を作成</a>
-            できます。
-          </p>
-        ) : (
-          <table className="tbl">
-            <thead>
-              <tr><th>申請</th><th>弾</th><th className="num">合意単価</th><th className="num">達成率</th><th>状態</th><th>作成日</th></tr>
-            </thead>
-            <tbody>
-              {data.applications.map((a) => (
-                <tr key={a.id} className="clickable" onClick={() => navigate(`/applications/${a.id}`)}>
-                  <td>#{a.id}</td>
-                  <td>第{a.round}弾</td>
-                  <td className="num">¥{yen(a.agreed_price)}</td>
-                  <td className="num">{a.achievement_rate != null ? pct(a.achievement_rate) : '—'}</td>
-                  <td><AppStatusBadge status={a.status} /></td>
-                  <td>{a.created_at?.slice(0, 16)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
+      <Attachments dealId={d.id} />
     </div>
   );
 }

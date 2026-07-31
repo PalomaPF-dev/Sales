@@ -1,62 +1,46 @@
 import { useEffect, useState } from 'react';
-import { api, yen } from '../api';
-import { Card } from './ui';
+import { api } from '../api';
 import { useUser } from '../user';
+import type { NegotiationLogEntry } from '../types';
 
-export interface LogEntry {
-  id: number;
-  deal_id: number;
-  user_id: number | null;
-  user_name: string | null;
-  contact_date: string | null;
-  channel: string | null;
-  proposed_price: number | null;
-  result: string | null;
-  note: string;
-  created_at: string;
-}
+const CHANNELS = ['訪問', '電話', 'メール', '本部商談', 'その他'];
+const RESULTS = ['継続交渉', '合意', '保留', '不可'];
 
-const CHANNELS = ['訪問', '電話', 'メール', 'オンライン', '本部商談', 'その他'];
-const RESULTS = ['継続交渉', '合意', '保留', '値上げ不可'];
-
-const RESULT_COLOR: Record<string, string> = {
-  合意: 'green',
-  継続交渉: 'blue',
-  保留: 'yellow',
-  値上げ不可: 'red',
-};
-
-const today = () => new Date().toISOString().slice(0, 10);
-
-/** 案件詳細に表示する交渉履歴。商談のたびに1件追加していく */
-export default function NegotiationLog({ dealId }: { dealId: number }) {
+/**
+ * 法人ごとの交渉履歴。
+ * 単価は器種ごとでも交渉そのものは法人（本部）単位で進むため、
+ * 履歴も法人に紐づけて記録する。
+ */
+export default function NegotiationLog({ corpCode, corpName }: { corpCode: string; corpName?: string | null }) {
   const me = useUser();
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useState<NegotiationLogEntry[]>([]);
   const [form, setForm] = useState({
-    contact_date: today(), channel: '訪問', proposed_price: '', result: '継続交渉', note: '',
+    contact_date: new Date().toISOString().slice(0, 10),
+    channel: CHANNELS[0],
+    result: RESULTS[0],
+    note: '',
   });
-  const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = () => {
-    api<LogEntry[]>(`/deals/${dealId}/logs`).then(setLogs).catch(() => {});
+    api<NegotiationLogEntry[]>(`/corps/${encodeURIComponent(corpCode)}/logs`)
+      .then(setLogs)
+      .catch((e) => setMsg(e.message));
   };
-  useEffect(load, [dealId]);
+  useEffect(load, [corpCode]);
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.note.trim()) {
-      setMsg({ kind: 'error', text: '内容を入力してください' });
-      return;
-    }
+    if (!form.note.trim()) { setMsg('内容を入力してください'); return; }
     setBusy(true);
-    setMsg(null);
+    setMsg('');
     try {
-      await api(`/deals/${dealId}/logs`, { method: 'POST', body: JSON.stringify(form) });
-      setForm({ ...form, proposed_price: '', note: '' });
+      await api(`/corps/${encodeURIComponent(corpCode)}/logs`, { method: 'POST', body: JSON.stringify(form) });
+      setForm({ ...form, note: '' });
       load();
     } catch (err) {
-      setMsg({ kind: 'error', text: (err as Error).message });
+      setMsg((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -68,15 +52,16 @@ export default function NegotiationLog({ dealId }: { dealId: number }) {
       await api(`/logs/${id}`, { method: 'DELETE' });
       load();
     } catch (err) {
-      setMsg({ kind: 'error', text: (err as Error).message });
+      setMsg((err as Error).message);
     }
   };
 
   return (
-    <Card title={`交渉履歴（${logs.length}件）`}>
-      {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
+    <div className="card">
+      <h3>交渉履歴{corpName ? ` — ${corpName}` : ''}（{logs.length}件）</h3>
+      {msg && <div className="alert error" onClick={() => setMsg('')}>{msg}</div>}
 
-      <form onSubmit={add} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 16 }}>
+      <form onSubmit={add} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <label className="fld">
           商談日
           <input type="date" value={form.contact_date}
@@ -85,21 +70,16 @@ export default function NegotiationLog({ dealId }: { dealId: number }) {
         <label className="fld">
           手段
           <select value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })}>
-            {CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+            {CHANNELS.map((c) => <option key={c}>{c}</option>)}
           </select>
-        </label>
-        <label className="fld">
-          提示単価
-          <input type="number" style={{ width: 110 }} value={form.proposed_price} placeholder="任意"
-            onChange={(e) => setForm({ ...form, proposed_price: e.target.value })} />
         </label>
         <label className="fld">
           結果
           <select value={form.result} onChange={(e) => setForm({ ...form, result: e.target.value })}>
-            {RESULTS.map((r) => <option key={r} value={r}>{r}</option>)}
+            {RESULTS.map((r) => <option key={r}>{r}</option>)}
           </select>
         </label>
-        <label className="fld" style={{ flex: 1, minWidth: 260 }}>
+        <label className="fld" style={{ flex: 1, minWidth: 240 }}>
           内容
           <input type="text" value={form.note} placeholder="先方の反応・次回の宿題など"
             onChange={(e) => setForm({ ...form, note: e.target.value })} />
@@ -108,29 +88,28 @@ export default function NegotiationLog({ dealId }: { dealId: number }) {
       </form>
 
       {logs.length === 0 ? (
-        <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+        <p className="pt-note" style={{ marginTop: 12 }}>
           まだ履歴がありません。商談のたびに記録すると、経緯を後から追えるようになります。
         </p>
       ) : (
-        <ol className="timeline">
+        <ul className="timeline" style={{ marginTop: 14 }}>
           {logs.map((l) => (
             <li key={l.id}>
               <div className="timeline-head">
-                <strong>{l.contact_date || l.created_at.slice(0, 10)}</strong>
+                <strong>{l.contact_date || String(l.created_at).slice(0, 10)}</strong>
                 {l.channel && <span className="badge gray">{l.channel}</span>}
-                {l.result && <span className={`badge ${RESULT_COLOR[l.result] || 'gray'}`}>{l.result}</span>}
-                {l.proposed_price != null && <span className="badge blue">提示 ¥{yen(l.proposed_price)}</span>}
-                <span style={{ flex: 1 }} />
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{l.user_name || '—'}</span>
+                {l.result && <span className="badge blue">{l.result}</span>}
+                <span style={{ color: 'var(--muted)' }}>{l.user_name || '—'}</span>
                 {(l.user_id === me.id || me.role === 'planning' || me.role === 'admin') && (
-                  <button className="btn secondary sm" onClick={() => remove(l.id)}>削除</button>
+                  <button className="btn secondary sm" style={{ marginLeft: 'auto' }}
+                    onClick={() => remove(l.id)}>削除</button>
                 )}
               </div>
               <div className="timeline-body">{l.note}</div>
             </li>
           ))}
-        </ol>
+        </ul>
       )}
-    </Card>
+    </div>
   );
 }

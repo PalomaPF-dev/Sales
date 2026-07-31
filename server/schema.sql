@@ -1,5 +1,5 @@
 -- =============================================================
--- 値上げ交渉・合意価格申請 管理アプリ スキーマ
+-- 値上げ単価 管理アプリ スキーマ
 -- =============================================================
 
 -- ※ PRAGMA（journal_mode / foreign_keys）は接続時に server/db.js で設定する。
@@ -18,11 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   must_change_password INTEGER NOT NULL DEFAULT 0, -- 仮パスワードの初回変更を強制
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,             -- 連続失敗による一時ロックの解除時刻
-  last_login_at TEXT,
-  -- 決裁権限。役割とは別に管理者が個別に付け外しできる
-  can_approve_branch   INTEGER NOT NULL DEFAULT 0,  -- 支店長決裁ができる
-  can_approve_planning INTEGER NOT NULL DEFAULT 0,  -- 営業企画部決裁ができる
-  approve_branches     TEXT     -- 決裁できる支店（カンマ区切り。空なら所属支店のみ）
+  last_login_at TEXT
 );
 
 -- ※ login_id の一意インデックスは server/db.js の migrate() で作成する。
@@ -116,99 +112,58 @@ CREATE TABLE IF NOT EXISTS deals (
   final_rate      REAL,   -- CF 最終確定掛率
   r2_agreed_price REAL,   -- CG 最終確定単価（❼ 第2弾 妥結単価）
   price_type_code INTEGER REFERENCES price_types(code), -- マスター単価種別（6種）
-  status          TEXT NOT NULL DEFAULT 'not_started',
-    -- not_started / negotiating / r1_agreed / r2_negotiating / r2_agreed / declined
+  -- 弾ごとの進捗。営業担当者が案件一覧で合意単価と適用年月を入れ、弾ごとに完了にする
+  r1_applied_ym   TEXT,   -- 第1弾 値上げの適用年月（YYYY-MM）
+  r1_done         INTEGER NOT NULL DEFAULT 0,
+  r2_applied_ym   TEXT,   -- 第2弾 値上げの適用年月（YYYY-MM）
+  r2_done         INTEGER NOT NULL DEFAULT 0,
   updated_at      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_deals_customer ON deals(customer_code);
 CREATE INDEX IF NOT EXISTS idx_deals_equip    ON deals(equip_name);
 CREATE INDEX IF NOT EXISTS idx_deals_person   ON deals(sales_person);
-CREATE INDEX IF NOT EXISTS idx_deals_status   ON deals(status);
+CREATE INDEX IF NOT EXISTS idx_deals_corp     ON deals(corp_code);
 
--- 申請（合意価格の申請）
-CREATE TABLE IF NOT EXISTS applications (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  round           INTEGER NOT NULL CHECK (round IN (1,2)),
-  title           TEXT,
-  customer_code   TEXT,
-  customer_name   TEXT,
-  applicant_id    INTEGER NOT NULL REFERENCES users(id),
-  branch          TEXT,
-  office          TEXT,
-  price_type_code INTEGER REFERENCES price_types(code),
-  status          TEXT NOT NULL DEFAULT 'draft',
-    -- draft / pending_branch / pending_planning / approved / rejected / withdrawn
-  route           TEXT,   -- 'branch'（支店長決裁で完結） / 'planning'（営業企画部決裁まで）
-  rule_name       TEXT,   -- 適用された承認ルール名
-  target_amount   REAL,   -- 目標値上金額 Σ(目標単価-基準単価)×台数
-  agreed_amount   REAL,   -- 申請値上金額 Σ(合意単価-基準単価)×台数
-  achievement_rate REAL,  -- 達成率(%)
-  comment         TEXT,
-  created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-  updated_at      TEXT,
-  decided_at      TEXT
-);
-
-CREATE TABLE IF NOT EXISTS application_items (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
-  deal_id        INTEGER NOT NULL REFERENCES deals(id),
-  base_price     REAL,  -- 基準単価（第1弾: 出荷単価❶ / 第2弾: 値上後単価❸）
-  target_price   REAL,  -- 目標単価（第1弾: ❷ / 第2弾: ❻）
-  agreed_price   REAL NOT NULL,  -- 合意単価
-  qty            REAL
-);
-
--- 承認履歴
-CREATE TABLE IF NOT EXISTS approvals (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
-  step           TEXT NOT NULL,   -- 'branch' | 'planning'
-  approver_id    INTEGER REFERENCES users(id),
-  action         TEXT NOT NULL,   -- 'approved' | 'rejected'
-  comment        TEXT,
-  acted_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
-
--- 承認権限ルール（達成率で承認ルートを判定・別途設定可能）
-CREATE TABLE IF NOT EXISTS approval_rules (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  name       TEXT NOT NULL,
-  min_rate   REAL,   -- 達成率下限（この値以上, NULLは下限なし）
-  max_rate   REAL,   -- 達成率上限（この値未満, NULLは上限なし）
-  final_step TEXT NOT NULL CHECK (final_step IN ('branch','planning')),
-  priority   INTEGER NOT NULL DEFAULT 0,
-  active     INTEGER NOT NULL DEFAULT 1
-);
-
--- 各種設定（支店目標金額など）
+-- 各種設定
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
 
--- 交渉履歴（商談の経緯を時系列で残す）
+-- 法人ごとの交渉情報
+-- 単価は器種ごとでも、交渉そのものは法人（本部）単位で進むため、
+-- 交渉状況とメモは法人に紐づけて持つ。
+CREATE TABLE IF NOT EXISTS corp_negotiations (
+  corp_code    TEXT PRIMARY KEY,
+  corp_name    TEXT,
+  status       TEXT NOT NULL DEFAULT 'not_started',
+    -- not_started / negotiating / agreed / declined
+  contact_date TEXT,             -- 直近の商談日
+  note         TEXT,             -- 交渉メモ
+  updated_at   TEXT,
+  updated_by   INTEGER REFERENCES users(id)
+);
+
+-- 交渉履歴（法人ごとに商談の経緯を時系列で残す）
 CREATE TABLE IF NOT EXISTS negotiation_logs (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  deal_id      INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+  corp_code    TEXT NOT NULL,
   user_id      INTEGER REFERENCES users(id),
   contact_date TEXT,             -- 商談日
   channel      TEXT,             -- 訪問 / 電話 / メール / 本部商談 など
-  proposed_price REAL,           -- その場で提示した単価
   result       TEXT,             -- 継続交渉 / 合意 / 保留 / 不可
   note         TEXT NOT NULL,
   created_at   TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_logs_deal ON negotiation_logs(deal_id);
+CREATE INDEX IF NOT EXISTS idx_logs_corp ON negotiation_logs(corp_code);
 
 -- 添付ファイル（見積書・稟議書類など）
 -- 外部ストレージを増やさずに済むよう、実体はbase64でDBに保存する
 CREATE TABLE IF NOT EXISTS attachments (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   deal_id        INTEGER REFERENCES deals(id) ON DELETE CASCADE,
-  application_id INTEGER REFERENCES applications(id) ON DELETE CASCADE,
   filename       TEXT NOT NULL,
   mime_type      TEXT,
   size           INTEGER,
@@ -218,52 +173,25 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
-CREATE INDEX IF NOT EXISTS idx_attach_app  ON attachments(application_id);
 
--- アプリ内通知
-CREATE TABLE IF NOT EXISTS notifications (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL,   -- submitted / approved / rejected / forwarded
-  title      TEXT NOT NULL,
-  body       TEXT,
-  link       TEXT,            -- 画面内のリンク先（例: /applications/12）
-  read_at    TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read_at);
-
--- 値上げ目標（支店 / 営業所 / 担当者の単位で設定）
-CREATE TABLE IF NOT EXISTS targets (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope       TEXT NOT NULL CHECK (scope IN ('branch','office','person')),
-  scope_value TEXT NOT NULL,
-  round       INTEGER NOT NULL CHECK (round IN (1,2)),
-  amount      REAL NOT NULL
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_key ON targets(scope, scope_value, round);
-
--- 計算列ビュー（Excelの意味合いを再現）
---   ❹ r1_raise_unit   = ❸値上後単価 - ❶出荷単価         (BO列)
---   ❺ r1_raise_amount = ❹ × 台数                          (BP列)
---   ❽ r2_raise_unit   = ❼最終確定単価 - ❸値上後単価      (CH列, CB列が〇のとき有効)
---   ❾ r2_raise_amount = ❽ × 台数                          (CI列)
---   ❺+❾ = 値上げ金額総数
+-- 計算列ビュー
+--   単価だけの管理表のため、台数を掛けた金額は扱わない。
+--   ❹ r1_raise_unit = ❸値上後単価 - ❶出荷単価
+--   ❽ r2_raise_unit = ❼最終確定単価 - ❸値上後単価（未妥結なら❶出荷単価）
+--   r1_state / r2_state … 弾ごとの進み具合（未入力 / 合意済 / 完了）
 CREATE VIEW IF NOT EXISTS deal_calc AS
 SELECT
   d.*,
   CASE WHEN d.r1_agreed_price IS NOT NULL AND d.base_price IS NOT NULL
-       THEN d.r1_agreed_price - d.base_price ELSE 0 END AS r1_raise_unit,
-  (CASE WHEN d.r1_agreed_price IS NOT NULL AND d.base_price IS NOT NULL
-        THEN d.r1_agreed_price - d.base_price ELSE 0 END) * COALESCE(d.qty, 0) AS r1_raise_amount,
-  CASE WHEN (d.r2_result_symbol LIKE '〇%' OR d.r2_result_symbol LIKE '○%' OR d.r2_result_symbol LIKE '◯%')
-            AND COALESCE(d.r2_agreed_price, 0) > 0
-       THEN d.r2_agreed_price - COALESCE(d.r1_agreed_price, d.base_price, 0) ELSE 0 END AS r2_raise_unit,
-  (CASE WHEN (d.r2_result_symbol LIKE '〇%' OR d.r2_result_symbol LIKE '○%' OR d.r2_result_symbol LIKE '◯%')
-             AND COALESCE(d.r2_agreed_price, 0) > 0
-        THEN d.r2_agreed_price - COALESCE(d.r1_agreed_price, d.base_price, 0) ELSE 0 END) * COALESCE(d.qty, 0) AS r2_raise_amount,
-  COALESCE(d.r1_target_price - d.base_price, 0) * COALESCE(d.qty, 0) AS r1_target_amount,
-  COALESCE(d.r2_target_price - COALESCE(d.r1_agreed_price, d.base_price), 0) * COALESCE(d.qty, 0) AS r2_target_amount
+       THEN d.r1_agreed_price - d.base_price END AS r1_raise_unit,
+  CASE WHEN d.r2_agreed_price IS NOT NULL
+       THEN d.r2_agreed_price - COALESCE(d.r1_agreed_price, d.base_price) END AS r2_raise_unit,
+  -- 管理表では未交渉の行にも値上後単価に現行単価が入っているため、
+  -- 「値が入っている」ではなく「実際に上がっている」を合意済みとみなす
+  CASE WHEN d.r1_done = 1 THEN 'done'
+       WHEN d.r1_agreed_price > d.base_price THEN 'agreed'
+       ELSE 'open' END AS r1_state,
+  CASE WHEN d.r2_done = 1 THEN 'done'
+       WHEN d.r2_agreed_price > COALESCE(d.r1_agreed_price, d.base_price) THEN 'agreed'
+       ELSE 'open' END AS r2_state
 FROM deals d;

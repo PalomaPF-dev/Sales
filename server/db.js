@@ -386,6 +386,10 @@ export async function initDb() {
   if (initialized) return initialized;
   initialized = (async () => {
     if (isPostgres) await preparePostgresSchema();
+    // スキーマ適用より先に、既存DBの形をそろえておく。
+    // 計算列ビューは列構成が変わると作り直しになり、
+    // ビューが参照する列はスキーマ適用前に存在している必要がある。
+    await beforeSchema();
     const schemaFile = isPostgres ? 'schema.postgres.sql' : 'schema.sql';
     const schema = readFileSync(path.join(__dirname, schemaFile), 'utf8');
     await db.exec(schema);
@@ -428,34 +432,50 @@ async function preparePostgresSchema() {
  * CREATE TABLE IF NOT EXISTS は既存テーブルを変更しないため、
  * 認証機能の追加前に作られたDBには列が無い。既にある場合のエラーは無視する。
  */
-async function migrate() {
-  const additions = [
+/** 既にある列を足す。テーブルが無い（新規DB）場合と、列が既にある場合は何もしない */
+async function tryAlter(sql) {
+  try {
+    await db.run(sql);
+  } catch (e) {
+    const m = e?.message || '';
+    if (/duplicate column|already exists|no such table|does not exist/i.test(m)) return;
+    console.warn(`マイグレーション警告: ${sql} → ${m}`);
+  }
+}
+
+/**
+ * スキーマ適用の前に済ませておくこと。
+ * 計算列ビューは列構成が変わったら作り直す必要があり、
+ * かつビューが参照する列はスキーマ適用時点で存在していなければならない。
+ */
+async function beforeSchema() {
+  // 旧定義のビューは CREATE VIEW IF NOT EXISTS では置き換わらないため落としておく
+  try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
+
+  for (const sql of [
     'ALTER TABLE users ADD COLUMN login_id TEXT',
     'ALTER TABLE users ADD COLUMN password_hash TEXT',
     'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN locked_until TEXT',
     'ALTER TABLE users ADD COLUMN last_login_at TEXT',
-    // 同じファイルの二重取込を検知するための内容ハッシュ
+    // 同じファイルの二重取込を検知するための内容ハッシュとデータ指紋
     'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',
-    // ファイルを再保存しただけの違いを無視するための、データ部分の指紋
     'ALTER TABLE import_batches ADD COLUMN data_hash TEXT',
-    // 決裁権限。役割とは別に、誰がどの段階を決裁できるかを個別に設定する
-    'ALTER TABLE users ADD COLUMN can_approve_branch INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE users ADD COLUMN can_approve_planning INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE users ADD COLUMN approve_branches TEXT',
-  ];
-  for (const sql of additions) {
-    try {
-      await db.run(sql);
-    } catch (e) {
-      // 列が既にある場合のエラーは想定内（SQLite: duplicate column name /
-      // PostgreSQL: column ... already exists）。それ以外は設計上の問題なので出す
-      if (!/duplicate column|already exists/i.test(e?.message || '')) {
-        console.warn(`マイグレーション警告: ${sql} → ${e.message}`);
-      }
-    }
+    // 弾ごとの適用年月と完了（案件一覧から営業担当者が入れる）
+    'ALTER TABLE deals ADD COLUMN r1_applied_ym TEXT',
+    'ALTER TABLE deals ADD COLUMN r1_done INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE deals ADD COLUMN r2_applied_ym TEXT',
+    'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
+    // 交渉履歴を法人単位にする
+    'ALTER TABLE negotiation_logs ADD COLUMN corp_code TEXT',
+  ]) {
+    await tryAlter(sql);
   }
+}
+
+/** スキーマ適用後のデータ移行と後片付け */
+async function migrate() {
   // 認証機能より前から居るユーザーはログインIDを持たないため補完する。
   // これが無いとログインもパスワード設定もできない状態になる。
   try {
@@ -464,25 +484,64 @@ async function migrate() {
     console.warn(`マイグレーション警告: ログインIDを補完できませんでした → ${e.message}`);
   }
 
-  // 列追加後でないとインデックスを張れないため、ここで実行する
   try {
     await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id)');
   } catch (e) {
     console.warn(`マイグレーション警告: login_id の一意制約を作成できませんでした → ${e.message}`);
   }
 
-  // 決裁権限の列を足す前から居るユーザーは、それまでの役割どおりの権限を引き継ぐ。
-  // 引き継がないと、列を足した瞬間に全員が決裁できなくなる。
+  // 交渉履歴が案件単位だった頃の行を、案件の法人へ付け替える。
+  // 付け替えないと、法人ごとの履歴から過去の記録が見えなくなる。
   try {
-    const { c } = await db.get(
-      'SELECT COUNT(*) AS c FROM users WHERE can_approve_branch = 1 OR can_approve_planning = 1'
-    );
+    await db.run(`
+      UPDATE negotiation_logs SET corp_code =
+        (SELECT d.corp_code FROM deals d WHERE d.id = negotiation_logs.deal_id)
+       WHERE corp_code IS NULL`);
+  } catch { /* deal_id 列が無い（新しいDB）場合は何もしない */ }
+  try {
+    await db.run('DELETE FROM negotiation_logs WHERE corp_code IS NULL');
+  } catch (e) {
+    console.warn(`マイグレーション警告: 法人が特定できない交渉履歴を整理できませんでした → ${e.message}`);
+  }
+  // 旧テーブルの deal_id は NOT NULL のため、残したままだと法人単位の記録が入らない。
+  // 付け替えが済んだあとに列ごと落とす（索引が残っていると落とせないので先に消す）。
+  try { await db.run('DROP INDEX IF EXISTS idx_logs_deal'); } catch { /* 無ければよい */ }
+  try {
+    await db.run('ALTER TABLE negotiation_logs DROP COLUMN deal_id');
+  } catch (e) {
+    if (!/no such column|does not exist|no column named/i.test(e?.message || '')) {
+      console.warn(`マイグレーション警告: 交渉履歴の deal_id を削除できませんでした → ${e.message}`);
+    }
+  }
+
+  // 妥結済みの明細は完了として引き継ぐ。
+  // 引き継がないと、これまでの妥結がすべて未完了に見えてしまう。
+  try {
+    const { c } = await db.get('SELECT COUNT(*) AS c FROM deals WHERE r1_done = 1 OR r2_done = 1');
     if (Number(c) === 0) {
-      await db.run("UPDATE users SET can_approve_branch = 1 WHERE role = 'branch_manager'");
-      await db.run("UPDATE users SET can_approve_planning = 1 WHERE role = 'planning'");
+      await db.run(`
+        UPDATE deals SET r1_done = 1
+         WHERE r1_agreed_price IS NOT NULL AND base_price IS NOT NULL
+           AND r1_agreed_price > base_price`);
+      await db.run(`
+        UPDATE deals SET r2_done = 1
+         WHERE r2_agreed_price IS NOT NULL AND r2_agreed_price > 0
+           AND (r2_result_symbol LIKE '〇%' OR r2_result_symbol LIKE '○%' OR r2_result_symbol LIKE '◯%')`);
     }
   } catch (e) {
-    console.warn(`マイグレーション警告: 決裁権限を引き継げませんでした → ${e.message}`);
+    console.warn(`マイグレーション警告: 弾ごとの完了を引き継げませんでした → ${e.message}`);
+  }
+
+  // 申請ワークフローの廃止にともない使わなくなったテーブルを片付ける。
+  // 残しておくと、次にスキーマを読む人がまだ使われていると誤解する。
+  const cascade = isPostgres ? ' CASCADE' : '';
+  try { await db.run('DELETE FROM attachments WHERE application_id IS NOT NULL'); } catch { /* 列が無ければよい */ }
+  for (const t of ['approvals', 'application_items', 'applications', 'approval_rules', 'notifications', 'targets']) {
+    try {
+      await db.run(`DROP TABLE IF EXISTS ${t}${cascade}`);
+    } catch (e) {
+      console.warn(`マイグレーション警告: ${t} を削除できませんでした → ${e.message}`);
+    }
   }
 }
 
@@ -515,20 +574,7 @@ async function seedMasters() {
     ]);
   }
 
-  const { c: ruleCount } = await db.get('SELECT COUNT(*) AS c FROM approval_rules');
-  if (Number(ruleCount) === 0) {
-    const sql = 'INSERT INTO approval_rules (name, min_rate, max_rate, final_step, priority) VALUES (?,?,?,?,?)';
-    // 既定: 目標達成（100%以上）なら支店長決裁で完結、未達なら営業企画部決裁まで
-    await db.batch([
-      { sql, params: ['目標達成（達成率100%以上）→ 支店長決裁', 100, null, 'branch', 1] },
-      { sql, params: ['目標未達（達成率100%未満）→ 営業企画部決裁', null, 100, 'planning', 2] },
-    ]);
-  }
-
-  const setSql = 'INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)';
   await db.batch([
-    { sql: setSql, params: ['r1_target_total', '5042350'] }, // 第1弾 支店値上げ目標金額（管理表より）
-    { sql: setSql, params: ['r2_target_total', '8622667'] }, // 第2弾 支店値上げ目標金額（管理表より）
-    { sql: setSql, params: ['branch_name', '東京中央'] },
+    { sql: 'INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)', params: ['branch_name', '東京中央'] },
   ]);
 }
