@@ -23,6 +23,8 @@ export interface FieldDef {
 export interface ParsedFile {
   filename: string;
   contentHash: string;
+  /** 見出しより下のデータから作る指紋。再保存しただけの違いを無視して二重取込を止める */
+  dataHash: string;
   headerRow: number;
   headers: string[];
   /** 見出し行より下の全行（セルの配列） */
@@ -45,10 +47,26 @@ function normalizeHeader(raw: unknown): string {
   return s.toUpperCase();
 }
 
-/** ファイルの中身からSHA-256を出す（二重取込の判定に使う） */
-async function sha256(buffer: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
+/** SHA-256（二重取込の判定に使う） */
+async function sha256(data: ArrayBuffer | Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', data as BufferSource);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * データ部分の指紋。server/fields.js の fingerprintRows と同じ規則で作る。
+ * Excelは開いて保存し直すだけでバイト列が変わるため、ファイルのハッシュだけでは
+ * 中身が同じでも別ファイル扱いになり、二重取込を止められない。
+ */
+function fingerprintCell(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v);
+}
+
+async function dataHashOf(rows: unknown[][]): Promise<string> {
+  const text = rows.map((r) => (r || []).map(fingerprintCell).join('\t')).join('\n');
+  return sha256(new TextEncoder().encode(text));
 }
 
 /** 見出し行を探す（項目名として認識できるセルが最も多い行） */
@@ -115,6 +133,7 @@ export async function parseFile(file: File, fields: FieldDef[]): Promise<ParsedF
   return {
     filename: file.name,
     contentHash,
+    dataHash: await dataHashOf(rows),
     headerRow,
     headers,
     rows,
@@ -167,6 +186,7 @@ export async function uploadInChunks(
     body: JSON.stringify({
       filename: parsed.filename,
       contentHash: parsed.contentHash,
+      dataHash: parsed.dataHash,
       mapping: compactMapping,
       force: opts.force ?? false,
     }),

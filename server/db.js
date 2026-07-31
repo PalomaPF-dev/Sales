@@ -438,6 +438,8 @@ async function migrate() {
     'ALTER TABLE users ADD COLUMN last_login_at TEXT',
     // 同じファイルの二重取込を検知するための内容ハッシュ
     'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',
+    // ファイルを再保存しただけの違いを無視するための、データ部分の指紋
+    'ALTER TABLE import_batches ADD COLUMN data_hash TEXT',
     // 決裁権限。役割とは別に、誰がどの段階を決裁できるかを個別に設定する
     'ALTER TABLE users ADD COLUMN can_approve_branch INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN can_approve_planning INTEGER NOT NULL DEFAULT 0',

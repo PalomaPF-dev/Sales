@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
   row_count   INTEGER NOT NULL DEFAULT 0,
   imported_by INTEGER REFERENCES users(id),
   content_hash TEXT,  -- 同じファイルの二重取込を検知する
+  data_hash    TEXT,  -- 再保存でバイト列が変わっても同じデータだと分かるようにする
   imported_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 

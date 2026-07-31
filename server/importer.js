@@ -3,17 +3,20 @@ import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
 import {
   DATE_KEYS, FIELDS, NUMBER_KEYS, REQUIRED_KEYS, TEXT_KEYS,
-  autoMapHeaders, findHeaderRow,
+  autoMapHeaders, findHeaderRow, fingerprintRows,
 } from './fields.js';
 
 /** 同じ内容のファイルを二度取り込もうとしたときに投げる */
 export class DuplicateImportError extends Error {
   constructor(batch) {
-    super(
-      `このファイルは既に取り込まれています（#${batch.id} ${batch.filename} / `
-      + `${Number(batch.row_count).toLocaleString()}行 / ${String(batch.imported_at).slice(0, 16).replace('T', ' ')}）。`
-      + 'そのまま取り込むと明細が二重になり、値上げ金額が二倍になります。'
-    );
+    const where = `#${batch.id} ${batch.filename} / `
+      + `${Number(batch.row_count).toLocaleString()}行 / ${String(batch.imported_at).slice(0, 16).replace('T', ' ')}`;
+    // ファイルが同じか、中身だけが同じかで原因が違うため、書き分ける
+    const head = Number(batch.same_file)
+      ? `このファイルは既に取り込まれています（${where}）。`
+      : `ファイルは違いますが、中身が既に取り込まれたものと同じです（${where}）。`
+        + 'Excelで開いて保存し直すと、中身が同じでも別ファイルになります。';
+    super(head + 'そのまま取り込むと明細が二重になり、値上げ金額が二倍になります。');
     this.name = 'DuplicateImportError';
     this.isDuplicate = true;
     this.batch = batch;
@@ -150,19 +153,35 @@ export function contentHashOf(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
-/** 同じ内容が取り込み済みなら DuplicateImportError を投げる */
-export async function assertNotDuplicate(contentHash) {
+/** 見出しより下のデータから指紋を作る（ファイルを再保存しただけの違いを無視する） */
+export function dataHashOf(rows) {
+  return createHash('sha256').update(fingerprintRows(rows)).digest('hex');
+}
+
+/**
+ * 同じ内容が取り込み済みなら DuplicateImportError を投げる。
+ * ファイルのバイト列（contentHash）と、データ部分の指紋（dataHash）の
+ * どちらかが一致すれば同じ取込とみなす。
+ */
+export async function assertNotDuplicate(contentHash, dataHash) {
+  const conds = [];
+  const params = [];
+  if (contentHash) { conds.push('content_hash = ?'); params.push(contentHash); }
+  if (dataHash) { conds.push('data_hash = ?'); params.push(dataHash); }
+  if (!conds.length) return;
   const dup = await db.get(
-    'SELECT id, filename, row_count, imported_at FROM import_batches WHERE content_hash = ? ORDER BY id LIMIT 1',
-    [contentHash]
+    `SELECT id, filename, row_count, imported_at,
+            CASE WHEN content_hash = ? THEN 1 ELSE 0 END AS same_file
+       FROM import_batches WHERE ${conds.join(' OR ')} ORDER BY id LIMIT 1`,
+    [contentHash ?? null, ...params]
   );
   if (dup) throw new DuplicateImportError(dup);
 }
 
-export async function createBatch(filename, userId, contentHash) {
+export async function createBatch(filename, userId, contentHash, dataHash) {
   const { lastInsertRowid } = await db.run(
-    'INSERT INTO import_batches (filename, row_count, imported_by, content_hash) VALUES (?,?,?,?)',
-    [filename, 0, userId ?? null, contentHash ?? null]
+    'INSERT INTO import_batches (filename, row_count, imported_by, content_hash, data_hash) VALUES (?,?,?,?,?)',
+    [filename, 0, userId ?? null, contentHash ?? null, dataHash ?? null]
   );
   return Number(lastInsertRowid);
 }
@@ -233,13 +252,14 @@ export async function importWorkbook(buffer, filename, userId, onProgress, { for
   await initDb();
 
   const contentHash = contentHashOf(buffer);
-  if (!force) await assertNotDuplicate(contentHash);
-
   const info = inspectWorkbook(buffer);
+  const dataHash = dataHashOf(info.grid.slice(info.headerRow + 1));
+  if (!force) await assertNotDuplicate(contentHash, dataHash);
+
   const useMapping = mapping ?? info.mapping;
   validateMapping(useMapping);
 
-  const batchId = await createBatch(filename, userId, contentHash);
+  const batchId = await createBatch(filename, userId, contentHash, dataHash);
 
   const warnings = new Map();
   let pending = [];

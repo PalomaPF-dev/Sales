@@ -144,3 +144,19 @@ export function findHeaderRow(grid, limit = 15) {
   }
   return bestScore >= 3 ? best : -1;
 }
+
+/**
+ * データ部分の指紋。
+ * Excelは開いて保存し直すだけでバイト列が変わるため、ファイルの内容ハッシュだけでは
+ * 「中身は同じなのに別ファイル扱い」になり、二重取込を止められない。
+ * 見出しより下のセルの値だけから作ることで、データが同じなら同じ値になる。
+ */
+export function fingerprintCell(v) {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v);
+}
+
+export function fingerprintRows(rows) {
+  return rows.map((r) => (r || []).map(fingerprintCell).join('\t')).join('\n');
+}

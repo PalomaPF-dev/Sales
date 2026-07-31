@@ -1505,7 +1505,7 @@ api.post('/import', upload.single('file'), wrap(async (req, res) => {
 
 api.post('/import/session', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
-  const { filename, contentHash, mapping, force } = req.body || {};
+  const { filename, contentHash, dataHash, mapping, force } = req.body || {};
   if (!mapping || typeof mapping !== 'object') {
     return res.status(400).json({ error: '列の対応が指定されていません' });
   }
@@ -1514,15 +1514,17 @@ api.post('/import/session', wrap(async (req, res) => {
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
-  if (contentHash && !force) {
+  if (!force) {
     try {
-      await assertNotDuplicate(String(contentHash));
+      await assertNotDuplicate(contentHash ? String(contentHash) : null, dataHash ? String(dataHash) : null);
     } catch (e) {
       if (e.isDuplicate) return res.status(409).json({ error: e.message, duplicate: true, batch: e.batch });
       throw e;
     }
   }
-  const batchId = await createBatch(String(filename || '（名称不明）'), req.user.id, contentHash || null);
+  const batchId = await createBatch(
+    String(filename || '（名称不明）'), req.user.id, contentHash || null, dataHash || null
+  );
   res.status(201).json({ batchId });
 }));
 
