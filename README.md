@@ -70,7 +70,11 @@ npm run backup                             # DBバックアップ
 
 ## デプロイ
 
-**Vercel（アプリ）＋ Turso（DB）** で公開できます。手順は **[DEPLOY.md](DEPLOY.md)** を参照してください。
+**Vercel（アプリ）＋ Turso（DB）** で公開できます。
+
+- **[SETUP-WEB.md](SETUP-WEB.md)** — ブラウザの管理画面だけで公開する手順（ターミナル不要）
+- **[DEPLOY.md](DEPLOY.md)** — CLIを使う場合の詳細手順・独自ドメイン・バックアップ
+
 自社サーバー向けにDocker / systemdの構成も同梱しています。
 
 環境変数 `TURSO_DATABASE_URL` を設定するとTursoへ、未設定ならローカルのSQLiteファイルへ接続します
