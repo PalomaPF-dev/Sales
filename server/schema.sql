@@ -18,7 +18,11 @@ CREATE TABLE IF NOT EXISTS users (
   must_change_password INTEGER NOT NULL DEFAULT 0, -- 仮パスワードの初回変更を強制
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,             -- 連続失敗による一時ロックの解除時刻
-  last_login_at TEXT
+  last_login_at TEXT,
+  -- 決裁権限。役割とは別に管理者が個別に付け外しできる
+  can_approve_branch   INTEGER NOT NULL DEFAULT 0,  -- 支店長決裁ができる
+  can_approve_planning INTEGER NOT NULL DEFAULT 0,  -- 営業企画部決裁ができる
+  approve_branches     TEXT     -- 決裁できる支店（カンマ区切り。空なら所属支店のみ）
 );
 
 -- ※ login_id の一意インデックスは server/db.js の migrate() で作成する。

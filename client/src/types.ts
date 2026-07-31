@@ -7,6 +7,10 @@ export interface User {
   loginId?: string | null;
   mustChangePassword?: boolean;
   authDisabled?: boolean;
+  // 決裁権限（管理者画面で設定する）
+  canApproveBranch?: boolean;
+  canApprovePlanning?: boolean;
+  approveBranches?: string[];
 }
 
 export interface PriceType {

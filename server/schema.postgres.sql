@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS users (
   must_change_password INTEGER NOT NULL DEFAULT 0,
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,
-  last_login_at TEXT
+  last_login_at TEXT,
+  -- 決裁権限。役割とは別に管理者が個別に付け外しできる
+  can_approve_branch   INTEGER NOT NULL DEFAULT 0,
+  can_approve_planning INTEGER NOT NULL DEFAULT 0,
+  approve_branches     TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id);

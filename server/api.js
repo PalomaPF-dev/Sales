@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
 import { importWorkbook } from './importer.js';
 import { hashPassword, verifyPassword, generateTempPassword, validatePassword, isLegacyHash } from './passwords.js';
@@ -7,7 +8,7 @@ import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
-import { notify, usersByRole } from './notify.js';
+import { approversFor, notify } from './notify.js';
 import { buildWorkbook } from './export.js';
 
 export const api = Router();
@@ -127,6 +128,44 @@ function requireRole(req, res, roles) {
   return true;
 }
 
+/** 管理者だけが触れる操作（ユーザー管理・決裁者設定） */
+function requireAdmin(req, res) {
+  if (!requireLogin(req, res)) return false;
+  if (req.user.role !== 'admin') {
+    res.status(403).json({ error: 'この操作は管理者のみ実行できます' });
+    return false;
+  }
+  return true;
+}
+
+/** 決裁できる支店の一覧。空配列なら所属支店のみ */
+export function approvableBranches(user) {
+  return String(user?.approve_branches || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 支店長決裁ができるか。
+ * 役割ではなく決裁権限で判定する（副支店長などにも付与できるようにするため）。
+ * 対象支店の指定は、明示的に許可された支店か、無指定なら自分の所属支店。
+ */
+export function canApproveBranch(user, branch) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (!Number(user.can_approve_branch)) return false;
+  const allowed = approvableBranches(user);
+  return allowed.length ? allowed.includes(branch) : user.branch === branch;
+}
+
+/** 営業企画部決裁ができるか */
+export function canApprovePlanning(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return Boolean(Number(user.can_approve_planning));
+}
+
 // ---- ログイン / ログアウト ----
 
 // 連続失敗時のロック設定
@@ -136,6 +175,10 @@ const LOCK_MINUTES = 15;
 const publicUser = (u) => ({
   id: u.id, name: u.name, role: u.role, branch: u.branch, office: u.office,
   loginId: u.login_id, mustChangePassword: Boolean(u.must_change_password),
+  // 決裁権限。承認ボタンや承認箱の出し分けに使う（判定はサーバー側でも行う）
+  canApproveBranch: Boolean(Number(u.can_approve_branch)),
+  canApprovePlanning: Boolean(Number(u.can_approve_planning)),
+  approveBranches: approvableBranches(u),
   // 認証が無効な状態を画面側で気づけるようにする
   authDisabled: AUTH_DISABLED || undefined,
 });
@@ -273,24 +316,57 @@ api.post('/password', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// ---- ユーザー管理（管理者・営業企画部） ----
+// ---- ユーザー管理（管理者のみ） ----
+
+const ROLES = ['sales', 'branch_manager', 'planning', 'admin'];
+// 名簿では日本語で書かれることが多いため、役割名の表記ゆれを吸収する
+const ROLE_ALIASES = {
+  '営業担当者': 'sales', '営業': 'sales', '担当者': 'sales', 'sales': 'sales',
+  '支店長': 'branch_manager', 'branch_manager': 'branch_manager',
+  '営業企画部': 'planning', '企画': 'planning', 'planning': 'planning',
+  '管理者': 'admin', 'admin': 'admin',
+};
+
+function parseRole(v) {
+  const s = String(v ?? '').trim();
+  return ROLE_ALIASES[s] || (ROLES.includes(s) ? s : null);
+}
+
+/** 「〇/✓/1/true/はい/有」などを真偽値として読む */
+function parseFlag(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (!s) return false;
+  return ['1', 'true', 'yes', 'y', 'o', '○', '〇', '◯', '✓', 'はい', '有', '可', 'あり'].includes(s);
+}
+
+/** 決裁できる支店の指定を正規化する（全角カンマ・読点・空白区切りも受ける） */
+function normalizeBranchList(v) {
+  if (Array.isArray(v)) v = v.join(',');
+  const list = String(v ?? '')
+    .split(/[,、，\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list.length ? [...new Set(list)].join(',') : null;
+}
+
 api.get('/admin/users', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
+  if (!requireAdmin(req, res)) return;
   const rows = await db.all(`
     SELECT id, name, role, branch, office, active, login_id, last_login_at,
            must_change_password, locked_until,
+           can_approve_branch, can_approve_planning, approve_branches,
            CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
     FROM users ORDER BY id`);
   res.json(rows);
 }));
 
 api.post('/admin/users', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
+  if (!requireAdmin(req, res)) return;
   const { name, role, branch, office, loginId } = req.body || {};
   if (!name || !role || !loginId) {
     return res.status(400).json({ error: '氏名・役割・ログインIDは必須です' });
   }
-  if (!['sales', 'branch_manager', 'planning', 'admin'].includes(role)) {
+  if (!ROLES.includes(role)) {
     return res.status(400).json({ error: '役割の指定が不正です' });
   }
   if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
@@ -310,7 +386,7 @@ api.post('/admin/users', wrap(async (req, res) => {
 }));
 
 api.post('/admin/users/:id/reset-password', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
+  if (!requireAdmin(req, res)) return;
   const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
 
@@ -325,7 +401,7 @@ api.post('/admin/users/:id/reset-password', wrap(async (req, res) => {
 }));
 
 api.patch('/admin/users/:id', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['planning'])) return;
+  if (!requireAdmin(req, res)) return;
   const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
 
@@ -351,14 +427,211 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
     sets.push('active = ?');
     params.push(req.body.active ? 1 : 0);
   }
+  // 決裁権限
+  for (const [field, col] of [
+    ['canApproveBranch', 'can_approve_branch'],
+    ['canApprovePlanning', 'can_approve_planning'],
+  ]) {
+    if (field in (req.body || {})) { sets.push(`${col} = ?`); params.push(req.body[field] ? 1 : 0); }
+  }
+  if ('approveBranches' in (req.body || {})) {
+    sets.push('approve_branches = ?');
+    params.push(normalizeBranchList(req.body.approveBranches));
+  }
   if (!sets.length) return res.status(400).json({ error: '更新項目がありません' });
   params.push(user.id);
   await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
   if (req.body?.active === false) await destroyUserSessions(user.id);
   res.json(await db.get(
     `SELECT id, name, role, branch, office, active, login_id, last_login_at,
+            can_approve_branch, can_approve_planning, approve_branches,
             CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
      FROM users WHERE id = ?`, [user.id]));
+}));
+
+// ---- ユーザーの一括登録 ----
+
+// 名簿の列見出し → 内部項目。表記ゆれをある程度吸収する
+const USER_HEADER_MAP = {
+  'ログインID': 'loginId', 'ログインid': 'loginId', 'loginid': 'loginId', 'ID': 'loginId', 'id': 'loginId',
+  '氏名': 'name', '名前': 'name', '担当者名': 'name', 'name': 'name',
+  '役割': 'role', '権限': 'role', 'ロール': 'role', 'role': 'role',
+  '支店': 'branch', '支店名': 'branch', 'branch': 'branch',
+  '営業所': 'office', '営業所名': 'office', 'office': 'office',
+  '支店長決裁': 'canApproveBranch', '支店決裁': 'canApproveBranch',
+  '営業企画部決裁': 'canApprovePlanning', '企画決裁': 'canApprovePlanning',
+  '決裁できる支店': 'approveBranches', '決裁対象支店': 'approveBranches',
+  '有効': 'active',
+};
+
+/**
+ * 名簿（Excel / CSV）を読んでユーザーの登録内容を組み立てる。
+ * 1行でも問題があれば、その行だけを飛ばして理由を返す。
+ * 途中で止めると「何人入って何人入らなかったか」が分からなくなるため。
+ */
+function parseUserRows(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) throw new Error('シートが見つかりません');
+  // 空行も残す。行番号がExcelの行と一致しないと、エラーの指摘先がずれる
+  const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: true });
+
+  // 見出し行を探す（「氏名」または「ログインID」を含む行）
+  let hi = -1;
+  for (let i = 0; i < Math.min(grid.length, 10); i++) {
+    const cells = (grid[i] || []).map((c) => String(c ?? '').trim());
+    if (cells.some((c) => c === '氏名' || c === '名前' || /^ログインID$/i.test(c))) { hi = i; break; }
+  }
+  if (hi < 0) throw new Error('見出し行が見つかりません。「ログインID」「氏名」「役割」を含む行が必要です');
+
+  const headers = (grid[hi] || []).map((h) => String(h ?? '').trim());
+  const colIndex = {};
+  headers.forEach((h, i) => {
+    const key = USER_HEADER_MAP[h] ?? USER_HEADER_MAP[h.toLowerCase()];
+    if (key && colIndex[key] === undefined) colIndex[key] = i;
+  });
+  if (colIndex.loginId === undefined || colIndex.name === undefined) {
+    throw new Error('「ログインID」と「氏名」の列が必要です');
+  }
+
+  const rows = [];
+  const errors = [];
+  for (let i = hi + 1; i < grid.length; i++) {
+    const row = grid[i] || [];
+    const cell = (key) => (colIndex[key] === undefined ? null : row[colIndex[key]]);
+    const loginId = String(cell('loginId') ?? '').trim();
+    const name = String(cell('name') ?? '').trim();
+    if (!loginId && !name) continue; // 空行
+    const lineNo = i + 1;
+
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
+      errors.push({ line: lineNo, loginId, message: 'ログインIDは半角英数字・._- の3〜32文字で指定してください' });
+      continue;
+    }
+    if (!name) { errors.push({ line: lineNo, loginId, message: '氏名が空です' }); continue; }
+
+    const roleRaw = cell('role');
+    const role = roleRaw == null || String(roleRaw).trim() === '' ? 'sales' : parseRole(roleRaw);
+    if (!role) {
+      errors.push({ line: lineNo, loginId, message: `役割「${String(roleRaw).trim()}」を判別できません（営業担当者/支店長/営業企画部/管理者）` });
+      continue;
+    }
+
+    const branch = nv(cell('branch'));
+    // 決裁権限は列があればその値、無ければ役割から補う
+    const canBranch = colIndex.canApproveBranch !== undefined
+      ? parseFlag(cell('canApproveBranch')) : role === 'branch_manager';
+    const canPlanning = colIndex.canApprovePlanning !== undefined
+      ? parseFlag(cell('canApprovePlanning')) : role === 'planning';
+    if (canBranch && !branch && !normalizeBranchList(cell('approveBranches'))) {
+      errors.push({ line: lineNo, loginId, message: '支店長決裁を与えるには、支店または決裁できる支店の指定が必要です' });
+      continue;
+    }
+
+    // 「有効」列が無い、または空欄なら有効として扱う
+    const activeRaw = colIndex.active === undefined ? '' : String(cell('active') ?? '').trim();
+    rows.push({
+      line: lineNo,
+      loginId,
+      name,
+      role,
+      branch,
+      office: nv(cell('office')),
+      canApproveBranch: canBranch,
+      canApprovePlanning: canPlanning,
+      approveBranches: normalizeBranchList(cell('approveBranches')),
+      active: activeRaw === '' ? true : parseFlag(activeRaw),
+    });
+  }
+  return { rows, errors };
+}
+
+api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!req.file) return res.status(400).json({ error: 'ファイルを選択してください' });
+  // 既存ユーザーを更新するかどうか。既定では追加のみ
+  const updateExisting = req.body?.updateExisting === 'true' || req.body?.updateExisting === true;
+
+  let parsed;
+  try {
+    parsed = parseUserRows(req.file.buffer);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const { rows, errors } = parsed;
+  if (!rows.length && !errors.length) {
+    return res.status(400).json({ error: '取り込める行がありませんでした' });
+  }
+
+  // ファイル内でのログインID重複を先に弾く（後勝ちで上書きされるのを防ぐ）
+  const seen = new Map();
+  const unique = [];
+  for (const r of rows) {
+    if (seen.has(r.loginId)) {
+      errors.push({
+        line: r.line,
+        loginId: r.loginId,
+        message: `ファイル内でログインIDが重複しています（${seen.get(r.loginId)}行目と重複）`,
+      });
+      continue;
+    }
+    seen.set(r.loginId, r.line);
+    unique.push(r);
+  }
+
+  const created = [];
+  const updated = [];
+  const skipped = [];
+  for (const r of unique) {
+    const existing = await db.get('SELECT id FROM users WHERE login_id = ?', [r.loginId]);
+    if (existing && !updateExisting) {
+      skipped.push({ loginId: r.loginId, message: '既に登録されています' });
+      continue;
+    }
+    if (existing) {
+      await db.run(
+        `UPDATE users SET name = ?, role = ?, branch = ?, office = ?, active = ?,
+                can_approve_branch = ?, can_approve_planning = ?, approve_branches = ?
+           WHERE id = ?`,
+        [r.name, r.role, r.branch, r.office, r.active ? 1 : 0,
+         r.canApproveBranch ? 1 : 0, r.canApprovePlanning ? 1 : 0, r.approveBranches, existing.id]
+      );
+      updated.push({ id: existing.id, loginId: r.loginId, name: r.name });
+      continue;
+    }
+    // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
+    const temp = generateTempPassword();
+    const { lastInsertRowid } = await db.run(
+      `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password,
+                          active, can_approve_branch, can_approve_planning, approve_branches)
+       VALUES (?,?,?,?,?,?,1,?,?,?,?)`,
+      [r.name, r.role, r.branch, r.office, r.loginId, await hashPassword(temp),
+       r.active ? 1 : 0, r.canApproveBranch ? 1 : 0, r.canApprovePlanning ? 1 : 0, r.approveBranches]
+    );
+    created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name, tempPassword: temp });
+  }
+
+  res.json({ created, updated, skipped, errors });
+}));
+
+/** 名簿の記入例。これを埋めてそのまま取り込める */
+api.get('/admin/users/template', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const rows = [
+    ['ログインID', '氏名', '役割', '支店', '営業所', '支店長決裁', '営業企画部決裁', '決裁できる支店', '有効'],
+    ['yamada.t', '山田 太郎', '営業担当者', '東京中央', '東京中央営業所', '', '', '', '〇'],
+    ['suzuki.i', '鈴木 一郎', '支店長', '東京中央', '', '〇', '', '', '〇'],
+    ['tanaka.j', '田中 次郎', '営業企画部', '本社', '営業企画部', '', '〇', '', '〇'],
+    ['sato.s', '佐藤 三郎', '支店長', '東京中央', '', '〇', '', '東京中央,横浜', '〇'],
+  ];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 6 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'ユーザー');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.set('Content-Disposition', contentDisposition('ユーザー一括登録_記入例.xlsx', 'users-template.xlsx'));
+  res.send(buf);
 }));
 
 // ---- ユーザー / メタ情報 ----
@@ -837,11 +1110,23 @@ api.get('/applications', wrap(async (req, res) => {
   if (req.query.status) { where.push('a.status = ?'); params.push(req.query.status); }
   if (req.query.mine === '1' && req.user) { where.push('a.applicant_id = ?'); params.push(req.user.id); }
   if (req.query.inbox === '1' && req.user) {
-    // 承認箱: 自分の役割で承認待ちのもの
-    if (req.user.role === 'branch_manager') { where.push("a.status = 'pending_branch' AND a.branch = ?"); params.push(req.user.branch); }
-    else if (req.user.role === 'planning') { where.push("a.status = 'pending_planning'"); }
-    else if (req.user.role === 'admin') { where.push("a.status IN ('pending_branch','pending_planning')"); }
-    else { where.push('1 = 0'); }
+    // 承認箱: 自分が決裁できるものだけを出す（承認APIの判定と同じ条件にする）
+    const clauses = [];
+    if (req.user.role === 'admin') {
+      clauses.push("a.status IN ('pending_branch','pending_planning')");
+    } else {
+      if (canApproveBranch(req.user, req.user.branch) || approvableBranches(req.user).length) {
+        const branches = approvableBranches(req.user);
+        const targets = branches.length ? branches : [req.user.branch];
+        const usable = targets.filter(Boolean);
+        if (usable.length) {
+          clauses.push(`(a.status = 'pending_branch' AND a.branch IN (${usable.map(() => '?').join(',')}))`);
+          params.push(...usable);
+        }
+      }
+      if (canApprovePlanning(req.user)) clauses.push("a.status = 'pending_planning'");
+    }
+    where.push(clauses.length ? `(${clauses.join(' OR ')})` : '1 = 0');
   }
   const rows = await db.all(`
     SELECT a.*, u.name AS applicant_name, p.name AS price_type_name,
@@ -873,7 +1158,7 @@ api.post('/applications/:id/submit', wrap(async (req, res) => {
   await db.run("UPDATE applications SET status = 'pending_branch', route = ?, rule_name = ?, updated_at = ? WHERE id = ?",
     [route, ruleName, now(), app.id]);
 
-  await notify(await usersByRole('branch_manager', app.branch), {
+  await notify(await approversFor('branch', app.branch), {
     kind: 'submitted',
     title: `承認依頼: ${app.title}`,
     body: `${req.user.name} から第${app.round}弾の値上げ申請が提出されました（達成率 ${num(app.achievement_rate).toFixed(1)}%）`,
@@ -916,13 +1201,13 @@ api.post('/applications/:id/approve', wrap(async (req, res) => {
   let step;
   if (app.status === 'pending_branch') {
     step = 'branch';
-    const ok = req.user.role === 'admin' ||
-      (req.user.role === 'branch_manager' && req.user.branch === app.branch);
-    if (!ok) return res.status(403).json({ error: '支店長（同一支店）のみ承認できます' });
+    if (!canApproveBranch(req.user, app.branch)) {
+      return res.status(403).json({ error: `${app.branch} の支店長決裁の権限がありません` });
+    }
   } else if (app.status === 'pending_planning') {
     step = 'planning';
-    if (!['planning', 'admin'].includes(req.user.role)) {
-      return res.status(403).json({ error: '営業企画部のみ承認できます' });
+    if (!canApprovePlanning(req.user)) {
+      return res.status(403).json({ error: '営業企画部決裁の権限がありません' });
     }
   } else {
     return res.status(400).json({ error: '承認待ちの申請ではありません' });
@@ -933,7 +1218,7 @@ api.post('/applications/:id/approve', wrap(async (req, res) => {
 
   if (step === 'branch' && app.route === 'planning') {
     await db.run("UPDATE applications SET status = 'pending_planning', updated_at = ? WHERE id = ?", [now(), app.id]);
-    await notify(await usersByRole('planning'), {
+    await notify(await approversFor('planning'), {
       kind: 'forwarded',
       title: `承認依頼: ${app.title}`,
       body: `支店長承認が完了しました。営業企画部の承認をお願いします（達成率 ${num(app.achievement_rate).toFixed(1)}%）`,
@@ -966,13 +1251,13 @@ api.post('/applications/:id/reject', wrap(async (req, res) => {
   let step;
   if (app.status === 'pending_branch') {
     step = 'branch';
-    const ok = req.user.role === 'admin' ||
-      (req.user.role === 'branch_manager' && req.user.branch === app.branch);
-    if (!ok) return res.status(403).json({ error: '支店長（同一支店）のみ差戻しできます' });
+    if (!canApproveBranch(req.user, app.branch)) {
+      return res.status(403).json({ error: `${app.branch} の支店長決裁の権限がありません` });
+    }
   } else if (app.status === 'pending_planning') {
     step = 'planning';
-    if (!['planning', 'admin'].includes(req.user.role)) {
-      return res.status(403).json({ error: '営業企画部のみ差戻しできます' });
+    if (!canApprovePlanning(req.user)) {
+      return res.status(403).json({ error: '営業企画部決裁の権限がありません' });
     }
   } else {
     return res.status(400).json({ error: '承認待ちの申請ではありません' });

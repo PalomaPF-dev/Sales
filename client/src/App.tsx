@@ -114,8 +114,10 @@ export default function App() {
     );
   }
 
-  const canApprove = user.role === 'branch_manager' || user.role === 'planning' || user.role === 'admin';
+  // 承認箱は「決裁権限を持つ人」に出す（役割ではなく権限で判断する）
+  const canApprove = user.role === 'admin' || user.canApproveBranch || user.canApprovePlanning;
   const canConfig = user.role === 'planning' || user.role === 'admin';
+  const isAdmin = user.role === 'admin';
 
   return (
     <UserContext.Provider value={user}>
@@ -151,7 +153,7 @@ export default function App() {
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
             {canConfig && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
-            {canConfig && <NavLink to="/users"><IconUsers /><span className="lbl">ユーザー管理</span></NavLink>}
+            {isAdmin && <NavLink to="/users"><IconUsers /><span className="lbl">管理者画面</span></NavLink>}
           </nav>
           <div className="spacer" />
           <div className="userbox">

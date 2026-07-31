@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { ROLE_NAMES } from '../types';
 import { Card } from '../components/ui';
@@ -16,6 +16,18 @@ interface AdminUser {
   must_change_password?: number;
   locked_until?: string | null;
   has_password: number;
+  can_approve_branch: number;
+  can_approve_planning: number;
+  approve_branches: string | null;
+}
+
+interface Issued { loginId: string; tempPassword: string; name?: string }
+
+interface ImportResult {
+  created: Issued[];
+  updated: { id: number; loginId: string; name: string }[];
+  skipped: { loginId: string; message: string }[];
+  errors: { line?: number; loginId?: string; message: string }[];
 }
 
 const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', loginId: '' };
@@ -24,9 +36,14 @@ export default function Users() {
   const me = useUser();
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [form, setForm] = useState({ ...EMPTY });
-  const [issued, setIssued] = useState<{ loginId: string; tempPassword: string; name?: string } | null>(null);
+  const [issued, setIssued] = useState<Issued | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ImportResult | null>(null);
+  const [updateExisting, setUpdateExisting] = useState(false);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [branchDraft, setBranchDraft] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
     api<AdminUser[]>('/admin/users').then(setRows).catch((e) => setMsg({ kind: 'error', text: e.message }));
@@ -38,10 +55,7 @@ export default function Users() {
     setBusy(true);
     setMsg(null);
     try {
-      const res = await api<{ loginId: string; tempPassword: string }>('/admin/users', {
-        method: 'POST',
-        body: JSON.stringify(form),
-      });
+      const res = await api<Issued>('/admin/users', { method: 'POST', body: JSON.stringify(form) });
       setIssued({ ...res, name: form.name });
       setForm({ ...EMPTY });
       load();
@@ -52,10 +66,40 @@ export default function Users() {
     }
   };
 
+  const importUsers = async () => {
+    const file = fileRef.current?.files?.[0];
+    if (!file) { setMsg({ kind: 'error', text: 'ファイルを選択してください' }); return; }
+    setBusy(true);
+    setMsg(null);
+    setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (updateExisting) fd.append('updateExisting', 'true');
+      const res = await api<ImportResult>('/admin/users/import', { method: 'POST', body: fd });
+      setResult(res);
+      if (fileRef.current) fileRef.current.value = '';
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const patch = async (u: AdminUser, body: Record<string, unknown>) => {
+    try {
+      await api(`/admin/users/${u.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    }
+  };
+
   const resetPassword = async (u: AdminUser) => {
     if (!confirm(`${u.name} のパスワードを初期化します。現在のログインは切断されます。よろしいですか？`)) return;
     try {
-      const res = await api<{ loginId: string; tempPassword: string }>(`/admin/users/${u.id}/reset-password`, { method: 'POST' });
+      const res = await api<Issued>(`/admin/users/${u.id}/reset-password`, { method: 'POST' });
       setIssued({ ...res, name: u.name });
       load();
     } catch (err) {
@@ -63,19 +107,14 @@ export default function Users() {
     }
   };
 
-  const toggleActive = async (u: AdminUser) => {
-    try {
-      await api(`/admin/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ active: !u.active }) });
-      load();
-    } catch (err) {
-      setMsg({ kind: 'error', text: (err as Error).message });
-    }
-  };
+  const approvers = rows.filter((u) => u.can_approve_branch || u.can_approve_planning);
 
   return (
     <div>
-      <h1 className="page-title">ユーザー管理</h1>
-      <p className="page-sub">担当者のログインIDを発行し、パスワードの初期化や利用停止を行います。</p>
+      <h1 className="page-title">管理者画面（ユーザー・決裁者）</h1>
+      <p className="page-sub">
+        管理者のみが利用できます。ログインIDの発行・名簿の一括取込・決裁権限の設定を行います。
+      </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       {issued && (
@@ -92,6 +131,75 @@ export default function Users() {
             確認しました
           </button>
         </div>
+      )}
+
+      <Card title="名簿の一括取込">
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input type="file" ref={fileRef} accept=".xlsx,.xlsm,.csv" />
+          <button className="btn" onClick={importUsers} disabled={busy}>
+            {busy ? '取込中...' : '取り込む'}
+          </button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
+            <input type="checkbox" checked={updateExisting} onChange={(e) => setUpdateExisting(e.target.checked)} />
+            既に登録済みのログインIDは内容を更新する
+          </label>
+          <div className="grow" style={{ flex: 1 }} />
+          <a className="btn secondary sm" href="/api/admin/users/template">記入例をダウンロード</a>
+        </div>
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          列: <code>ログインID</code> / <code>氏名</code> / <code>役割</code> / <code>支店</code> / <code>営業所</code> /
+          {' '}<code>支店長決裁</code> / <code>営業企画部決裁</code> / <code>決裁できる支店</code> / <code>有効</code>。
+          ログインIDと氏名以外は省略できます（役割を省くと営業担当者）。
+        </p>
+        <p className="pt-note">
+          決裁の列は「〇」「1」などで有効になります。省略した場合は役割から補います（支店長→支店長決裁、営業企画部→営業企画部決裁）。
+          複数支店を決裁する場合は「決裁できる支店」にカンマ区切りで指定してください。
+        </p>
+        <p className="pt-note">
+          仮パスワードは取込結果の一覧にのみ表示されます。画面を離れると再表示できないため、控えてから閉じてください。
+        </p>
+      </Card>
+
+      {result && (
+        <Card title={`取込結果: 追加 ${result.created.length}件 / 更新 ${result.updated.length}件 / 見送り ${result.skipped.length}件 / エラー ${result.errors.length}件`}>
+          {result.created.length > 0 && (
+            <>
+              <div className="section-title" style={{ marginTop: 0 }}>発行した仮パスワード</div>
+              <div className="tbl-scroll">
+                <table className="tbl">
+                  <thead><tr><th>ログインID</th><th>氏名</th><th>仮パスワード</th></tr></thead>
+                  <tbody>
+                    {result.created.map((c) => (
+                      <tr key={c.loginId}>
+                        <td><code>{c.loginId}</code></td>
+                        <td>{c.name}</td>
+                        <td style={{ fontFamily: 'monospace' }}><strong>{c.tempPassword}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          {result.updated.length > 0 && (
+            <p className="pt-note" style={{ marginTop: 12 }}>
+              更新: {result.updated.map((u) => u.loginId).join(', ')}
+            </p>
+          )}
+          {result.skipped.length > 0 && (
+            <p className="pt-note">
+              見送り: {result.skipped.map((s) => `${s.loginId}（${s.message}）`).join(' / ')}
+            </p>
+          )}
+          {result.errors.length > 0 && (
+            <div className="alert error" style={{ marginTop: 12 }}>
+              {result.errors.map((e, i) => (
+                <div key={i}>{e.line ? `${e.line}行目: ` : ''}{e.loginId ? `${e.loginId} … ` : ''}{e.message}</div>
+              ))}
+            </div>
+          )}
+          <button className="btn secondary sm" style={{ marginTop: 12 }} onClick={() => setResult(null)}>閉じる</button>
+        </Card>
       )}
 
       <Card title="ユーザーの追加">
@@ -124,13 +232,55 @@ export default function Users() {
           </label>
           <button className="btn" type="submit" disabled={busy}>追加して仮パスワードを発行</button>
         </form>
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          決裁権限は追加後、下の一覧で設定してください。
+        </p>
       </Card>
 
-      <div className="card tbl-scroll" style={{ padding: 0 }}>
+      <Card title={`決裁者（${approvers.length}名）`}>
+        {approvers.length === 0 ? (
+          <p className="pt-note" style={{ margin: 0 }}>
+            決裁権限を持つユーザーがいません。このままでは申請が承認できないため、下の一覧で設定してください。
+          </p>
+        ) : (
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead>
+                <tr><th>氏名</th><th>役割</th><th>決裁できる段階</th><th>決裁できる支店</th><th>状態</th></tr>
+              </thead>
+              <tbody>
+                {approvers.map((u) => (
+                  <tr key={u.id}>
+                    <td>{u.name}</td>
+                    <td>{ROLE_NAMES[u.role] || u.role}</td>
+                    <td>
+                      {u.can_approve_branch ? <span className="badge blue">支店長決裁</span> : null}
+                      {u.can_approve_planning ? <span className="badge orange" style={{ marginLeft: 4 }}>営業企画部決裁</span> : null}
+                    </td>
+                    <td>
+                      {u.can_approve_branch
+                        ? (u.approve_branches || u.branch || '（未設定）')
+                        : '—'}
+                    </td>
+                    <td>{u.active ? <span className="badge green">有効</span> : <span className="badge gray">停止</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          承認の段階そのもの（達成率で支店長決裁か営業企画部決裁かを分ける条件）は「設定」画面の承認権限ルールで決めます。
+          ここでは、その決裁を誰が実行できるかを決めます。
+        </p>
+      </Card>
+
+      <div className="card tbl-scroll">
         <table className="tbl">
           <thead>
             <tr>
               <th>ID</th><th>ログインID</th><th>氏名</th><th>役割</th><th>支店 / 営業所</th>
+              <th>支店長決裁</th><th>営業企画部決裁</th><th>決裁できる支店</th>
               <th>パスワード</th><th>最終ログイン</th><th>状態</th><th></th>
             </tr>
           </thead>
@@ -140,8 +290,42 @@ export default function Users() {
                 <td>{u.id}</td>
                 <td><code>{u.login_id || '—'}</code></td>
                 <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
-                <td>{ROLE_NAMES[u.role] || u.role}</td>
+                <td>
+                  <select value={u.role} onChange={(e) => patch(u, { role: e.target.value })}>
+                    {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </td>
                 <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
+                <td style={{ textAlign: 'center' }}>
+                  <input type="checkbox" checked={!!u.can_approve_branch}
+                    onChange={(e) => patch(u, { canApproveBranch: e.target.checked })} />
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <input type="checkbox" checked={!!u.can_approve_planning}
+                    onChange={(e) => patch(u, { canApprovePlanning: e.target.checked })} />
+                </td>
+                <td>
+                  {editing === u.id ? (
+                    <span style={{ display: 'flex', gap: 4 }}>
+                      <input type="text" value={branchDraft} style={{ width: 160 }}
+                        placeholder="例: 東京中央,横浜"
+                        onChange={(e) => setBranchDraft(e.target.value)} />
+                      <button className="btn sm" onClick={() => { patch(u, { approveBranches: branchDraft }); setEditing(null); }}>
+                        保存
+                      </button>
+                    </span>
+                  ) : (
+                    <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ color: u.approve_branches ? undefined : 'var(--muted)' }}>
+                        {u.approve_branches || (u.can_approve_branch ? `${u.branch || '未設定'}（所属）` : '—')}
+                      </span>
+                      <button className="btn secondary sm"
+                        onClick={() => { setEditing(u.id); setBranchDraft(u.approve_branches || ''); }}>
+                        変更
+                      </button>
+                    </span>
+                  )}
+                </td>
                 <td>
                   {!u.has_password ? <span className="badge red">未設定</span>
                     : u.must_change_password ? <span className="badge yellow">仮</span>
@@ -155,7 +339,8 @@ export default function Users() {
                 <td style={{ whiteSpace: 'nowrap' }}>
                   <button className="btn secondary sm" onClick={() => resetPassword(u)}>PW初期化</button>
                   {u.id !== me.id && (
-                    <button className="btn secondary sm" style={{ marginLeft: 6 }} onClick={() => toggleActive(u)}>
+                    <button className="btn secondary sm" style={{ marginLeft: 6 }}
+                      onClick={() => patch(u, { active: !u.active })}>
                       {u.active ? '停止' : '再開'}
                     </button>
                   )}

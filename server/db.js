@@ -438,6 +438,10 @@ async function migrate() {
     'ALTER TABLE users ADD COLUMN last_login_at TEXT',
     // 同じファイルの二重取込を検知するための内容ハッシュ
     'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',
+    // 決裁権限。役割とは別に、誰がどの段階を決裁できるかを個別に設定する
+    'ALTER TABLE users ADD COLUMN can_approve_branch INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN can_approve_planning INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN approve_branches TEXT',
   ];
   for (const sql of additions) {
     try {
@@ -463,6 +467,20 @@ async function migrate() {
     await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id)');
   } catch (e) {
     console.warn(`マイグレーション警告: login_id の一意制約を作成できませんでした → ${e.message}`);
+  }
+
+  // 決裁権限の列を足す前から居るユーザーは、それまでの役割どおりの権限を引き継ぐ。
+  // 引き継がないと、列を足した瞬間に全員が決裁できなくなる。
+  try {
+    const { c } = await db.get(
+      'SELECT COUNT(*) AS c FROM users WHERE can_approve_branch = 1 OR can_approve_planning = 1'
+    );
+    if (Number(c) === 0) {
+      await db.run("UPDATE users SET can_approve_branch = 1 WHERE role = 'branch_manager'");
+      await db.run("UPDATE users SET can_approve_planning = 1 WHERE role = 'planning'");
+    }
+  } catch (e) {
+    console.warn(`マイグレーション警告: 決裁権限を引き継げませんでした → ${e.message}`);
   }
 }
 

@@ -41,10 +41,19 @@ export default function ApplicationDetail({ onChanged }: { onChanged?: () => voi
     }
   };
 
-  // 承認可能か（支店長承認待ち: 同一支店の支店長 / 企画承認待ち: 営業企画部）
+  // 承認可能か。管理者画面で設定した決裁権限で判断する（サーバー側でも同じ判定を行う）
+  const canDecideBranch = !!user && (
+    user.role === 'admin' ||
+    (user.canApproveBranch && (
+      user.approveBranches?.length
+        ? user.approveBranches.includes(app.branch ?? '')
+        : user.branch === app.branch
+    ))
+  );
+  const canDecidePlanning = !!user && (user.role === 'admin' || !!user.canApprovePlanning);
   const canApproveNow =
-    (app.status === 'pending_branch' && user && (user.role === 'admin' || (user.role === 'branch_manager' && user.branch === app.branch))) ||
-    (app.status === 'pending_planning' && user && ['planning', 'admin'].includes(user.role));
+    (app.status === 'pending_branch' && canDecideBranch) ||
+    (app.status === 'pending_planning' && canDecidePlanning);
   const isApplicant = user && (user.id === app.applicant_id || user.role === 'admin');
 
   // ワークフロー表示用ステップ
