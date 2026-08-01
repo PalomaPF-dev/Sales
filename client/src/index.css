@@ -307,8 +307,11 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; 
 .tbl.deals th.sep, .tbl.deals td.sep { border-left: 2px solid var(--baseline); }
 .tbl.deals thead tr:first-child th { position: sticky; top: 0; z-index: 2; }
 .tbl.deals thead tr:nth-child(2) th { position: sticky; top: 30px; z-index: 2; }
-.tbl.deals tbody tr.editing { background: var(--accent-soft); }
-.tbl.deals tbody tr.editing:hover { background: var(--accent-soft); }
+/* 編集中の行は、どの表でも見て分かるように色を変える */
+.tbl tbody tr.editing,
+.tbl tbody tr.editing:hover { background: var(--accent-soft); }
+.tbl tbody tr.editing input,
+.tbl tbody tr.editing select { padding: 4px 6px; font-size: 12.5px; }
 .tbl.deals input.cell {
   width: 100px; padding: 4px 6px; font-size: 12px; text-align: right;
   font-variant-numeric: tabular-nums;

@@ -589,6 +589,62 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
      FROM users WHERE id = ?`, [user.id]));
 }));
 
+/**
+ * ユーザーが残した記録の件数。
+ * これらが残っている人を消すと「誰がやったか」が辿れなくなるため、削除を止める材料にする。
+ */
+async function userRecordCounts(userId) {
+  const one = async (sql) => Number((await db.get(sql, [userId]))?.c ?? 0);
+  const [logs, corps, batches, files] = await Promise.all([
+    one('SELECT COUNT(*) AS c FROM negotiation_logs WHERE user_id = ?'),
+    one('SELECT COUNT(*) AS c FROM corp_negotiations WHERE updated_by = ?'),
+    one('SELECT COUNT(*) AS c FROM import_batches WHERE imported_by = ?'),
+    one('SELECT COUNT(*) AS c FROM attachments WHERE uploaded_by = ?'),
+  ]);
+  return { logs, corps, batches, files, total: logs + corps + batches + files };
+}
+
+api.delete('/admin/users/:id', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
+  if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+
+  if (user.id === req.user.id) {
+    return res.status(400).json({ error: '自分自身を削除することはできません' });
+  }
+
+  // 実際には、削除できるのは管理者本人だけで自分自身は消せないため、
+  // 少なくとも実行者が管理者として残る。ここはその前提が崩れたときの保険。
+  if (user.role === 'admin') {
+    const { c } = await db.get(
+      "SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND active = 1 AND id <> ?", [user.id]);
+    if (Number(c) === 0) {
+      return res.status(400).json({ error: '管理者が居なくなるため、最後の管理者は削除できません' });
+    }
+  }
+
+  // 記録を残している人は消さない。消すと交渉履歴や取込の実行者が辿れなくなる。
+  const counts = await userRecordCounts(user.id);
+  if (counts.total > 0) {
+    const detail = [
+      counts.logs && `交渉履歴 ${counts.logs}件`,
+      counts.corps && `法人の交渉情報 ${counts.corps}件`,
+      counts.batches && `Excel取込 ${counts.batches}件`,
+      counts.files && `添付ファイル ${counts.files}件`,
+    ].filter(Boolean).join('・');
+    return res.status(409).json({
+      error: `${user.name} には記録が残っているため削除できません（${detail}）。`
+           + '「停止」にすればログインできなくなり、記録は残ります',
+      canDeactivate: true,
+    });
+  }
+
+  await destroyUserSessions(user.id);
+  await db.run('DELETE FROM users WHERE id = ?', [user.id]);
+  console.warn(`ユーザーを削除しました（${user.login_id ?? '—'} / ${user.name}）`);
+  res.json({ ok: true, deleted: { id: user.id, name: user.name, loginId: user.login_id } });
+}));
+
 // ---- ユーザーの一括登録 ----
 
 // 名簿の列見出し → 内部項目。表記ゆれをある程度吸収する

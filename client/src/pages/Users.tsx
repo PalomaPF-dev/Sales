@@ -20,6 +20,16 @@ interface AdminUser {
 
 interface Issued { loginId: string; tempPassword: string; name?: string }
 
+/** 編集中の行。行ごとに入力してから「保存」でまとめて反映する */
+interface EditRow {
+  id: number;
+  name: string;
+  loginId: string;
+  role: string;
+  branch: string;
+  office: string;
+}
+
 interface ImportResult {
   created: Issued[];
   updated: { id: number; loginId: string; name: string }[];
@@ -38,6 +48,7 @@ export default function Users() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
+  const [editing, setEditing] = useState<EditRow | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -91,6 +102,55 @@ export default function Users() {
     }
   };
 
+  const startEdit = (u: AdminUser) => {
+    setMsg(null);
+    setEditing({
+      id: u.id,
+      name: u.name,
+      loginId: u.login_id ?? '',
+      role: u.role,
+      branch: u.branch ?? '',
+      office: u.office ?? '',
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api(`/admin/users/${editing.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editing.name,
+          loginId: editing.loginId,
+          role: editing.role,
+          branch: editing.branch || null,
+          office: editing.office || null,
+        }),
+      });
+      setEditing(null);
+      setMsg({ kind: 'ok', text: '変更を保存しました' });
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (u: AdminUser) => {
+    if (!confirm(`${u.name}（${u.login_id ?? 'IDなし'}）を削除します。元に戻せません。よろしいですか？`)) return;
+    setMsg(null);
+    try {
+      await api(`/admin/users/${u.id}`, { method: 'DELETE' });
+      setMsg({ kind: 'ok', text: `${u.name} を削除しました` });
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    }
+  };
+
   const resetPassword = async (u: AdminUser) => {
     if (!confirm(`${u.name} のパスワードを初期化します。現在のログインは切断されます。よろしいですか？`)) return;
     try {
@@ -106,7 +166,8 @@ export default function Users() {
     <div>
       <h1 className="page-title">管理者画面（ユーザー）</h1>
       <p className="page-sub">
-        管理者のみが利用できます。ログインIDの発行・名簿の一括取込・利用停止を行います。
+        管理者のみが利用できます。ログインIDの発行・名簿の一括取込・登録内容の編集・利用停止・削除を行います。
+        交渉履歴などの記録が残っている方は削除できません（「停止」にすればログインできなくなり、記録は残ります）。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -234,36 +295,69 @@ export default function Users() {
           </thead>
           <tbody>
             {rows.map((u) => (
-              <tr key={u.id}>
-                <td>{u.id}</td>
-                <td><code>{u.login_id || '—'}</code></td>
-                <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
-                <td>
-                  <select value={u.role} onChange={(e) => patch(u, { role: e.target.value })}>
-                    {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                  </select>
-                </td>
-                <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
-                <td>
-                  {!u.has_password ? <span className="badge red">未設定</span>
-                    : u.must_change_password ? <span className="badge yellow">仮</span>
-                    : <span className="badge green">設定済</span>}
-                  {u.locked_until && new Date(u.locked_until) > new Date() && (
-                    <span className="badge red" style={{ marginLeft: 4 }}>ロック中</span>
-                  )}
-                </td>
-                <td>{u.last_login_at ? u.last_login_at.slice(0, 16).replace('T', ' ') : '—'}</td>
-                <td>{u.active ? <span className="badge green">有効</span> : <span className="badge gray">停止</span>}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  <button className="btn secondary sm" onClick={() => resetPassword(u)}>PW初期化</button>
-                  {u.id !== me.id && (
+              editing?.id === u.id ? (
+                <tr key={u.id} className="editing">
+                  <td>{u.id}</td>
+                  <td>
+                    <input type="text" value={editing.loginId} style={{ width: 110 }}
+                      onChange={(e) => setEditing({ ...editing, loginId: e.target.value })} />
+                  </td>
+                  <td>
+                    <input type="text" value={editing.name} style={{ width: 120 }}
+                      onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+                  </td>
+                  <td>
+                    <select value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })}>
+                      {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <input type="text" value={editing.branch} placeholder="支店" style={{ width: 90 }}
+                      onChange={(e) => setEditing({ ...editing, branch: e.target.value })} />
+                    <input type="text" value={editing.office} placeholder="営業所" style={{ width: 110, marginLeft: 4 }}
+                      onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
+                  </td>
+                  <td colSpan={3} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn sm" onClick={saveEdit} disabled={busy}>保存</button>
                     <button className="btn secondary sm" style={{ marginLeft: 6 }}
-                      onClick={() => patch(u, { active: !u.active })}>
-                      {u.active ? '停止' : '再開'}
-                    </button>
-                  )}
-                </td>
-              </tr>
+                      onClick={() => setEditing(null)} disabled={busy}>取消</button>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={u.id}>
+                  <td>{u.id}</td>
+                  <td><code>{u.login_id || '—'}</code></td>
+                  <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
+                  <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
+                  <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
+                  <td>
+                    {!u.has_password ? <span className="badge red">未設定</span>
+                      : u.must_change_password ? <span className="badge yellow">仮</span>
+                      : <span className="badge green">設定済</span>}
+                    {u.locked_until && new Date(u.locked_until) > new Date() && (
+                      <span className="badge red" style={{ marginLeft: 4 }}>ロック中</span>
+                    )}
+                  </td>
+                  <td>{u.last_login_at ? u.last_login_at.slice(0, 16).replace('T', ' ') : '—'}</td>
+                  <td>{u.active ? <span className="badge green">有効</span> : <span className="badge gray">停止</span>}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn secondary sm" onClick={() => startEdit(u)}>編集</button>
+                    <button className="btn secondary sm" style={{ marginLeft: 6 }}
+                      onClick={() => resetPassword(u)}>PW初期化</button>
+                    {u.id !== me.id && (
+                      <>
+                        <button className="btn secondary sm" style={{ marginLeft: 6 }}
+                          onClick={() => patch(u, { active: !u.active })}>
+                          {u.active ? '停止' : '再開'}
+                        </button>
+                        <button className="btn danger sm" style={{ marginLeft: 6 }}
+                          onClick={() => remove(u)}>削除</button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              )
             ))}
           </tbody>
         </table>
