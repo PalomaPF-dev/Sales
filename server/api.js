@@ -930,18 +930,26 @@ api.get('/users', wrap(async (req, res) => {
 }));
 
 api.get('/meta', wrap(async (req, res) => {
+  // 絞り込みの候補も閲覧範囲に合わせる。
+  // ここを絞らないと、担当者名や法人名の一覧から他営業所の取引先が分かってしまう。
+  const scope = scopeConditions(req.user);
+  const and = scope.where.length ? ` AND ${scope.where.join(' AND ')}` : '';
+  const sp = scope.params;
+
   const [priceTypes, equips, persons, customers, branches, offices, corps] = await Promise.all([
     db.all('SELECT * FROM price_types ORDER BY code'),
-    db.all('SELECT equip_name AS name, COUNT(*) AS count FROM deals WHERE equip_name IS NOT NULL GROUP BY equip_name ORDER BY count DESC'),
-    db.all('SELECT sales_person AS name, COUNT(*) AS count FROM deals WHERE sales_person IS NOT NULL GROUP BY sales_person ORDER BY count DESC'),
-    db.all('SELECT customer_code AS code, customer_name AS name, COUNT(*) AS count FROM deals WHERE customer_code IS NOT NULL GROUP BY customer_code, customer_name ORDER BY count DESC LIMIT 500'),
-    db.all('SELECT branch AS name, COUNT(*) AS count FROM deals WHERE branch IS NOT NULL GROUP BY branch ORDER BY count DESC'),
-    db.all('SELECT DISTINCT branch, office AS name, COUNT(*) AS count FROM deals WHERE office IS NOT NULL GROUP BY branch, office ORDER BY count DESC'),
-    db.all('SELECT corp_code AS code, corp_name AS name, COUNT(*) AS count FROM deals WHERE corp_code IS NOT NULL GROUP BY corp_code, corp_name ORDER BY count DESC LIMIT 500'),
+    db.all(`SELECT equip_name AS name, COUNT(*) AS count FROM deals WHERE equip_name IS NOT NULL${and} GROUP BY equip_name ORDER BY count DESC`, sp),
+    db.all(`SELECT sales_person AS name, COUNT(*) AS count FROM deals WHERE sales_person IS NOT NULL${and} GROUP BY sales_person ORDER BY count DESC`, sp),
+    db.all(`SELECT customer_code AS code, customer_name AS name, COUNT(*) AS count FROM deals WHERE customer_code IS NOT NULL${and} GROUP BY customer_code, customer_name ORDER BY count DESC LIMIT 500`, sp),
+    db.all(`SELECT branch AS name, COUNT(*) AS count FROM deals WHERE branch IS NOT NULL${and} GROUP BY branch ORDER BY count DESC`, sp),
+    db.all(`SELECT DISTINCT branch, office AS name, COUNT(*) AS count FROM deals WHERE office IS NOT NULL${and} GROUP BY branch, office ORDER BY count DESC`, sp),
+    db.all(`SELECT corp_code AS code, corp_name AS name, COUNT(*) AS count FROM deals WHERE corp_code IS NOT NULL${and} GROUP BY corp_code, corp_name ORDER BY count DESC LIMIT 500`, sp),
   ]);
   res.json({
     priceTypes, equips, persons, customers, branches, offices,
     corps,
+    // 画面に「いま何が見えているか」を出すための情報
+    scope: scopeInfo(req.user),
     exportMaxRows: EXPORT_MAX_ROWS,
     // 弾ごとの進み具合。案件一覧の絞り込みに使う
     states: [
@@ -953,8 +961,126 @@ api.get('/meta', wrap(async (req, res) => {
   });
 }));
 
+// ---- 閲覧範囲（役割ごとに見えるデータを絞る） ----
+
+/**
+ * 役割ごとの閲覧範囲を、案件テーブルに対する条件として返す。
+ *
+ *   営業担当者   … 自分の営業所のみ
+ *   支店長       … 自分の支店の全営業所
+ *   営業企画部   … 全社
+ *   管理者       … 全社
+ *
+ * 支店・営業所は取り込んだ案件から増えていくため、ここでは値を持たず
+ * 利用者に設定された支店・営業所と突き合わせるだけにしている。
+ * 支店や営業所が増えても、この関数を直す必要はない。
+ *
+ * 支店・営業所が未設定の利用者には何も見せない（1=0）。
+ * 設定漏れのときに他営業所の単価が見えてしまうより、
+ * 見えない状態で気づいてもらうほうが安全なため。
+ */
+function scopeConditions(user, alias = '') {
+  const p = alias ? `${alias}.` : '';
+  if (!user) return { where: ['1 = 0'], params: [] };
+  if (user.role === 'admin' || user.role === 'planning') return { where: [], params: [] };
+
+  if (user.role === 'branch_manager') {
+    if (!user.branch) return { where: ['1 = 0'], params: [], missing: '支店' };
+    return { where: [`${p}branch = ?`], params: [user.branch] };
+  }
+
+  // 営業担当者（既定）
+  if (!user.branch || !user.office) {
+    return { where: ['1 = 0'], params: [], missing: '支店・営業所' };
+  }
+  return { where: [`${p}branch = ? AND ${p}office = ?`], params: [user.branch, user.office] };
+}
+
+/** 画面に出すための範囲の説明。未設定のときは理由も返す */
+function scopeInfo(user) {
+  const s = scopeConditions(user);
+  if (!user) return { level: 'none', label: '—' };
+  if (user.role === 'admin' || user.role === 'planning') {
+    return { level: 'all', label: '全社' };
+  }
+  if (s.missing) {
+    return {
+      level: 'none',
+      label: '未設定',
+      missing: s.missing,
+      note: `${s.missing}が設定されていないため、案件を表示できません。営業企画部にご連絡ください`,
+    };
+  }
+  if (user.role === 'branch_manager') return { level: 'branch', label: `${user.branch}（支店全体）` };
+  return { level: 'office', label: `${user.branch} / ${user.office}` };
+}
+
+// ---- ダッシュボード（進捗） ----
+
+/**
+ * 値上げの進み具合をまとめて返す。
+ * 表示できる範囲は案件一覧と同じ（営業担当者は自分の営業所だけ）。
+ *
+ * 単価だけの管理表なので金額は扱わず、件数と割合で進捗を示す。
+ */
+api.get('/dashboard', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const scope = scopeConditions(req.user);
+  const where = scope.where.length ? `WHERE ${scope.where.join(' AND ')}` : '';
+  const p = scope.params;
+
+  // 進捗の数え方は一箇所にまとめる。集計軸が増えても同じ定義で揃うようにする。
+  const progress = `
+    COUNT(*) AS deals,
+    SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
+    SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
+    SUM(CASE WHEN r1_state = 'agreed' THEN 1 ELSE 0 END) AS r1_agreed,
+    SUM(CASE WHEN r2_state = 'agreed' THEN 1 ELSE 0 END) AS r2_agreed,
+    SUM(CASE WHEN r1_state = 'open' THEN 1 ELSE 0 END) AS r1_open,
+    SUM(CASE WHEN r2_state = 'open' THEN 1 ELSE 0 END) AS r2_open`;
+
+  const [totals, byOffice, byPerson, byEquip, corpStatus, applied] = await Promise.all([
+    db.get(`SELECT ${progress} FROM deal_calc ${where}`, p),
+    db.all(`SELECT branch, office, ${progress} FROM deal_calc ${where}
+             GROUP BY branch, office ORDER BY COUNT(*) DESC`, p),
+    db.all(`SELECT sales_person AS name, branch, office, ${progress} FROM deal_calc ${where}
+             GROUP BY sales_person, branch, office ORDER BY COUNT(*) DESC`, p),
+    db.all(`SELECT equip_name AS name, ${progress} FROM deal_calc ${where}
+             GROUP BY equip_name ORDER BY COUNT(*) DESC`, p),
+    // 法人ごとの交渉状況の内訳。未設定は「未着手」として数える
+    db.all(`
+      SELECT COALESCE((SELECT c.status FROM corp_negotiations c WHERE c.corp_code = d.corp_code),
+                      'not_started') AS status,
+             COUNT(DISTINCT d.corp_code) AS corps
+        FROM deals d
+       WHERE d.corp_code IS NOT NULL
+             ${scope.where.length ? `AND ${scopeConditions(req.user, 'd').where.join(' AND ')}` : ''}
+       GROUP BY 1`, p),
+    // 適用年月ごとの件数（いつから効くのかを見るため）
+    db.all(`
+      SELECT ym, SUM(r1) AS r1, SUM(r2) AS r2 FROM (
+        SELECT r1_applied_ym AS ym, 1 AS r1, 0 AS r2 FROM deal_calc
+         ${where}${where ? ' AND' : 'WHERE'} r1_done = 1 AND r1_applied_ym IS NOT NULL
+        UNION ALL
+        SELECT r2_applied_ym AS ym, 0 AS r1, 1 AS r2 FROM deal_calc
+         ${where}${where ? ' AND' : 'WHERE'} r2_done = 1 AND r2_applied_ym IS NOT NULL
+      ) t GROUP BY ym ORDER BY ym`, [...p, ...p]),
+  ]);
+
+  res.json({
+    scope: scopeInfo(req.user),
+    totals,
+    byOffice,
+    byPerson,
+    byEquip,
+    corpStatus,
+    applied,
+    corpStatuses: CORP_STATUSES,
+  });
+}));
+
 // ---- 案件（deals） ----
-function dealFilters(q) {
+function dealFilters(q, user) {
   const where = [];
   const params = [];
   if (q.ids) {
@@ -980,11 +1106,17 @@ function dealFilters(q) {
   for (const [key, col] of [['r1State', 'r1_state'], ['r2State', 'r2_state']]) {
     if (['open', 'agreed', 'done'].includes(q[key])) { where.push(`${col} = ?`); params.push(q[key]); }
   }
+
+  // 役割ごとの閲覧範囲。画面から渡される絞り込みとは別に、必ず最後に足す。
+  const scope = scopeConditions(user);
+  where.push(...scope.where);
+  params.push(...scope.params);
+
   return { where: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
 }
 
 api.get('/deals', wrap(async (req, res) => {
-  const { where, params } = dealFilters(req.query);
+  const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const [totals, rows] = await Promise.all([
@@ -1011,7 +1143,7 @@ api.get('/deals', wrap(async (req, res) => {
 }));
 
 api.get('/deals/export', wrap(async (req, res) => {
-  const { where, params } = dealFilters(req.query);
+  const { where, params } = dealFilters(req.query, req.user);
   const { c } = await db.get(`SELECT COUNT(*) AS c FROM deal_calc ${where}`, params);
   if (Number(c) > EXPORT_MAX_ROWS) {
     return res.status(413).json({
@@ -1035,9 +1167,20 @@ api.get('/deals/export', wrap(async (req, res) => {
   res.send(buffer);
 }));
 
+/**
+ * 範囲内の案件を1件取る。範囲外なら null。
+ * 範囲外は「権限がありません」ではなく「見つかりません」として扱う。
+ * 断り方で他営業所にその案件が在ることを教えないため。
+ */
+async function findDealInScope(id, user, table = 'deal_calc') {
+  const scope = scopeConditions(user);
+  const where = ['id = ?', ...scope.where].join(' AND ');
+  return db.get(`SELECT * FROM ${table} WHERE ${where}`, [id, ...scope.params]);
+}
+
 api.get('/deals/:id', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
-  const deal = await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]);
+  const deal = await findDealInScope(req.params.id, req.user);
   if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
   // 交渉は法人単位で進むため、法人の交渉情報と履歴を一緒に返す
   const negotiation = deal.corp_code
@@ -1090,7 +1233,8 @@ function toPrice(v) {
 
 api.patch('/deals/:id', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
-  const deal = await db.get('SELECT * FROM deals WHERE id = ?', [req.params.id]);
+  // 範囲外の案件は更新もできない（参照と同じ扱いにする）
+  const deal = await findDealInScope(req.params.id, req.user, 'deals');
   if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
 
   const sets = [];
@@ -1171,6 +1315,10 @@ api.get('/corps', wrap(async (req, res) => {
     params.push(`%${req.query.q}%`, `%${req.query.q}%`);
   }
   if (req.query.branch) { where.push('d.branch = ?'); params.push(req.query.branch); }
+  // 法人は案件から作るので、案件と同じ範囲で絞る
+  const scope = scopeConditions(req.user, 'd');
+  where.push(...scope.where);
+  params.push(...scope.params);
   const rows = await db.all(`
     SELECT d.corp_code, MIN(d.corp_name) AS corp_name,
            COUNT(*) AS deals,
@@ -1187,14 +1335,24 @@ api.get('/corps', wrap(async (req, res) => {
   res.json(rows);
 }));
 
-api.get('/corps/:code', wrap(async (req, res) => {
-  if (!requireLogin(req, res)) return;
-  const code = String(req.params.code);
-  const summary = await db.get(`
+/**
+ * 範囲内に案件がある法人だけを返す。
+ * 自分の営業所が取引していない法人は、交渉情報も履歴も見せない。
+ */
+async function findCorpInScope(code, user) {
+  const scope = scopeConditions(user);
+  const where = ['corp_code = ?', ...scope.where].join(' AND ');
+  return db.get(`
     SELECT corp_code, MIN(corp_name) AS corp_name, COUNT(*) AS deals,
            SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
            SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done
-      FROM deals WHERE corp_code = ? GROUP BY corp_code`, [code]);
+      FROM deals WHERE ${where} GROUP BY corp_code`, [code, ...scope.params]);
+}
+
+api.get('/corps/:code', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const code = String(req.params.code);
+  const summary = await findCorpInScope(code, req.user);
   if (!summary) return res.status(404).json({ error: '法人が見つかりません' });
   const negotiation = await db.get('SELECT * FROM corp_negotiations WHERE corp_code = ?', [code]);
   const logs = await db.all(`
@@ -1208,7 +1366,7 @@ api.get('/corps/:code', wrap(async (req, res) => {
 api.put('/corps/:code/negotiation', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const code = String(req.params.code);
-  const corp = await db.get('SELECT MIN(corp_name) AS corp_name FROM deals WHERE corp_code = ?', [code]);
+  const corp = await findCorpInScope(code, req.user);
   if (!corp?.corp_name) return res.status(404).json({ error: '法人が見つかりません' });
 
   const status = String(req.body?.status ?? 'not_started');
@@ -1231,17 +1389,19 @@ api.put('/corps/:code/negotiation', wrap(async (req, res) => {
 
 api.get('/corps/:code/logs', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
+  const code = String(req.params.code);
+  // 範囲外の法人の履歴は見せない
+  if (!await findCorpInScope(code, req.user)) return res.status(404).json({ error: '法人が見つかりません' });
   res.json(await db.all(`
     SELECT l.*, u.name AS user_name FROM negotiation_logs l
     LEFT JOIN users u ON u.id = l.user_id
-    WHERE l.corp_code = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`,
-    [String(req.params.code)]));
+    WHERE l.corp_code = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`, [code]));
 }));
 
 api.post('/corps/:code/logs', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const code = String(req.params.code);
-  const corp = await db.get('SELECT MIN(corp_name) AS corp_name FROM deals WHERE corp_code = ?', [code]);
+  const corp = await findCorpInScope(code, req.user);
   if (!corp?.corp_name) return res.status(404).json({ error: '法人が見つかりません' });
   const note = String(req.body?.note ?? '').trim();
   if (!note) return res.status(400).json({ error: '内容を入力してください' });
@@ -1261,6 +1421,10 @@ api.delete('/logs/:id', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const log = await db.get('SELECT * FROM negotiation_logs WHERE id = ?', [req.params.id]);
   if (!log) return res.status(404).json({ error: '履歴が見つかりません' });
+  // 範囲外の法人の履歴には触れない
+  if (log.corp_code && !await findCorpInScope(log.corp_code, req.user)) {
+    return res.status(404).json({ error: '履歴が見つかりません' });
+  }
   if (log.user_id !== req.user.id && !['planning', 'admin'].includes(req.user.role)) {
     return res.status(403).json({ error: '記入者本人または営業企画部のみ削除できます' });
   }
@@ -1276,6 +1440,10 @@ api.get('/attachments', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const dealId = Number(req.query.dealId);
   if (!Number.isFinite(dealId)) return res.status(400).json({ error: '案件を指定してください' });
+  // 範囲外の案件に付いた添付は一覧にも出さない
+  if (!await findDealInScope(dealId, req.user, 'deals')) {
+    return res.status(404).json({ error: '案件が見つかりません' });
+  }
   res.json(await db.all(`
     SELECT a.id, a.deal_id, a.filename, a.mime_type, a.size, a.uploaded_at, u.name AS uploaded_by_name
     FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
@@ -1290,6 +1458,9 @@ api.post('/attachments', upload.single('file'), wrap(async (req, res) => {
   }
   const dealId = Number(req.body?.dealId);
   if (!Number.isFinite(dealId)) return res.status(400).json({ error: '案件を指定してください' });
+  if (!await findDealInScope(dealId, req.user, 'deals')) {
+    return res.status(404).json({ error: '案件が見つかりません' });
+  }
 
   const { lastInsertRowid } = await db.run(
     `INSERT INTO attachments (deal_id, filename, mime_type, size, content, uploaded_by, uploaded_at)
@@ -1305,6 +1476,10 @@ api.post('/attachments', upload.single('file'), wrap(async (req, res) => {
 api.get('/attachments/:id/download', wrap(async (req, res) => {
   const a = await db.get('SELECT * FROM attachments WHERE id = ?', [req.params.id]);
   if (!a) return res.status(404).json({ error: 'ファイルが見つかりません' });
+  // 添付は案件にひもづくので、案件が範囲外なら中身も渡さない
+  if (a.deal_id && !await findDealInScope(a.deal_id, req.user, 'deals')) {
+    return res.status(404).json({ error: 'ファイルが見つかりません' });
+  }
   res.set('Content-Type', a.mime_type || 'application/octet-stream');
   res.set('Content-Disposition', contentDisposition(a.filename));
   res.send(Buffer.from(a.content, 'base64'));
@@ -1313,6 +1488,9 @@ api.get('/attachments/:id/download', wrap(async (req, res) => {
 api.delete('/attachments/:id', wrap(async (req, res) => {
   const a = await db.get('SELECT * FROM attachments WHERE id = ?', [req.params.id]);
   if (!a) return res.status(404).json({ error: 'ファイルが見つかりません' });
+  if (a.deal_id && !await findDealInScope(a.deal_id, req.user, 'deals')) {
+    return res.status(404).json({ error: 'ファイルが見つかりません' });
+  }
   if (a.uploaded_by !== req.user.id && !['planning', 'admin'].includes(req.user.role)) {
     return res.status(403).json({ error: 'アップロードした本人または営業企画部のみ削除できます' });
   }

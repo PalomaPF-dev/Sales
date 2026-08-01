@@ -7,13 +7,14 @@ import { UserContext } from './user';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
+import Dashboard from './pages/Dashboard';
 import Deals from './pages/Deals';
 import DealDetail from './pages/DealDetail';
 import CorpDetail from './pages/CorpDetail';
 import Settings from './pages/Settings';
 import Users from './pages/Users';
 import ImportPage from './pages/ImportPage';
-import { IconBrand, IconDeals, IconImport, IconSettings, IconUsers } from './components/icons';
+import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings, IconUsers } from './components/icons';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -110,6 +111,7 @@ export default function App() {
             </span>
           </div>
           <nav>
+            <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
@@ -131,7 +133,8 @@ export default function App() {
         </aside>
         <main className="main">
           <Routes>
-            <Route path="/" element={<Deals />} />
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/deals" element={<Deals />} />
             <Route path="/deals/:id" element={<DealDetail />} />
             <Route path="/corps/:code" element={<CorpDetail />} />
