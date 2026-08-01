@@ -20,6 +20,18 @@ interface AdminUser {
 
 interface Issued { loginId: string; tempPassword: string; name?: string }
 
+/** 案件データに出てくる担当者 */
+interface DealPerson {
+  name: string;
+  branch: string | null;
+  office: string | null;
+  deals: number;
+  registered: boolean;
+  existingLoginId: string | null;
+  existingRole: string | null;
+  suggestedLoginId: string | null;
+}
+
 /** 編集中の行。行ごとに入力してから「保存」でまとめて反映する */
 interface EditRow {
   id: number;
@@ -32,9 +44,10 @@ interface EditRow {
 
 interface ImportResult {
   created: Issued[];
-  updated: { id: number; loginId: string; name: string }[];
-  skipped: { loginId: string; message: string }[];
-  errors: { line?: number; loginId?: string; message: string }[];
+  updated?: { id: number; loginId: string; name: string }[];
+  // 名簿の取込はログインID、担当者の登録は氏名で識別するため、どちらも受ける
+  skipped: { loginId?: string; name?: string; message: string }[];
+  errors: { line?: number; loginId?: string; name?: string; message: string }[];
 }
 
 const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', loginId: '' };
@@ -49,6 +62,9 @@ export default function Users() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
   const [editing, setEditing] = useState<EditRow | null>(null);
+  const [persons, setPersons] = useState<DealPerson[] | null>(null);
+  const [personIds, setPersonIds] = useState<Record<string, string>>({});
+  const [personPick, setPersonPick] = useState<Record<string, boolean>>({});
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -139,6 +155,52 @@ export default function Users() {
     }
   };
 
+  const loadPersons = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const list = await api<DealPerson[]>('/admin/deal-persons');
+      setPersons(list);
+      // 未登録の人は既定で選択、ログインIDは候補を入れておく
+      const ids: Record<string, string> = {};
+      const pick: Record<string, boolean> = {};
+      for (const p of list) {
+        if (p.registered) continue;
+        ids[p.name] = p.suggestedLoginId ?? '';
+        pick[p.name] = true;
+      }
+      setPersonIds(ids);
+      setPersonPick(pick);
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const registerPersons = async () => {
+    if (!persons) return;
+    const people = persons
+      .filter((p) => !p.registered && personPick[p.name])
+      .map((p) => ({ name: p.name, loginId: (personIds[p.name] ?? '').trim(), branch: p.branch, office: p.office }));
+    if (!people.length) { setMsg({ kind: 'error', text: '登録する担当者を選んでください' }); return; }
+    if (!confirm(`${people.length}名を営業担当者として登録します。よろしいですか？`)) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<ImportResult>('/admin/deal-persons', {
+        method: 'POST', body: JSON.stringify({ people }),
+      });
+      setResult(res);
+      setPersons(null);
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remove = async (u: AdminUser) => {
     if (!confirm(`${u.name}（${u.login_id ?? 'IDなし'}）を削除します。元に戻せません。よろしいですか？`)) return;
     setMsg(null);
@@ -212,7 +274,7 @@ export default function Users() {
       </Card>
 
       {result && (
-        <Card title={`取込結果: 追加 ${result.created.length}件 / 更新 ${result.updated.length}件 / 見送り ${result.skipped.length}件 / エラー ${result.errors.length}件`}>
+        <Card title={`取込結果: 追加 ${result.created.length}件 / 更新 ${result.updated?.length ?? 0}件 / 見送り ${result.skipped.length}件 / エラー ${result.errors.length}件`}>
           {result.created.length > 0 && (
             <>
               <div className="section-title" style={{ marginTop: 0 }}>発行した仮パスワード</div>
@@ -232,26 +294,118 @@ export default function Users() {
               </div>
             </>
           )}
-          {result.updated.length > 0 && (
+          {(result.updated?.length ?? 0) > 0 && (
             <p className="pt-note" style={{ marginTop: 12 }}>
-              更新: {result.updated.map((u) => u.loginId).join(', ')}
+              更新: {result.updated!.map((u) => u.loginId).join(', ')}
             </p>
           )}
           {result.skipped.length > 0 && (
             <p className="pt-note">
-              見送り: {result.skipped.map((s) => `${s.loginId}（${s.message}）`).join(' / ')}
+              見送り: {result.skipped.map((s) => `${s.name ?? s.loginId}（${s.message}）`).join(' / ')}
             </p>
           )}
           {result.errors.length > 0 && (
             <div className="alert error" style={{ marginTop: 12 }}>
               {result.errors.map((e, i) => (
-                <div key={i}>{e.line ? `${e.line}行目: ` : ''}{e.loginId ? `${e.loginId} … ` : ''}{e.message}</div>
+                <div key={i}>
+                  {e.line ? `${e.line}行目: ` : ''}
+                  {(e.name ?? e.loginId) ? `${e.name ?? e.loginId} … ` : ''}{e.message}
+                </div>
               ))}
             </div>
           )}
           <button className="btn secondary sm" style={{ marginTop: 12 }} onClick={() => setResult(null)}>閉じる</button>
         </Card>
       )}
+
+      <Card title="案件データの担当者をまとめて登録">
+        {!persons ? (
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn" onClick={loadPersons} disabled={busy}>
+              {busy ? '読み込み中...' : '取り込んだ案件から担当者を一覧する'}
+            </button>
+            <p className="pt-note" style={{ margin: 0 }}>
+              Excelから取り込んだ案件に出てくる担当者を拾い出し、営業担当者として登録します。
+            </p>
+          </div>
+        ) : (
+          <>
+            {(() => {
+              const fresh = persons.filter((p) => !p.registered);
+              const done = persons.length - fresh.length;
+              const picked = fresh.filter((p) => personPick[p.name]).length;
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                    <strong style={{ fontSize: 13.5 }}>
+                      担当者 {persons.length}名（未登録 {fresh.length}名 / 登録済 {done}名）
+                    </strong>
+                    <div style={{ flex: 1 }} />
+                    <button className="btn secondary sm" disabled={busy}
+                      onClick={() => setPersonPick(Object.fromEntries(fresh.map((p) => [p.name, true])))}>
+                      すべて選択
+                    </button>
+                    <button className="btn secondary sm" disabled={busy}
+                      onClick={() => setPersonPick({})}>選択を解除</button>
+                    <button className="btn" onClick={registerPersons} disabled={busy || picked === 0}>
+                      {busy ? '登録中...' : `選択した${picked}名を営業担当者として登録`}
+                    </button>
+                    <button className="btn secondary sm" onClick={() => setPersons(null)} disabled={busy}>閉じる</button>
+                  </div>
+
+                  <p className="pt-note" style={{ marginTop: 0 }}>
+                    氏名は案件データの表記のまま登録します（案件一覧の担当者絞り込みが氏名で効くため）。
+                    ログインIDは管理表に無いので連番の候補を入れてあります。
+                    <strong>社内で決まった規則があれば、ここで書き換えてから登録してください。</strong>
+                    後から変えるとポータル連携で別人として扱われることがあります。
+                  </p>
+
+                  <div className="tbl-scroll" style={{ maxHeight: 420 }}>
+                    <table className="tbl">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 36 }}></th>
+                          <th>氏名</th><th>ログインID</th><th>支店 / 営業所</th><th>案件数</th><th>状態</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {persons.map((p) => (
+                          <tr key={p.name}>
+                            <td>
+                              {!p.registered && (
+                                <input type="checkbox" checked={Boolean(personPick[p.name])}
+                                  onChange={(e) => setPersonPick({ ...personPick, [p.name]: e.target.checked })} />
+                              )}
+                            </td>
+                            <td>{p.name}</td>
+                            <td>
+                              {p.registered ? (
+                                <code>{p.existingLoginId || '—'}</code>
+                              ) : (
+                                <input type="text" value={personIds[p.name] ?? ''} style={{ width: 130 }}
+                                  onChange={(e) => setPersonIds({ ...personIds, [p.name]: e.target.value })} />
+                              )}
+                            </td>
+                            <td>{[p.branch, p.office].filter(Boolean).join(' / ') || '—'}</td>
+                            <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                              {p.deals.toLocaleString()}
+                            </td>
+                            <td>
+                              {p.registered
+                                ? <span className="badge gray">登録済</span>
+                                : <span className="badge blue">未登録</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
+          </>
+        )}
+      </Card>
 
       <Card title="ユーザーの追加">
         <form onSubmit={create} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>

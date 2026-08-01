@@ -590,6 +590,118 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
 }));
 
 /**
+ * 案件データに出てくる担当者の一覧。
+ *
+ * 管理表には担当者コードが無く氏名しか入っていないため、氏名で名寄せする。
+ * 案件一覧の担当者絞り込みも氏名で効くので、登録するユーザーの氏名は
+ * 案件データの表記とそろえる必要がある。
+ */
+api.get('/admin/deal-persons', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const rows = await db.all(`
+    SELECT sales_person AS name,
+           MAX(branch) AS branch,
+           MAX(office) AS office,
+           COUNT(*)    AS deals
+      FROM deals
+     WHERE sales_person IS NOT NULL AND sales_person <> ''
+     GROUP BY sales_person
+     ORDER BY COUNT(*) DESC`);
+
+  const users = await db.all('SELECT id, name, login_id, role, active FROM users');
+  const byName = new Map(users.map((u) => [u.name, u]));
+  const usedLoginIds = new Set(users.map((u) => u.login_id).filter(Boolean));
+
+  // ログインIDは管理表から作れない（氏名の読みが定まらない）ため、
+  // 連番の候補を出して画面で直せるようにする。
+  let seq = 0;
+  const nextSuggestion = () => {
+    let candidate;
+    do {
+      seq += 1;
+      candidate = `sales${String(seq).padStart(3, '0')}`;
+    } while (usedLoginIds.has(candidate));
+    usedLoginIds.add(candidate);
+    return candidate;
+  };
+
+  res.json(rows.map((r) => {
+    const existing = byName.get(r.name);
+    return {
+      name: r.name,
+      branch: r.branch,
+      office: r.office,
+      deals: Number(r.deals),
+      registered: Boolean(existing),
+      existingLoginId: existing?.login_id ?? null,
+      existingRole: existing?.role ?? null,
+      suggestedLoginId: existing ? null : nextSuggestion(),
+    };
+  }));
+}));
+
+/**
+ * 案件データの担当者をまとめて営業担当者として登録する。
+ * 氏名が既に登録されている人は作らない（重複した利用者ができてしまうため）。
+ */
+api.post('/admin/deal-persons', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const list = Array.isArray(req.body?.people) ? req.body.people : null;
+  if (!list?.length) return res.status(400).json({ error: '登録する担当者を指定してください' });
+  if (list.length > 500) return res.status(400).json({ error: '一度に登録できるのは500名までです' });
+
+  const created = [];
+  const skipped = [];
+  const errors = [];
+
+  // 同じ要求の中での重複も弾く
+  const seenNames = new Set();
+  const seenLoginIds = new Set();
+
+  for (const item of list) {
+    const name = String(item?.name ?? '').trim();
+    const loginId = String(item?.loginId ?? '').trim();
+    if (!name) { errors.push({ message: '氏名が空の行があります' }); continue; }
+
+    if (seenNames.has(name)) { skipped.push({ name, message: '同じ氏名が重複しています' }); continue; }
+    seenNames.add(name);
+
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
+      errors.push({ name, message: 'ログインIDは半角英数字・._- の3〜32文字で指定してください' });
+      continue;
+    }
+    if (seenLoginIds.has(loginId)) {
+      errors.push({ name, message: `ログインID ${loginId} が重複しています` });
+      continue;
+    }
+    seenLoginIds.add(loginId);
+
+    const byName = await db.get('SELECT id, login_id FROM users WHERE name = ?', [name]);
+    if (byName) {
+      skipped.push({ name, message: `既に登録済みです（${byName.login_id ?? 'IDなし'}）` });
+      continue;
+    }
+    const byLoginId = await db.get('SELECT id FROM users WHERE login_id = ?', [loginId]);
+    if (byLoginId) {
+      errors.push({ name, message: `ログインID ${loginId} は既に使われています` });
+      continue;
+    }
+
+    const temp = generateTempPassword();
+    await db.run(
+      `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password)
+       VALUES (?, 'sales', ?, ?, ?, ?, 1)`,
+      [name, nv(item?.branch) || null, nv(item?.office) || null, loginId, await hashPassword(temp)]);
+    created.push({ name, loginId, tempPassword: temp });
+  }
+
+  console.warn(`案件データの担当者を登録しました（追加 ${created.length}名 / 見送り ${skipped.length}名 / エラー ${errors.length}件）`);
+  res.json({ created, skipped, errors });
+}));
+
+/**
  * ユーザーが残した記録の件数。
  * これらが残っている人を消すと「誰がやったか」が辿れなくなるため、削除を止める材料にする。
  */
