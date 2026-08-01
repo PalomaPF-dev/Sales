@@ -132,7 +132,13 @@ export default function Dashboard() {
       {data.scope.note && <div className="alert error">{data.scope.note}</div>}
 
       {total === 0 && !data.scope.note && (
-        <div className="alert info">対象の案件がありません。Excel取込が済んでいるかご確認ください。</div>
+        <div className="alert info">
+          {data.scope.level === 'all'
+            ? '対象の案件がありません。Excel取込が済んでいるかご確認ください。'
+            : `「${data.scope.label}」に該当する案件がありません。`
+              + 'Excel取込が済んでいないか、登録されている支店・営業所の表記が'
+              + '案件データと一致していない可能性があります。営業企画部にご確認ください。'}
+        </div>
       )}
 
       <div className="tiles">

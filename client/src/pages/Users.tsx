@@ -16,6 +16,8 @@ interface AdminUser {
   must_change_password?: number;
   locked_until?: string | null;
   has_password: number;
+  /** その人に見える案件数。0なら支店・営業所の設定が案件データと合っていない */
+  visible_deals?: number;
 }
 
 interface Issued { loginId: string; tempPassword: string; name?: string }
@@ -484,7 +486,17 @@ export default function Users() {
                   <td><code>{u.login_id || '—'}</code></td>
                   <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
                   <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
-                  <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
+                  <td>
+                    {[u.branch, u.office].filter(Boolean).join(' / ') || '—'}
+                    {/* 所属が案件データと合っていないと本人には何も出ない。ここで気づけるようにする */}
+                    {u.active === 1 && u.visible_deals === 0 && (
+                      <div>
+                        <span className="badge red" title="支店・営業所の表記が案件データと一致していない可能性があります">
+                          案件が見えません
+                        </span>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {!u.has_password ? <span className="badge red">未設定</span>
                       : u.must_change_password ? <span className="badge yellow">仮</span>

@@ -504,11 +504,21 @@ function parseFlag(v) {
 
 api.get('/admin/users', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 各利用者に何件見えるかも返す。
+  // 支店・営業所の表記が案件データと合っていないと0件になり、
+  // 本人からは「何も出ない」としか分からないため、管理側で気づけるようにする。
   const rows = await db.all(`
-    SELECT id, name, role, branch, office, active, login_id, last_login_at,
-           must_change_password, locked_until,
-           CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
-    FROM users ORDER BY id`);
+    SELECT u.id, u.name, u.role, u.branch, u.office, u.active, u.login_id, u.last_login_at,
+           u.must_change_password, u.locked_until,
+           CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password,
+           CASE
+             WHEN u.role IN ('admin','planning') THEN (SELECT COUNT(*) FROM deals)
+             WHEN u.role = 'branch_manager' THEN
+               (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch)
+             ELSE
+               (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch AND d.office = u.office)
+           END AS visible_deals
+    FROM users u ORDER BY u.id`);
   res.json(rows);
 }));
 
