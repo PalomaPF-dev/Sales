@@ -603,6 +603,64 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
 }));
 
 /**
+ * 外部連携の状況。
+ *
+ * 環境変数はVercelの画面でしか設定できず、設定したつもりが効いていない、
+ * という食い違いが起きやすい。ターミナルを使わずに確かめられるよう、
+ * 「今この本番で何が有効か」を管理者だけに見せる。
+ *
+ * 鍵やパスワードそのものは返さない。有効か無効かと、
+ * 判断の材料になる範囲（発行元・末尾の数文字など）だけにとどめる。
+ */
+api.get('/admin/status', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const sso = ssoConfig();
+  const hasBasic = Boolean(process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASS);
+
+  // 添付の実際の保管先。設定だけでなく既存データの内訳も見せる
+  // （切り替え前に保存したものはDBに残るため）
+  const attach = await db.get(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN blob_url IS NOT NULL AND blob_url <> '' THEN 1 ELSE 0 END) AS on_blob
+      FROM attachments`).catch(() => null);
+
+  res.json({
+    platform: process.env.VERCEL ? 'vercel' : 'self',
+    db: db.kind,
+    items: [
+      {
+        key: 'basic',
+        name: 'Basic認証（URLを知っている人からの遮断）',
+        ok: hasBasic,
+        detail: hasBasic
+          ? `有効（利用者名: ${process.env.BASIC_AUTH_USER}）`
+          : '未設定。URLを知っていればログイン画面までは開けます',
+        hint: 'Vercel → Settings → Environment Variables に BASIC_AUTH_USER と BASIC_AUTH_PASS',
+      },
+      {
+        key: 'blob',
+        name: '添付ファイルの保管先（Vercel Blob）',
+        ok: isPrivateBlobConfigured(),
+        detail: isPrivateBlobConfigured()
+          ? `Blobに保存します（登録済み ${num(attach?.total)}件のうち ${num(attach?.on_blob)}件がBlob）`
+          : `未設定のためデータベースに保存します（登録済み ${num(attach?.total)}件）`,
+        hint: 'Vercel → Storage で Blob ストアを接続（プレフィックス PRIVATE_BLOB）',
+      },
+      {
+        key: 'sso',
+        name: '社内ポータルからのSSO',
+        ok: sso.enabled,
+        detail: sso.enabled
+          ? `有効（発行元: ${sso.issuer} / 未登録の人の自動作成: ${sso.autoCreate ? 'する' : 'しない'}）`
+          : '未設定。ログインIDとパスワードでの入室のみです',
+        hint: 'ポータルと同じ鍵を PORTAL_SSO_SECRET に設定',
+      },
+    ],
+  });
+}));
+
+/**
  * 案件データに出てくる担当者の一覧。
  *
  * 管理表には担当者コードが無く氏名しか入っていないため、氏名で名寄せする。
