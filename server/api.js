@@ -1548,8 +1548,26 @@ api.delete('/logs/:id', wrap(async (req, res) => {
 }));
 
 // ---- 添付ファイル ----
-// 実体をDBに入れるため、1ファイルあたりの上限を設ける
+// 1ファイルあたりの上限
 const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+
+/**
+ * multerのoriginalnameはUTF-8のバイト列をlatin-1として解釈した文字列で渡ってくるため、
+ * 日本語のファイル名が「çµ¦æ¹¯å™¨…」のように化ける。バイト列へ戻してUTF-8で読み直す。
+ *
+ * 添付とExcel取込の両方で使う。定義が無いとアップロードが500になるため、
+ * 使う側より前に置いておく。
+ */
+function decodeUploadName(name) {
+  if (!name) return name;
+  try {
+    const decoded = Buffer.from(name, 'latin1').toString('utf8');
+    // 復元に失敗すると U+FFFD が出る。その場合は元の文字列のままにする
+    return decoded.includes('�') ? name : decoded;
+  } catch {
+    return name;
+  }
+}
 
 api.get('/attachments', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
