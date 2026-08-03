@@ -1350,37 +1350,33 @@ function toPrice(v) {
   return n;
 }
 
-api.patch('/deals/:id', wrap(async (req, res) => {
-  if (!requireLogin(req, res)) return;
-  // 範囲外の案件は更新もできない（参照と同じ扱いにする）
-  const deal = await findDealInScope(req.params.id, req.user, 'deals');
-  if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
-
+/**
+ * 更新する項目を組み立てる。1件更新と一括取込で同じ判断を使う。
+ * 入力が不正なときは Error を投げる（呼び出し側で理由をそのまま返す）。
+ */
+function buildDealUpdate(body, deal, user) {
   const sets = [];
   const params = [];
-  try {
-    for (const f of EDITABLE) {
-      if (!(f in req.body)) continue;
-      let v = req.body[f];
-      if (f.endsWith('_agreed_price')) v = toPrice(v);
-      else if (f.endsWith('_applied_ym')) v = normalizeYm(v);
-      else if (f.endsWith('_done')) v = v ? 1 : 0;
-      else v = nv(v);
-      sets.push(`${f} = ?`);
-      params.push(v);
-    }
-    for (const f of ADMIN_ONLY_EDITABLE) {
-      if (!(f in req.body)) continue;
-      if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: '目標値上げ単価を変更できるのは管理者のみです' });
-      }
-      sets.push(`${f} = ?`);
-      params.push(toPrice(req.body[f]));
-    }
-  } catch (e) {
-    return res.status(400).json({ error: e.message });
+
+  for (const f of EDITABLE) {
+    if (!(f in body)) continue;
+    let v = body[f];
+    if (f.endsWith('_agreed_price')) v = toPrice(v);
+    else if (f.endsWith('_applied_ym')) v = normalizeYm(v);
+    else if (f.endsWith('_done')) v = v ? 1 : 0;
+    else v = nv(v);
+    sets.push(`${f} = ?`);
+    params.push(v);
   }
-  if (!sets.length) return res.status(400).json({ error: '更新項目がありません' });
+  for (const f of ADMIN_ONLY_EDITABLE) {
+    if (!(f in body)) continue;
+    if (user.role !== 'admin') {
+      throw new Error('目標値上げ単価を変更できるのは管理者のみです');
+    }
+    sets.push(`${f} = ?`);
+    params.push(toPrice(body[f]));
+  }
+  if (!sets.length) throw new Error('更新項目がありません');
 
   // 完了にするには合意単価が要る。空や0のまま完了にできると、
   // 何で妥結したのか分からない行が「完了」として残ってしまう。
@@ -1391,14 +1387,102 @@ api.patch('/deals/:id', wrap(async (req, res) => {
     ['r2_done', 'r2_agreed_price', '第2弾'],
   ]) {
     if (Number(next[doneCol]) === 1 && !(Number(next[priceCol]) > 0)) {
-      return res.status(400).json({ error: `${label}を完了にするには合意単価を入力してください` });
+      throw new Error(`${label}を完了にするには合意単価を入力してください`);
     }
   }
 
-  sets.push('updated_at = ?');
-  params.push(now(), req.params.id);
+  // 中身が変わらない行は書き込まない（一括取込では大半が変更なしのため）
+  const changed = sets.some((set, i) => {
+    const col = set.split(' =')[0];
+    const before = deal[col];
+    const after = params[i];
+    if (before == null && after == null) return false;
+    if (before == null || after == null) return true;
+    return String(before) !== String(after);
+  });
+
+  return { sets, params, changed };
+}
+
+api.patch('/deals/:id', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  // 範囲外の案件は更新もできない（参照と同じ扱いにする）
+  const deal = await findDealInScope(req.params.id, req.user, 'deals');
+  if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
+
+  let built;
+  try {
+    built = buildDealUpdate(req.body, deal, req.user);
+  } catch (e) {
+    return res.status(e.message.includes('管理者のみ') ? 403 : 400).json({ error: e.message });
+  }
+
+  const sets = [...built.sets, 'updated_at = ?'];
+  const params = [...built.params, now(), req.params.id];
   await db.run(`UPDATE deals SET ${sets.join(', ')} WHERE id = ?`, params);
   res.json(await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]));
+}));
+
+// 一括取込で一度に受け取る行数。JSONにして数百KBに収まる大きさにする
+const BULK_UPDATE_CHUNK = 500;
+
+/**
+ * 案件一覧から書き出したExcelを、記入して戻すための一括更新。
+ *
+ * 案件IDで突き合わせ、合意単価・適用年月・完了だけを更新する。
+ * 判断は1件更新と同じ（buildDealUpdate）ため、画面から直したときと
+ * 結果が食い違うことがない。
+ *
+ * dryRun=true のときは書き込まずに件数だけ返す。
+ * 数千行をまとめて書き換える操作なので、取り込む前に中身を確かめられるようにする。
+ */
+api.post('/deals/bulk-update', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+  if (!rows?.length) return res.status(400).json({ error: '取り込む行がありません' });
+  if (rows.length > BULK_UPDATE_CHUNK) {
+    return res.status(400).json({ error: `一度に送れるのは${BULK_UPDATE_CHUNK}行までです` });
+  }
+  const dryRun = req.body?.dryRun === true;
+
+  let updated = 0;      // 実際に変わる行
+  let unchanged = 0;    // 中身が同じで書き込む必要のない行
+  let notFound = 0;     // 範囲外・存在しないID
+  const errors = [];    // 入力が不正な行
+
+  for (const row of rows) {
+    const id = Number(row?.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      errors.push({ id: row?.id ?? null, message: '案件IDが読み取れません' });
+      continue;
+    }
+    const deal = await findDealInScope(id, req.user, 'deals');
+    if (!deal) { notFound += 1; continue; }
+
+    const body = {};
+    for (const f of [...EDITABLE, ...ADMIN_ONLY_EDITABLE]) {
+      if (f in row) body[f] = row[f];
+    }
+    if (!Object.keys(body).length) { unchanged += 1; continue; }
+
+    let built;
+    try {
+      built = buildDealUpdate(body, deal, req.user);
+    } catch (e) {
+      errors.push({ id, message: e.message });
+      continue;
+    }
+    if (!built.changed) { unchanged += 1; continue; }
+    updated += 1;
+    if (dryRun) continue;
+
+    await db.run(
+      `UPDATE deals SET ${[...built.sets, 'updated_at = ?'].join(', ')} WHERE id = ?`,
+      [...built.params, now(), id]
+    );
+  }
+
+  res.json({ dryRun, updated, unchanged, notFound, errors });
 }));
 
 /**

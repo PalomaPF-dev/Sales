@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import type { Deal, Meta, RoundState } from '../types';
 import { CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
+import { parseBulkFile, sendBulkUpdate, type BulkResult } from '../bulkUpdateClient';
 import { useUser } from '../user';
 
 interface DealsRes {
@@ -73,6 +74,41 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isAdmin = me.role === 'admin';
+
+  // Excelでの一括取込
+  const bulkFileRef = useRef<HTMLInputElement>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState('');
+  const [bulk, setBulk] = useState<(BulkResult & { dryRun: boolean; skippedRows: number }) | null>(null);
+
+  /**
+   * まず dryRun で件数を確かめ、確認できたら書き込む。
+   * 数千行をまとめて書き換えるので、中身を見ずに適用できないようにしている。
+   */
+  const runBulk = async (dryRun: boolean) => {
+    const file = bulkFileRef.current?.files?.[0];
+    if (!file) { setMsg({ kind: 'error', text: 'ファイルを選択してください' }); return; }
+    setBusy(true);
+    setMsg(null);
+    setBulkProgress('ファイルを読み込んでいます...');
+    try {
+      const parsed = await parseBulkFile(file);
+      setBulkProgress(`${parsed.rows.length.toLocaleString()}行を${dryRun ? '確認' : '取込'}中...`);
+      const res = await sendBulkUpdate(parsed.rows, {
+        dryRun,
+        onProgress: (done, total) =>
+          setBulkProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行`),
+      });
+      setBulk({ ...res, dryRun, skippedRows: parsed.skippedRows });
+      setBulkProgress('');
+      if (!dryRun) load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+      setBulkProgress('');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const get = (k: string) => params.get(k) || '';
   const page = Number(params.get('page') || 1);
@@ -314,7 +350,68 @@ export default function Deals() {
             {' ・ '}第2弾 完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
           </span>
           <div className="grow" />
-          <button className="btn dark sm" onClick={exportExcel}>Excel出力</button>
+          <button className="btn secondary sm" onClick={() => { setBulkOpen((v) => !v); setBulk(null); }}>
+            一括取込
+          </button>
+          <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}>Excel出力</button>
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div className="card">
+          <h3>Excelで一括取込</h3>
+          <p className="pt-note" style={{ marginTop: 0 }}>
+            「Excel出力」で書き出したファイルに<strong>合意単価・適用年月・完了</strong>を記入して戻します。
+            <strong>案件ID</strong>の列で行を突き合わせるため、この列は消さないでください。
+            記入しなかった列は変更しません（列ごと削除しておけば触りません）。
+          </p>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input type="file" ref={bulkFileRef} accept=".xlsx,.xlsm"
+              onChange={() => setBulk(null)} />
+            <button className="btn secondary" onClick={() => runBulk(true)} disabled={busy}>
+              {busy ? '確認中...' : '内容を確認する'}
+            </button>
+            <button className="btn" onClick={() => runBulk(false)}
+              disabled={busy || !bulk || bulk.dryRun !== true || bulk.updated === 0}>
+              取り込む
+            </button>
+            <button className="btn secondary sm" onClick={() => { setBulkOpen(false); setBulk(null); }}>
+              閉じる
+            </button>
+          </div>
+
+          {bulkProgress && <p className="pt-note">{bulkProgress}</p>}
+
+          {bulk && (
+            <div className={`alert ${bulk.errors.length ? 'warn' : bulk.dryRun ? 'info' : 'ok'}`} style={{ marginTop: 12 }}>
+              <strong>
+                {bulk.dryRun
+                  ? `確認結果: ${bulk.updated.toLocaleString()}件が変更されます`
+                  : `取り込みました: ${bulk.updated.toLocaleString()}件を更新`}
+              </strong>
+              <div style={{ marginTop: 6, fontSize: 12 }}>
+                変更なし {bulk.unchanged.toLocaleString()}件
+                {bulk.notFound > 0 && ` ・ 対象外 ${bulk.notFound.toLocaleString()}件（見える範囲にない案件）`}
+                {bulk.skippedRows ? ` ・ 案件IDが読めない行 ${bulk.skippedRows.toLocaleString()}件` : ''}
+              </div>
+              {bulk.errors.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  入力を直す必要のある行 {bulk.errors.length}件:
+                  <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                    {bulk.errors.slice(0, 10).map((e, i) => (
+                      <li key={i}>案件ID {e.id ?? '—'}: {e.message}</li>
+                    ))}
+                  </ul>
+                  {bulk.errors.length > 10 && <div>ほか {bulk.errors.length - 10}件</div>}
+                </div>
+              )}
+              {bulk.dryRun && bulk.updated > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  問題なければ「取り込む」を押してください。
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
