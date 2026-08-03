@@ -178,14 +178,19 @@ CREATE TABLE IF NOT EXISTS negotiation_logs (
 CREATE INDEX IF NOT EXISTS idx_logs_corp ON negotiation_logs(corp_code);
 
 -- 添付ファイル（見積書・稟議書類など）
--- 外部ストレージを増やさずに済むよう、実体はbase64でDBに保存する
+-- 実体は Vercel Blob の Private ストア（pf-project-private）に置く。
+-- 見積書などの機密文書のため公開ストアは使わず、ダウンロードは必ず
+-- アプリ経由で権限確認したうえでサーバーが中継する。
 CREATE TABLE IF NOT EXISTS attachments (
   id             SERIAL PRIMARY KEY,
   deal_id        INTEGER REFERENCES deals(id) ON DELETE CASCADE,
   filename       TEXT NOT NULL,
   mime_type      TEXT,
   size           INTEGER,
-  content        TEXT NOT NULL,
+  -- 実体は Vercel Blob（Privateストア）へ。blob_url があればそちらが正。
+  -- content は Blob 移行前の既存行のために残す（新規保存では使わない）。
+  content        TEXT,
+  blob_url       TEXT,
   uploaded_by    INTEGER REFERENCES users(id),
   uploaded_at    TEXT NOT NULL
 );

@@ -15,6 +15,9 @@ import {
 } from './session.js';
 import { buildWorkbook } from './export.js';
 import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
+import {
+  deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
+} from './privateBlob.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -1574,12 +1577,33 @@ api.post('/attachments', upload.single('file'), wrap(async (req, res) => {
     return res.status(404).json({ error: '案件が見つかりません' });
   }
 
-  const { lastInsertRowid } = await db.run(
-    `INSERT INTO attachments (deal_id, filename, mime_type, size, content, uploaded_by, uploaded_at)
-     VALUES (?,?,?,?,?,?,?)`,
-    [dealId, decodeUploadName(req.file.originalname), req.file.mimetype, req.file.size,
-     req.file.buffer.toString('base64'), req.user.id, now()]
-  );
+  // 実体は Private Blob へ。トークン未設定のローカル開発では従来どおり base64 で DB に入れる。
+  const filename = decodeUploadName(req.file.originalname);
+  let blobUrl = null;
+  if (isPrivateBlobConfigured()) {
+    try {
+      blobUrl = await putAttachment({
+        dealId, filename, mimeType: req.file.mimetype, body: req.file.buffer,
+      });
+    } catch (e) {
+      console.error('[attachments] Blobへの保存に失敗:', e?.message || e);
+      return res.status(502).json({ error: 'ファイルの保存に失敗しました。時間をおいて再度お試しください' });
+    }
+  }
+  let inserted;
+  try {
+    inserted = await db.run(
+      `INSERT INTO attachments (deal_id, filename, mime_type, size, content, blob_url, uploaded_by, uploaded_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [dealId, filename, req.file.mimetype, req.file.size,
+       blobUrl ? null : req.file.buffer.toString('base64'), blobUrl, req.user.id, now()]
+    );
+  } catch (e) {
+    // DB に紐づかなかった実体を残さない
+    await deleteAttachment(blobUrl);
+    throw e;
+  }
+  const { lastInsertRowid } = inserted;
   res.status(201).json(await db.get(
     `SELECT a.id, a.deal_id, a.filename, a.mime_type, a.size, a.uploaded_at, u.name AS uploaded_by_name
      FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.id = ?`, [Number(lastInsertRowid)]));
@@ -1592,9 +1616,23 @@ api.get('/attachments/:id/download', wrap(async (req, res) => {
   if (a.deal_id && !await findDealInScope(a.deal_id, req.user, 'deals')) {
     return res.status(404).json({ error: 'ファイルが見つかりません' });
   }
+  // blob_url があれば Blob から取得して中継する。URL自体はブラウザへ返さない。
+  // 無い場合は Blob 移行前の既存行なので、従来どおり DB の base64 を返す。
+  let body = null;
+  if (a.blob_url) {
+    try {
+      body = await fetchAttachment(a.blob_url);
+    } catch (e) {
+      console.error('[attachments] Blobから取得できませんでした:', e?.message || e);
+    }
+  } else if (a.content) {
+    body = Buffer.from(a.content, 'base64');
+  }
+  if (!body) return res.status(502).json({ error: 'ファイル本体を取得できませんでした' });
+
   res.set('Content-Type', a.mime_type || 'application/octet-stream');
   res.set('Content-Disposition', contentDisposition(a.filename));
-  res.send(Buffer.from(a.content, 'base64'));
+  res.send(body);
 }));
 
 api.delete('/attachments/:id', wrap(async (req, res) => {
@@ -1607,6 +1645,8 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
     return res.status(403).json({ error: 'アップロードした本人または営業企画部のみ削除できます' });
   }
   await db.run('DELETE FROM attachments WHERE id = ?', [a.id]);
+  // DB から消えた後に実体も消す。失敗しても業務は止めない（privateBlob 側でログのみ）
+  await deleteAttachment(a.blob_url);
   res.json({ ok: true });
 }));
 
@@ -1766,7 +1806,12 @@ api.delete('/import/batches/:id', wrap(async (req, res) => {
   }
 
   await db.run('DELETE FROM negotiation_logs WHERE deal_id IN (SELECT id FROM deals WHERE batch_id = ?)', [id]);
+  // 実体（Blob）も一緒に片付ける。行を消す前に URL を控えておく。
+  const orphanBlobs = await db.all(
+    `SELECT blob_url FROM attachments
+      WHERE blob_url IS NOT NULL AND deal_id IN (SELECT id FROM deals WHERE batch_id = ?)`, [id]);
   await db.run('DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE batch_id = ?)', [id]);
+  for (const o of orphanBlobs) await deleteAttachment(o.blob_url);
   const { changes } = await db.run('DELETE FROM deals WHERE batch_id = ?', [id]);
   await db.run('DELETE FROM import_batches WHERE id = ?', [id]);
   res.json({ deleted: Number(changes ?? batch.row_count) });

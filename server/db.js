@@ -472,8 +472,18 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
     // 交渉履歴を法人単位にする
     'ALTER TABLE negotiation_logs ADD COLUMN corp_code TEXT',
+    // 添付の実体を Vercel Blob（Privateストア）へ移す。
+    // blob_url があればそちらが正、無ければ従来どおり content（base64）を読む。
+    'ALTER TABLE attachments ADD COLUMN blob_url TEXT',
   ]) {
     await tryAlter(sql);
+  }
+
+  // 実体を Blob へ移した行では content が空になるため NOT NULL を外す。
+  // SQLite は列制約の変更ができないので Postgres のときだけ実施する
+  // （ローカル開発は従来どおり content に入れるため実害はない）。
+  if (isPostgres) {
+    await tryAlter('ALTER TABLE attachments ALTER COLUMN content DROP NOT NULL');
   }
 }
 
