@@ -423,8 +423,11 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; 
 */
 .tbl.deals td.below { background: #fff7ed; }
 .tbl.deals tbody tr:hover td.below { background: #ffedd5; }
+/*
+  差額は金額の下の行に出す。同じ行に置くと、その行だけ金額が左へ押し出されて
+  列の数字が縦に揃わなくなるため。
+*/
 .tbl.deals td.below .shortfall {
-  display: inline-block; margin-left: 6px; padding: 1px 5px;
-  border-radius: 5px; font-size: 10.5px; font-weight: 700;
-  background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa;
+  margin-top: 2px; font-size: 10.5px; font-weight: 700;
+  color: #c2410c; font-variant-numeric: tabular-nums;
 }

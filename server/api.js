@@ -1053,9 +1053,9 @@ api.get('/dashboard', wrap(async (req, res) => {
     SUM(CASE WHEN r2_state = 'agreed' THEN 1 ELSE 0 END) AS r2_agreed,
     SUM(CASE WHEN r1_state = 'open' THEN 1 ELSE 0 END) AS r1_open,
     SUM(CASE WHEN r2_state = 'open' THEN 1 ELSE 0 END) AS r2_open,
-    SUM(CASE WHEN r1_agreed_price IS NOT NULL AND r1_target_price IS NOT NULL
+    SUM(CASE WHEN r1_state <> 'open' AND r1_agreed_price > 0 AND r1_target_price IS NOT NULL
                   AND r1_agreed_price < r1_target_price THEN 1 ELSE 0 END) AS r1_below,
-    SUM(CASE WHEN r2_agreed_price IS NOT NULL AND r2_target_price IS NOT NULL
+    SUM(CASE WHEN r2_state <> 'open' AND r2_agreed_price > 0 AND r2_target_price IS NOT NULL
                   AND r2_agreed_price < r2_target_price THEN 1 ELSE 0 END) AS r2_below`;
 
   const [totals, byOffice, byPerson, byEquip, corpStatus, applied] = await Promise.all([
@@ -1164,10 +1164,14 @@ function dealFilters(q, user) {
   }
 
   // 合意単価が目標に届かなかったもの。
-  // 合意単価が入っている行だけが対象（未入力を「未達」とすると、
-  // これから交渉する案件まで混ざって、見直すべき行が埋もれる）。
+  //
+  // 対象は「実際に合意した行」だけ（r*_state が open でない）。
+  // 管理表では未交渉の行にも値が入っており、第1弾は出荷単価と同額、
+  // 第2弾は0が入っている。これを未達に含めると、これから交渉する案件が
+  // 目標額まるごとの不足として並んでしまい、見直すべき行が埋もれる。
   const below = (n) =>
-    `(r${n}_agreed_price IS NOT NULL AND r${n}_target_price IS NOT NULL`
+    `(r${n}_state <> 'open' AND r${n}_agreed_price > 0`
+    + ` AND r${n}_target_price IS NOT NULL`
     + ` AND r${n}_agreed_price < r${n}_target_price)`;
   if (q.below === 'r1') where.push(below(1));
   else if (q.below === 'r2') where.push(below(2));

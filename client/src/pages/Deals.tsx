@@ -24,24 +24,41 @@ const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 /**
  * 合意単価が目標に届かなかったか。
- * 合意単価が入っている行だけを対象にする（未入力は「これから交渉するもの」であって未達ではない）。
+ *
+ * 対象は「実際に合意した行」だけ（状態が未入力でない）。
+ * 管理表では未交渉の行にも値が入っており、第1弾は出荷単価と同額、
+ * 第2弾は0が入っている。これを未達に含めると、
+ * これから交渉する案件が目標額まるごとの不足として並んでしまう。
  */
 function belowTarget(d: Deal, round: 1 | 2): boolean {
+  const state = round === 1 ? d.r1_state : d.r2_state;
+  if (state === 'open') return false;
   const agreed = round === 1 ? d.r1_agreed_price : d.r2_agreed_price;
   const target = round === 1 ? d.r1_target_price : d.r2_target_price;
   if (agreed == null || target == null) return false;
+  if (!(Number(agreed) > 0)) return false;
   return Number(agreed) < Number(target);
 }
 
-/** 目標に届かなかった分を示す。いくら足りないかまで出す */
-function ShortfallMark({ deal, round }: { deal: Deal; round: 1 | 2 }) {
-  const agreed = Number(round === 1 ? deal.r1_agreed_price : deal.r2_agreed_price);
-  const target = Number(round === 1 ? deal.r1_target_price : deal.r2_target_price);
-  const gap = target - agreed;
+/**
+ * 合意単価と、目標に届かなかった分の表示。
+ *
+ * 差額を金額と同じ行に置くと、その行だけ金額が左へ押し出されて
+ * 列の数字が縦に揃わなくなる。金額は今までどおりの位置に置いたまま、
+ * 差額は下の行へ回す。
+ */
+function AgreedCell({ deal, round }: { deal: Deal; round: 1 | 2 }) {
+  const agreed = round === 1 ? deal.r1_agreed_price : deal.r2_agreed_price;
+  const target = round === 1 ? deal.r1_target_price : deal.r2_target_price;
+  if (!belowTarget(deal, round)) return <>{yen(agreed)}</>;
+  const gap = Number(target) - Number(agreed);
   return (
-    <span className="shortfall" title={`目標に ¥${yen(gap)} 届いていません（目標 ¥${yen(target)}）`}>
-      −{yen(gap)}
-    </span>
+    <>
+      <div>{yen(agreed)}</div>
+      <div className="shortfall" title={`目標に ¥${yen(gap)} 届いていません（目標 ¥${yen(target)}）`}>
+        −{yen(gap)}
+      </div>
+    </>
   );
 }
 
@@ -379,12 +396,7 @@ export default function Deals() {
                     {isEditing ? (
                       <input type="number" className="cell" value={draft.r1_agreed_price}
                         onChange={(e) => setDraft({ ...draft, r1_agreed_price: e.target.value })} />
-                    ) : (
-                      <>
-                        {yen(d.r1_agreed_price)}
-                        {belowTarget(d, 1) && <ShortfallMark deal={d} round={1} />}
-                      </>
-                    )}
+                    ) : <AgreedCell deal={d} round={1} />}
                   </td>
                   <td className="num">
                     {isEditing ? (
@@ -419,12 +431,7 @@ export default function Deals() {
                     {isEditing ? (
                       <input type="number" className="cell" value={draft.r2_agreed_price}
                         onChange={(e) => setDraft({ ...draft, r2_agreed_price: e.target.value })} />
-                    ) : (
-                      <>
-                        {yen(d.r2_agreed_price)}
-                        {belowTarget(d, 2) && <ShortfallMark deal={d} round={2} />}
-                      </>
-                    )}
+                    ) : <AgreedCell deal={d} round={2} />}
                   </td>
                   <td className="num">
                     {isEditing ? (
