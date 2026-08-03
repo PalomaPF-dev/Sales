@@ -192,6 +192,9 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; 
 .alert.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 .alert.ok { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
 .alert.info { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+/* 目標未達など、止めるほどではないが気づいてほしいこと */
+.alert.warn { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+.alert.warn a { color: #9a3412; text-decoration: underline; }
 
 /* ───────── ワークフローの段階 ───────── */
 .steps { display: flex; align-items: center; gap: 0; margin: 10px 0 18px; flex-wrap: wrap; }
@@ -348,3 +351,80 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; 
 .pbar .seg.done { background: var(--accent); z-index: 1; }
 
 .tbl td .sub { font-size: 11px; color: var(--muted); }
+
+/* ---- 検索と候補 ---- */
+
+.searchbox { position: relative; }
+.searchbox > input { width: 100%; padding-right: 26px; }
+.searchbox .clear {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 4px 6px;
+}
+.searchbox .clear:hover { color: var(--ink-2); }
+
+.suggest {
+  position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
+  background: #fff; border: 1px solid var(--baseline); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  max-height: 380px; overflow-y: auto; min-width: 300px;
+}
+.suggest .sg + .sg { border-top: 1px solid var(--grid); }
+.suggest .sg-head {
+  font-size: 10.5px; font-weight: 700; color: var(--muted);
+  padding: 7px 12px 3px; letter-spacing: 0.04em;
+}
+.suggest .sg-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: none; background: none; text-align: left; cursor: pointer;
+  padding: 6px 12px; font-size: 12.5px; color: var(--ink);
+}
+.suggest .sg-item:hover, .suggest .sg-item.active { background: var(--accent-soft); }
+.suggest .sg-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggest .sg-item .ct { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.suggest .sg-foot {
+  padding: 6px 12px; font-size: 10.5px; color: var(--muted);
+  border-top: 1px solid var(--grid); background: #f8fafc;
+  position: sticky; bottom: 0;
+}
+
+/* ---- 並び替えできる見出し ---- */
+
+.tbl th.sortable { cursor: pointer; user-select: none; }
+.tbl th.sortable:hover { background: #eef2f7; }
+.tbl th.sorted { color: var(--accent); }
+.tbl th .sort-mark { font-size: 9px; margin-left: 3px; }
+
+/* ---- 表の上に出す横スクロールバー ---- */
+
+/*
+  列が多い表では、下端のスクロールバーまで目線と手を動かすのが手間になる。
+  表の上にも同じ幅のバーを置き、どちらを動かしても連動させる（HScroll）。
+*/
+.hscroll-top {
+  overflow-x: auto; overflow-y: hidden;
+  /* スクロールバーが描かれる高さを確保する（中身は幅だけの空要素のため） */
+  height: 12px;
+  margin-bottom: 6px;
+  /* 常にバーを見せる（自動非表示だと在ることに気づけない） */
+  scrollbar-width: thin;
+}
+.hscroll-top.hidden { display: none; }
+.hscroll-top::-webkit-scrollbar { height: 10px; }
+.hscroll-top::-webkit-scrollbar-track { background: var(--grid); border-radius: 999px; }
+.hscroll-top::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+.hscroll-top::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ---- 合意単価が目標に届かなかった行 ---- */
+
+/*
+  値上げ交渉は「目標に対していくら足りなかったか」が見直しの起点になる。
+  合意単価の欄そのものに色を付け、不足額を並べて出す。
+*/
+.tbl.deals td.below { background: #fff7ed; }
+.tbl.deals tbody tr:hover td.below { background: #ffedd5; }
+.tbl.deals td.below .shortfall {
+  display: inline-block; margin-left: 6px; padding: 1px 5px;
+  border-radius: 5px; font-size: 10.5px; font-weight: 700;
+  background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa;
+}

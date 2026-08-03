@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card } from '../components/ui';
+import type { Meta } from '../types';
+
+/** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
+const FILTER_KEYS = ['q', 'equip', 'person', 'corp', 'branch', 'office', 'r1State', 'r2State', 'below'] as const;
 
 /** 進捗の数え方はサーバーと揃える（件数と割合。金額は扱わない） */
 interface Progress {
@@ -12,6 +16,9 @@ interface Progress {
   r2_agreed: number;
   r1_open: number;
   r2_open: number;
+  /** 合意単価が目標に届かなかった件数 */
+  r1_below: number;
+  r2_below: number;
 }
 
 interface Row extends Progress {
@@ -75,6 +82,7 @@ function ProgressTable({ rows, head, onPick }: {
             <th style={{ textAlign: 'right' }}>完了率</th>
             <th style={{ width: 150 }}>第2弾</th>
             <th style={{ textAlign: 'right' }}>完了率</th>
+            <th style={{ textAlign: 'right' }}>目標未達</th>
           </tr>
         </thead>
         <tbody>
@@ -96,6 +104,12 @@ function ProgressTable({ rows, head, onPick }: {
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{pct(num(r.r1_done), total)}%</td>
                 <td><Bar done={num(r.r2_done)} agreed={num(r.r2_agreed)} total={total} /></td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{pct(num(r.r2_done), total)}%</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  {(() => {
+                    const b = num(r.r1_below) + num(r.r2_below);
+                    return b > 0 ? <span className="badge orange">{b.toLocaleString()}</span> : '—';
+                  })()}
+                </td>
               </tr>
             );
           })}
@@ -106,13 +120,38 @@ function ProgressTable({ rows, head, onPick }: {
 }
 
 export default function Dashboard() {
+  const [params, setParams] = useSearchParams();
   const [data, setData] = useState<DashboardRes | null>(null);
+  const [meta, setMeta] = useState<Meta | null>(null);
   const [msg, setMsg] = useState('');
   const navigate = useNavigate();
 
+  const get = (k: string) => params.get(k) || '';
+  const setParam = (key: string, value: string) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value); else next.delete(key);
+    setParams(next, { replace: true });
+  };
+  /** いまの絞り込みを引き継いで案件一覧へ移る */
+  const toDeals = (extra: Record<string, string> = {}) => {
+    const qs = new URLSearchParams();
+    for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
+    for (const [k, v] of Object.entries(extra)) if (v) qs.set(k, v);
+    navigate(`/deals?${qs}`);
+  };
+
   useEffect(() => {
-    api<DashboardRes>('/dashboard').then(setData).catch((e) => setMsg(e.message));
+    api<Meta>('/meta').then(setMeta).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const qs = new URLSearchParams();
+    for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
+    setData(null);
+    api<DashboardRes>(`/dashboard?${qs}`).then(setData).catch((e) => setMsg(e.message));
+  }, [params]);
+
+  const filtered = FILTER_KEYS.some((k) => get(k));
 
   if (msg) return <div className="alert error">{msg}</div>;
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
@@ -128,6 +167,85 @@ export default function Dashboard() {
       <p className="page-sub">
         値上げの進み具合です。表示範囲: <strong>{data.scope.label}</strong>
       </p>
+
+      <div className="filters">
+        <label className="fld">
+          法人
+          <select value={get('corp')} onChange={(e) => setParam('corp', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.corps.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          支店
+          <select value={get('branch')} onChange={(e) => { setParam('branch', e.target.value); setParam('office', ''); }}>
+            <option value="">すべて</option>
+            {meta?.branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          営業所
+          <select value={get('office')} onChange={(e) => setParam('office', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.offices
+              .filter((o) => !get('branch') || o.branch === get('branch'))
+              .map((o) => <option key={`${o.branch}-${o.name}`} value={o.name}>{o.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          担当者
+          <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          器具区分
+          <select value={get('equip')} onChange={(e) => setParam('equip', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.equips.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          第1弾
+          <select value={get('r1State')} onChange={(e) => setParam('r1State', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          第2弾
+          <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          目標との差
+          <select value={get('below')} onChange={(e) => setParam('below', e.target.value)}>
+            <option value="">すべて</option>
+            <option value="any">目標未達（どちらか）</option>
+            <option value="r1">第1弾が目標未達</option>
+            <option value="r2">第2弾が目標未達</option>
+          </select>
+        </label>
+        {filtered && (
+          <label className="fld" style={{ justifyContent: 'flex-end' }}>
+            <span style={{ visibility: 'hidden' }}>操作</span>
+            <button className="btn secondary" onClick={() => setParams(new URLSearchParams(), { replace: true })}>
+              絞り込みを解除
+            </button>
+          </label>
+        )}
+      </div>
+
+      <div className="toolbar">
+        <span className="count">
+          {filtered ? '絞り込んだ結果を集計しています' : '全体を集計しています'}
+        </span>
+        <div className="grow" />
+        <button className="btn dark sm" onClick={() => toDeals()}>この条件で案件一覧を見る</button>
+      </div>
 
       {data.scope.note && <div className="alert error">{data.scope.note}</div>}
 
@@ -149,7 +267,20 @@ export default function Dashboard() {
           sub={`${num(t.r2_done).toLocaleString()} / ${total.toLocaleString()} 件`} />
         <Kpi label="第1弾 未入力" value={num(t.r1_open).toLocaleString()} sub="件" />
         <Kpi label="第2弾 未入力" value={num(t.r2_open).toLocaleString()} sub="件" />
+        <Kpi label="目標未達" value={(num(t.r1_below) + num(t.r2_below)).toLocaleString()}
+          sub={`第1弾 ${num(t.r1_below).toLocaleString()} ・ 第2弾 ${num(t.r2_below).toLocaleString()} 件`} />
       </div>
+
+      {(num(t.r1_below) + num(t.r2_below)) > 0 && (
+        <div className="alert warn">
+          合意単価が目標に届かなかった案件が
+          <strong> {(num(t.r1_below) + num(t.r2_below)).toLocaleString()}件 </strong>
+          あります。
+          <a href="#" onClick={(e) => { e.preventDefault(); toDeals({ below: 'any' }); }}>
+            一覧で確認する
+          </a>
+        </div>
+      )}
 
       <Card title="法人ごとの交渉状況">
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>

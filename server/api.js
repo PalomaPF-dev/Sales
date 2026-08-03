@@ -1035,9 +1035,11 @@ function scopeInfo(user) {
  */
 api.get('/dashboard', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
-  const scope = scopeConditions(req.user);
-  const where = scope.where.length ? `WHERE ${scope.where.join(' AND ')}` : '';
-  const p = scope.params;
+  // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
+  // 同じ条件で「一覧を見る」「集計を見る」を行き来できるようにするため、
+  // 判定を別に持たず dealFilters を共有する。
+  const { where, params: p } = dealFilters(req.query, req.user);
+  const andWhere = (cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
 
   // 進捗の数え方は一箇所にまとめる。集計軸が増えても同じ定義で揃うようにする。
   const progress = `
@@ -1047,7 +1049,11 @@ api.get('/dashboard', wrap(async (req, res) => {
     SUM(CASE WHEN r1_state = 'agreed' THEN 1 ELSE 0 END) AS r1_agreed,
     SUM(CASE WHEN r2_state = 'agreed' THEN 1 ELSE 0 END) AS r2_agreed,
     SUM(CASE WHEN r1_state = 'open' THEN 1 ELSE 0 END) AS r1_open,
-    SUM(CASE WHEN r2_state = 'open' THEN 1 ELSE 0 END) AS r2_open`;
+    SUM(CASE WHEN r2_state = 'open' THEN 1 ELSE 0 END) AS r2_open,
+    SUM(CASE WHEN r1_agreed_price IS NOT NULL AND r1_target_price IS NOT NULL
+                  AND r1_agreed_price < r1_target_price THEN 1 ELSE 0 END) AS r1_below,
+    SUM(CASE WHEN r2_agreed_price IS NOT NULL AND r2_target_price IS NOT NULL
+                  AND r2_agreed_price < r2_target_price THEN 1 ELSE 0 END) AS r2_below`;
 
   const [totals, byOffice, byPerson, byEquip, corpStatus, applied] = await Promise.all([
     db.get(`SELECT ${progress} FROM deal_calc ${where}`, p),
@@ -1059,21 +1065,19 @@ api.get('/dashboard', wrap(async (req, res) => {
              GROUP BY equip_name ORDER BY COUNT(*) DESC`, p),
     // 法人ごとの交渉状況の内訳。未設定は「未着手」として数える
     db.all(`
-      SELECT COALESCE((SELECT c.status FROM corp_negotiations c WHERE c.corp_code = d.corp_code),
-                      'not_started') AS status,
-             COUNT(DISTINCT d.corp_code) AS corps
-        FROM deals d
-       WHERE d.corp_code IS NOT NULL
-             ${scope.where.length ? `AND ${scopeConditions(req.user, 'd').where.join(' AND ')}` : ''}
+      SELECT COALESCE((SELECT c.status FROM corp_negotiations c
+                        WHERE c.corp_code = deal_calc.corp_code), 'not_started') AS status,
+             COUNT(DISTINCT corp_code) AS corps
+        FROM deal_calc ${andWhere('corp_code IS NOT NULL')}
        GROUP BY 1`, p),
     // 適用年月ごとの件数（いつから効くのかを見るため）
     db.all(`
       SELECT ym, SUM(r1) AS r1, SUM(r2) AS r2 FROM (
         SELECT r1_applied_ym AS ym, 1 AS r1, 0 AS r2 FROM deal_calc
-         ${where}${where ? ' AND' : 'WHERE'} r1_done = 1 AND r1_applied_ym IS NOT NULL
+         ${andWhere('r1_done = 1 AND r1_applied_ym IS NOT NULL')}
         UNION ALL
         SELECT r2_applied_ym AS ym, 0 AS r1, 1 AS r2 FROM deal_calc
-         ${where}${where ? ' AND' : 'WHERE'} r2_done = 1 AND r2_applied_ym IS NOT NULL
+         ${andWhere('r2_done = 1 AND r2_applied_ym IS NOT NULL')}
       ) t GROUP BY ym ORDER BY ym`, [...p, ...p]),
   ]);
 
@@ -1090,6 +1094,45 @@ api.get('/dashboard', wrap(async (req, res) => {
 }));
 
 // ---- 案件（deals） ----
+
+/**
+ * 並び替えできる列。
+ * 列名はSQLに直接入るため、必ずこの表にあるものだけを使う（受け取った文字列は使わない）。
+ */
+const SORTABLE = new Map([
+  ['corp_name', 'corp_name'],
+  ['customer_name', 'customer_name'],
+  ['model_name', 'model_name'],
+  ['equip_name', 'equip_name'],
+  ['sales_person', 'sales_person'],
+  ['base_price', 'base_price'],
+  ['r1_target_price', 'r1_target_price'],
+  ['r1_agreed_price', 'r1_agreed_price'],
+  ['r1_raise_unit', 'r1_raise_unit'],
+  ['r1_applied_ym', 'r1_applied_ym'],
+  ['r1_state', 'r1_state'],
+  ['r2_target_price', 'r2_target_price'],
+  ['r2_agreed_price', 'r2_agreed_price'],
+  ['r2_raise_unit', 'r2_raise_unit'],
+  ['r2_applied_ym', 'r2_applied_ym'],
+  ['r2_state', 'r2_state'],
+  ['price_type_code', 'price_type_code'],
+]);
+
+const DEFAULT_ORDER = 'corp_name, customer_name, equip_name, model_name, id';
+
+/**
+ * 並び順を組み立てる。
+ * 未入力の行は末尾に寄せる。SQLiteはNULLを先頭、PostgreSQLは末尾に置くため、
+ * 「NULLかどうか」を先に並べて、どちらのDBでも同じ見え方にする。
+ */
+function dealOrder(q) {
+  const col = SORTABLE.get(String(q.sort ?? ''));
+  if (!col) return DEFAULT_ORDER;
+  const dir = String(q.dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+  return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
+}
+
 function dealFilters(q, user) {
   const where = [];
   const params = [];
@@ -1116,6 +1159,16 @@ function dealFilters(q, user) {
   for (const [key, col] of [['r1State', 'r1_state'], ['r2State', 'r2_state']]) {
     if (['open', 'agreed', 'done'].includes(q[key])) { where.push(`${col} = ?`); params.push(q[key]); }
   }
+
+  // 合意単価が目標に届かなかったもの。
+  // 合意単価が入っている行だけが対象（未入力を「未達」とすると、
+  // これから交渉する案件まで混ざって、見直すべき行が埋もれる）。
+  const below = (n) =>
+    `(r${n}_agreed_price IS NOT NULL AND r${n}_target_price IS NOT NULL`
+    + ` AND r${n}_agreed_price < r${n}_target_price)`;
+  if (q.below === 'r1') where.push(below(1));
+  else if (q.below === 'r2') where.push(below(2));
+  else if (q.below === 'any') where.push(`(${below(1)} OR ${below(2)})`);
 
   // 役割ごとの閲覧範囲。画面から渡される絞り込みとは別に、必ず最後に足す。
   const scope = scopeConditions(user);
@@ -1146,10 +1199,59 @@ api.get('/deals', wrap(async (req, res) => {
         (SELECT c.note FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_note,
         (SELECT COUNT(*) FROM negotiation_logs l WHERE l.corp_code = deal_calc.corp_code) AS corp_log_count
       FROM deal_calc ${where}
-      ORDER BY corp_name, customer_name, equip_name, model_name, id
+      ORDER BY ${dealOrder(req.query)}
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   res.json({ rows, totals, page, size });
+}));
+
+/**
+ * 検索の候補。入力中の文字を含むものを種類ごとに返す。
+ *
+ * 「東京ガス」まで打てば法人、「FH」なら器種、という具合に
+ * 何で絞り込めるのかを示す。表示できる範囲は案件一覧と同じ。
+ *
+ * 候補を選ぶとコード（法人コード・得意先コード）で絞り込むため、
+ * 同じ名前の取引先が複数あっても取り違えない。
+ */
+api.get('/suggest', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const q = String(req.query.q ?? '').trim();
+  if (q.length < 1) return res.json({ groups: [] });
+
+  const scope = scopeConditions(req.user);
+  const and = scope.where.length ? ` AND ${scope.where.join(' AND ')}` : '';
+  const like = `%${q}%`;
+  const PER_GROUP = 8;
+
+  const [corps, customers, models, persons, equips] = await Promise.all([
+    db.all(`SELECT corp_code AS code, MIN(corp_name) AS name, COUNT(*) AS count
+              FROM deals WHERE corp_name LIKE ?${and}
+             GROUP BY corp_code ORDER BY COUNT(*) DESC LIMIT ?`, [like, ...scope.params, PER_GROUP]),
+    db.all(`SELECT customer_code AS code, MIN(customer_name) AS name, COUNT(*) AS count
+              FROM deals WHERE customer_name LIKE ?${and}
+             GROUP BY customer_code ORDER BY COUNT(*) DESC LIMIT ?`, [like, ...scope.params, PER_GROUP]),
+    db.all(`SELECT model_name AS name, COUNT(*) AS count
+              FROM deals WHERE model_name LIKE ?${and}
+             GROUP BY model_name ORDER BY COUNT(*) DESC LIMIT ?`, [like, ...scope.params, PER_GROUP]),
+    db.all(`SELECT sales_person AS name, COUNT(*) AS count
+              FROM deals WHERE sales_person LIKE ?${and}
+             GROUP BY sales_person ORDER BY COUNT(*) DESC LIMIT ?`, [like, ...scope.params, PER_GROUP]),
+    db.all(`SELECT equip_name AS name, COUNT(*) AS count
+              FROM deals WHERE equip_name LIKE ?${and}
+             GROUP BY equip_name ORDER BY COUNT(*) DESC LIMIT ?`, [like, ...scope.params, PER_GROUP]),
+  ]);
+
+  // filter は案件一覧の絞り込みキー。候補を選んだときにそのまま使う
+  const groups = [
+    { key: 'corp', label: '法人', filter: 'corp', items: corps },
+    { key: 'customer', label: '得意先', filter: 'customer', items: customers },
+    { key: 'model', label: '器種名', filter: 'q', items: models },
+    { key: 'person', label: '担当者', filter: 'person', items: persons },
+    { key: 'equip', label: '器具区分', filter: 'equip', items: equips },
+  ].filter((g) => g.items.length > 0);
+
+  res.json({ groups });
 }));
 
 api.get('/deals/export', wrap(async (req, res) => {
@@ -1167,7 +1269,7 @@ api.get('/deals/export', wrap(async (req, res) => {
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
       FROM deal_calc ${where}
-      ORDER BY corp_name, customer_name, equip_name, model_name, id`, params),
+      ORDER BY ${dealOrder(req.query)}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
   ]);
   const buffer = buildWorkbook(rows, priceTypes);

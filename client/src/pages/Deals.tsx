@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import type { Deal, Meta, RoundState } from '../types';
 import { CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
+import SearchBox from '../components/SearchBox';
+import HScroll from '../components/HScroll';
 import { useUser } from '../user';
 
 interface DealsRes {
@@ -12,10 +14,36 @@ interface DealsRes {
   size: number;
 }
 
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'priceType', 'branch', 'office', 'r1State', 'r2State'] as const;
+const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'priceType', 'branch', 'office', 'r1State', 'r2State', 'below'] as const;
+
+// 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
+const SORT_KEYS = ['sort', 'dir'] as const;
 
 /** 「2026-04」形式かどうか。保存前に画面側でも確かめる */
 const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/**
+ * 合意単価が目標に届かなかったか。
+ * 合意単価が入っている行だけを対象にする（未入力は「これから交渉するもの」であって未達ではない）。
+ */
+function belowTarget(d: Deal, round: 1 | 2): boolean {
+  const agreed = round === 1 ? d.r1_agreed_price : d.r2_agreed_price;
+  const target = round === 1 ? d.r1_target_price : d.r2_target_price;
+  if (agreed == null || target == null) return false;
+  return Number(agreed) < Number(target);
+}
+
+/** 目標に届かなかった分を示す。いくら足りないかまで出す */
+function ShortfallMark({ deal, round }: { deal: Deal; round: 1 | 2 }) {
+  const agreed = Number(round === 1 ? deal.r1_agreed_price : deal.r2_agreed_price);
+  const target = Number(round === 1 ? deal.r1_target_price : deal.r2_target_price);
+  const gap = target - agreed;
+  return (
+    <span className="shortfall" title={`目標に ¥${yen(gap)} 届いていません（目標 ¥${yen(target)}）`}>
+      −{yen(gap)}
+    </span>
+  );
+}
 
 export default function Deals() {
   const [params, setParams] = useSearchParams();
@@ -53,8 +81,37 @@ export default function Deals() {
   const queryString = useCallback(() => {
     const qs = new URLSearchParams();
     for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
+    for (const k of SORT_KEYS) if (get(k)) qs.set(k, get(k));
     return qs;
   }, [params]);
+
+  /**
+   * 見出しを押したときの並び替え。
+   * 同じ列を押すたびに 昇順 → 降順 → 既定の並び に戻る。
+   */
+  const toggleSort = (col: string) => {
+    const cur = get('sort');
+    const dir = get('dir');
+    const next = new URLSearchParams(params);
+    next.delete('page');
+    if (cur !== col) { next.set('sort', col); next.set('dir', 'asc'); }
+    else if (dir === 'asc') { next.set('dir', 'desc'); }
+    else { next.delete('sort'); next.delete('dir'); }
+    setParams(next, { replace: true });
+  };
+
+  /** 並び替えできる見出し。現在の向きを矢印で示す */
+  const Th = ({ col, children, className }: { col: string; children?: React.ReactNode; className?: string }) => {
+    const on = get('sort') === col;
+    const mark = on ? (get('dir') === 'desc' ? '▼' : '▲') : '';
+    return (
+      <th className={`${className ?? ''} sortable${on ? ' sorted' : ''}`}
+          onClick={() => toggleSort(col)}
+          title="押すと並び替えます（昇順→降順→解除）">
+        {children}<span className="sort-mark">{mark}</span>
+      </th>
+    );
+  };
 
   const load = useCallback(() => {
     const qs = queryString();
@@ -150,10 +207,20 @@ export default function Deals() {
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       <div className="filters">
-        <label className="fld" style={{ minWidth: 240, flex: '1 1 240px' }}>
-          検索（法人・得意先・器種など）
-          <input type="text" defaultValue={get('q')} placeholder="例: 東京ガス / FH-1613"
-            onKeyDown={(e) => e.key === 'Enter' && setParam('q', (e.target as HTMLInputElement).value)} />
+        <label className="fld" style={{ minWidth: 260, flex: '1 1 260px' }}>
+          検索（法人・得意先・器種・担当者）
+          <SearchBox
+            value={get('q')}
+            onSearch={(q) => setParam('q', q)}
+            onPick={(filter, value) => {
+              // 候補で絞り込むときは、文字検索は消して条件を入れ替える
+              const next = new URLSearchParams(params);
+              next.delete('q');
+              next.delete('page');
+              if (value) next.set(filter, value); else next.delete(filter);
+              setParams(next, { replace: true });
+            }}
+          />
         </label>
         <label className="fld">
           法人
@@ -211,6 +278,15 @@ export default function Deals() {
             {meta?.priceTypes.map((p) => <option key={p.code} value={String(p.code)}>{p.code}. {p.name}</option>)}
           </select>
         </label>
+        <label className="fld">
+          目標との差
+          <select value={get('below')} onChange={(e) => setParam('below', e.target.value)}>
+            <option value="">すべて</option>
+            <option value="any">目標未達（第1弾・第2弾どちらか）</option>
+            <option value="r1">第1弾が目標未達</option>
+            <option value="r2">第2弾が目標未達</option>
+          </select>
+        </label>
       </div>
 
       {data && (
@@ -225,7 +301,7 @@ export default function Deals() {
         </div>
       )}
 
-      <div className="card tbl-scroll">
+      <HScroll className="card tbl-scroll">
         <table className="tbl deals">
           <thead>
             <tr>
@@ -238,22 +314,22 @@ export default function Deals() {
               <th className="grp"></th>
             </tr>
             <tr>
-              <th>法人</th>
-              <th>得意先 / 納入先</th>
-              <th>器種名</th>
-              <th>器具区分</th>
-              <th>担当者</th>
+              <Th col="corp_name">法人</Th>
+              <Th col="customer_name">得意先 / 納入先</Th>
+              <Th col="model_name">器種名</Th>
+              <Th col="equip_name">器具区分</Th>
+              <Th col="sales_person">担当者</Th>
               <th className="sep"></th>
-              <th className="num sep"></th>
-              <th className="num sep">目標❷</th>
-              <th className="num">合意❸</th>
-              <th className="num">適用年月</th>
-              <th>状態</th>
-              <th className="num sep">目標❻</th>
-              <th className="num">合意❼</th>
-              <th className="num">適用年月</th>
-              <th>状態</th>
-              <th className="sep"></th>
+              <Th col="base_price" className="num sep" />
+              <Th col="r1_target_price" className="num sep">目標❷</Th>
+              <Th col="r1_agreed_price" className="num">合意❸</Th>
+              <Th col="r1_applied_ym" className="num">適用年月</Th>
+              <Th col="r1_state">状態</Th>
+              <Th col="r2_target_price" className="num sep">目標❻</Th>
+              <Th col="r2_agreed_price" className="num">合意❼</Th>
+              <Th col="r2_applied_ym" className="num">適用年月</Th>
+              <Th col="r2_state">状態</Th>
+              <Th col="price_type_code" className="sep" />
               <th></th>
             </tr>
           </thead>
@@ -299,11 +375,16 @@ export default function Deals() {
                         onBlur={() => saveTarget(d, 1)} />
                     ) : yen(d.r1_target_price)}
                   </td>
-                  <td className="num">
+                  <td className={`num${belowTarget(d, 1) ? ' below' : ''}`}>
                     {isEditing ? (
                       <input type="number" className="cell" value={draft.r1_agreed_price}
                         onChange={(e) => setDraft({ ...draft, r1_agreed_price: e.target.value })} />
-                    ) : yen(d.r1_agreed_price)}
+                    ) : (
+                      <>
+                        {yen(d.r1_agreed_price)}
+                        {belowTarget(d, 1) && <ShortfallMark deal={d} round={1} />}
+                      </>
+                    )}
                   </td>
                   <td className="num">
                     {isEditing ? (
@@ -334,11 +415,16 @@ export default function Deals() {
                         onBlur={() => saveTarget(d, 2)} />
                     ) : yen(d.r2_target_price)}
                   </td>
-                  <td className="num">
+                  <td className={`num${belowTarget(d, 2) ? ' below' : ''}`}>
                     {isEditing ? (
                       <input type="number" className="cell" value={draft.r2_agreed_price}
                         onChange={(e) => setDraft({ ...draft, r2_agreed_price: e.target.value })} />
-                    ) : yen(d.r2_agreed_price)}
+                    ) : (
+                      <>
+                        {yen(d.r2_agreed_price)}
+                        {belowTarget(d, 2) && <ShortfallMark deal={d} round={2} />}
+                      </>
+                    )}
                   </td>
                   <td className="num">
                     {isEditing ? (
@@ -380,7 +466,7 @@ export default function Deals() {
             })}
           </tbody>
         </table>
-      </div>
+      </HScroll>
 
       <div className="pagination">
         <button className="btn secondary sm" disabled={page <= 1} onClick={() => setParam('page', String(page - 1))}>前へ</button>
