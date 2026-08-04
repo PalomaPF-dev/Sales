@@ -74,6 +74,7 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isAdmin = me.role === 'admin' || me.role === 'developer';
+  const isDev = me.role === 'developer';
 
   // Excelでの一括取込
   const bulkFileRef = useRef<HTMLInputElement>(null);
@@ -125,7 +126,8 @@ export default function Deals() {
     api<Meta>('/meta').then((m) => {
       setMeta(m);
       // 営業担当者・支店長は自分の支店を初期表示にする（営業企画部・管理者は全社）
-      if (!params.get('branch') && me.branch && me.role !== 'planning' && me.role !== 'admin') {
+      if (!params.get('branch') && me.branch
+          && !['planning', 'admin', 'developer'].includes(me.role)) {
         if (m.branches.some((b) => b.name === me.branch)) setParam('branch', me.branch);
       }
     }).catch((e) => setMsg({ kind: 'error', text: e.message }));
@@ -200,8 +202,37 @@ export default function Deals() {
       r2_applied_ym: d.r2_applied_ym ?? '',
       r1_target_price: d.r1_target_price == null ? '' : String(d.r1_target_price),
       r2_target_price: d.r2_target_price == null ? '' : String(d.r2_target_price),
+      // 開発者は取込のズレ（法人名・器種・出荷単価など）も一覧から直せる
+      corp_name: d.corp_name ?? '',
+      customer_name: d.customer_name ?? '',
+      model_name: d.model_name ?? '',
+      equip_name: d.equip_name ?? '',
+      sales_person: d.sales_person ?? '',
+      base_price: d.base_price == null ? '' : String(d.base_price),
     });
   };
+
+  /**
+   * 開発者の取込項目の保存（欄を離れた時点で、変わっていた場合だけ送る）。
+   * うっかり触っただけでは書き込まない。
+   */
+  const saveBase = (d: Deal, key: string) => {
+    const v = (draft[key] ?? '').trim();
+    const before = (d as unknown as Record<string, unknown>)[key];
+    if (v === String(before ?? '')) return;
+    patch(d.id, { [key]: v });
+  };
+
+  /** 開発者だけに出す、取込項目の入力欄（コンポーネントにすると再描画で焦点が外れるため関数で返す） */
+  const baseCell = (d: Deal, k: string, num = false) => (
+    <input
+      type={num ? 'number' : 'text'} className="cell"
+      style={{ minWidth: num ? 90 : 130 }}
+      value={draft[k] ?? ''}
+      onChange={(e) => setDraft((prev) => ({ ...prev, [k]: e.target.value }))}
+      onBlur={() => saveBase(d, k)}
+    />
+  );
 
   const patch = async (id: number, body: Record<string, unknown>) => {
     setBusy(true);
@@ -454,23 +485,33 @@ export default function Deals() {
               return (
                 <tr key={d.id} className={isEditing ? 'editing' : ''}>
                   <td title={d.corp_code || ''}>
-                    <a href={`/corps/${d.corp_code}`}
-                       onClick={(e) => { e.preventDefault(); if (d.corp_code) navigate(`/corps/${d.corp_code}`); }}>
-                      {d.corp_name || '—'}
-                    </a>
+                    {isEditing && isDev ? baseCell(d, 'corp_name') : (
+                      <a href={`/corps/${d.corp_code}`}
+                         onClick={(e) => { e.preventDefault(); if (d.corp_code) navigate(`/corps/${d.corp_code}`); }}>
+                        {d.corp_name || '—'}
+                      </a>
+                    )}
                   </td>
                   <td title={d.delivery_name || ''}>
-                    {d.customer_name}
-                    {d.delivery_name && <><br /><small style={{ color: 'var(--muted)' }}>{d.delivery_name}</small></>}
+                    {isEditing && isDev ? baseCell(d, 'customer_name') : (
+                      <>
+                        {d.customer_name}
+                        {d.delivery_name && <><br /><small style={{ color: 'var(--muted)' }}>{d.delivery_name}</small></>}
+                      </>
+                    )}
                   </td>
                   <td>
-                    <a href={`/deals/${d.id}`} onClick={(e) => { e.preventDefault(); navigate(`/deals/${d.id}`); }}>
-                      {d.model_name}
-                    </a>
-                    {d.gas_type && <><br /><small style={{ color: 'var(--muted)' }}>{d.gas_type}</small></>}
+                    {isEditing && isDev ? baseCell(d, 'model_name') : (
+                      <>
+                        <a href={`/deals/${d.id}`} onClick={(e) => { e.preventDefault(); navigate(`/deals/${d.id}`); }}>
+                          {d.model_name}
+                        </a>
+                        {d.gas_type && <><br /><small style={{ color: 'var(--muted)' }}>{d.gas_type}</small></>}
+                      </>
+                    )}
                   </td>
-                  <td>{d.equip_name}</td>
-                  <td>{d.sales_person}</td>
+                  <td>{isEditing && isDev ? baseCell(d, 'equip_name') : d.equip_name}</td>
+                  <td>{isEditing && isDev ? baseCell(d, 'sales_person') : d.sales_person}</td>
 
                   <td className="sep">
                     <CorpStatusBadge status={d.corp_status} />
@@ -479,7 +520,9 @@ export default function Deals() {
                     )}
                   </td>
 
-                  <td className="num sep">{yen(d.base_price)}</td>
+                  <td className="num sep">
+                    {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
+                  </td>
 
                   {/* 第1弾 */}
                   <td className="num sep">
@@ -578,7 +621,13 @@ export default function Deals() {
         <button className="btn secondary sm" disabled={page >= pages} onClick={() => setParam('page', String(page + 1))}>次へ</button>
       </div>
 
-      {isAdmin ? (
+      {isDev ? (
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          開発者のため、「入力」で取込項目（法人名・得意先名・器種名・器具区分・担当者・出荷単価❶）と
+          目標単価❷❻も直せます。変更は入力欄を離れた時点で保存されます。
+          支店・営業所・コード類など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
+        </p>
+      ) : isAdmin ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
           管理者のため、目標単価❷❻も「入力」から変更できます（変更は入力欄を離れた時点で保存されます）。
         </p>
