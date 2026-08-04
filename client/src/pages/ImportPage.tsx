@@ -54,7 +54,7 @@ export default function ImportPage() {
   const [selectedKey, setSelectedKey] = useState<number | null>(null);
   const [showAllFields, setShowAllFields] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const canDelete = me.role === 'planning' || me.role === 'admin';
+  const canDelete = ['planning', 'admin', 'developer'].includes(me.role);
 
   const load = () => {
     api<Batch[]>('/import/batches').then(setBatches).catch(() => {});

@@ -37,7 +37,7 @@ export default function Settings() {
 
   // 企画も設定画面を開けるが、連携の状況は管理者だけに見せる
   useEffect(() => {
-    if (me.role !== 'admin') return;
+    if (me.role !== 'admin' && me.role !== 'developer') return;
     api<Status>('/admin/status').then(setStatus).catch((e) => setMsg(e.message));
   }, [me.role]);
 

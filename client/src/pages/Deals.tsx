@@ -73,7 +73,7 @@ export default function Deals() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
-  const isAdmin = me.role === 'admin';
+  const isAdmin = me.role === 'admin' || me.role === 'developer';
 
   // Excelでの一括取込
   const bulkFileRef = useRef<HTMLInputElement>(null);

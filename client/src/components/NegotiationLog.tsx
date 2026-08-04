@@ -100,7 +100,7 @@ export default function NegotiationLog({ corpCode, corpName }: { corpCode: strin
                 {l.channel && <span className="badge gray">{l.channel}</span>}
                 {l.result && <span className="badge blue">{l.result}</span>}
                 <span style={{ color: 'var(--muted)' }}>{l.user_name || '—'}</span>
-                {(l.user_id === me.id || me.role === 'planning' || me.role === 'admin') && (
+                {(l.user_id === me.id || ['planning', 'admin', 'developer'].includes(me.role)) && (
                   <button className="btn secondary sm" style={{ marginLeft: 'auto' }}
                     onClick={() => remove(l.id)}>削除</button>
                 )}

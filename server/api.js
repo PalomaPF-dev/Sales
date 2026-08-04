@@ -159,9 +159,16 @@ function requireLogin(req, res) {
   return true;
 }
 
+/**
+ * 管理者相当かどうか。
+ * 開発者は管理者と同じ操作に加えて、取込で入った列の修正だけができる
+ * （その判定は buildDealUpdate 側で行う）。
+ */
+const isAdminRole = (role) => role === 'admin' || role === 'developer';
+
 function requireRole(req, res, roles) {
   if (!requireLogin(req, res)) return false;
-  if (!roles.includes(req.user.role) && req.user.role !== 'admin') {
+  if (!roles.includes(req.user.role) && !isAdminRole(req.user.role)) {
     res.status(403).json({ error: 'この操作の権限がありません' });
     return false;
   }
@@ -171,7 +178,7 @@ function requireRole(req, res, roles) {
 /** 管理者だけが触れる操作（ユーザー管理・決裁者設定） */
 function requireAdmin(req, res) {
   if (!requireLogin(req, res)) return false;
-  if (req.user.role !== 'admin') {
+  if (!isAdminRole(req.user.role)) {
     res.status(403).json({ error: 'この操作は管理者のみ実行できます' });
     return false;
   }
@@ -484,13 +491,14 @@ api.post('/password', wrap(async (req, res) => {
 
 // ---- ユーザー管理（管理者のみ） ----
 
-const ROLES = ['sales', 'branch_manager', 'planning', 'admin'];
+const ROLES = ['sales', 'branch_manager', 'planning', 'admin', 'developer'];
 // 名簿では日本語で書かれることが多いため、役割名の表記ゆれを吸収する
 const ROLE_ALIASES = {
   '営業担当者': 'sales', '営業': 'sales', '担当者': 'sales', 'sales': 'sales',
   '支店長': 'branch_manager', 'branch_manager': 'branch_manager',
   '営業企画部': 'planning', '企画': 'planning', 'planning': 'planning',
   '管理者': 'admin', 'admin': 'admin',
+  '開発者': 'developer', 'developer': 'developer',
 };
 
 function parseRole(v) {
@@ -515,7 +523,7 @@ api.get('/admin/users', wrap(async (req, res) => {
            u.must_change_password, u.locked_until,
            CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password,
            CASE
-             WHEN u.role IN ('admin','planning') THEN (SELECT COUNT(*) FROM deals)
+             WHEN u.role IN ('admin','developer','planning') THEN (SELECT COUNT(*) FROM deals)
              WHEN u.role = 'branch_manager' THEN
                (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch)
              ELSE
@@ -1053,7 +1061,7 @@ api.get('/meta', wrap(async (req, res) => {
 function scopeConditions(user, alias = '') {
   const p = alias ? `${alias}.` : '';
   if (!user) return { where: ['1 = 0'], params: [] };
-  if (user.role === 'admin' || user.role === 'planning') return { where: [], params: [] };
+  if (isAdminRole(user.role) || user.role === 'planning') return { where: [], params: [] };
 
   if (user.role === 'branch_manager') {
     if (!user.branch) return { where: ['1 = 0'], params: [], missing: '支店' };
@@ -1071,7 +1079,7 @@ function scopeConditions(user, alias = '') {
 function scopeInfo(user) {
   const s = scopeConditions(user);
   if (!user) return { level: 'none', label: '—' };
-  if (user.role === 'admin' || user.role === 'planning') {
+  if (isAdminRole(user.role) || user.role === 'planning') {
     return { level: 'all', label: '全社' };
   }
   if (s.missing) {
@@ -1385,6 +1393,21 @@ const EDITABLE = [
 // 誰でも直せると目標そのものが動いてしまい、進捗の意味が無くなるため。
 const ADMIN_ONLY_EDITABLE = ['r1_target_price', 'r2_target_price'];
 
+// 取込で入る残りの列（法人名・器種・出荷単価・支店など）。
+// 取込のズレ（列の取り違え・誤記）を直すためのもので、開発者だけが変更できる。
+// 通常の運用でここが動くと管理表と食い違うため、管理者にも開放しない。
+const DEVELOPER_EDITABLE = FIELDS
+  .filter((f) => !EDITABLE.includes(f.key) && !ADMIN_ONLY_EDITABLE.includes(f.key))
+  .map((f) => ({ key: f.key, label: f.label, type: f.type }));
+
+/** 開発者の修正用。取込と同じく、空欄は未設定として受ける */
+function toLooseNumber(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  const n = Number(String(v).replace(/[,¥\s]/g, ''));
+  if (!Number.isFinite(n)) throw new Error('数値で入力してください');
+  return n;
+}
+
 const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 /** 適用年月は「YYYY-MM」に寄せる（2026/4 や 202604 も受ける） */
@@ -1428,11 +1451,25 @@ function buildDealUpdate(body, deal, user) {
   }
   for (const f of ADMIN_ONLY_EDITABLE) {
     if (!(f in body)) continue;
-    if (user.role !== 'admin') {
+    if (!isAdminRole(user.role)) {
       throw new Error('目標値上げ単価を変更できるのは管理者のみです');
     }
     sets.push(`${f} = ?`);
     params.push(toPrice(body[f]));
+  }
+  for (const f of DEVELOPER_EDITABLE) {
+    if (!(f.key in body)) continue;
+    if (user.role !== 'developer') {
+      throw new Error(`「${f.label}」を変更できるのは開発者のみです`);
+    }
+    let v;
+    try {
+      v = f.type === 'number' ? toLooseNumber(body[f.key]) : nv(String(body[f.key] ?? '').trim() || null);
+    } catch (e) {
+      throw new Error(`「${f.label}」: ${e.message}`);
+    }
+    sets.push(`${f.key} = ?`);
+    params.push(v);
   }
   if (!sets.length) throw new Error('更新項目がありません');
 
@@ -1686,7 +1723,7 @@ api.delete('/logs/:id', wrap(async (req, res) => {
   if (log.corp_code && !await findCorpInScope(log.corp_code, req.user)) {
     return res.status(404).json({ error: '履歴が見つかりません' });
   }
-  if (log.user_id !== req.user.id && !['planning', 'admin'].includes(req.user.role)) {
+  if (log.user_id !== req.user.id && !['planning', 'admin', 'developer'].includes(req.user.role)) {
     return res.status(403).json({ error: '記入者本人または営業企画部のみ削除できます' });
   }
   await db.run('DELETE FROM negotiation_logs WHERE id = ?', [log.id]);
@@ -1805,7 +1842,7 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
   if (a.deal_id && !await findDealInScope(a.deal_id, req.user, 'deals')) {
     return res.status(404).json({ error: 'ファイルが見つかりません' });
   }
-  if (a.uploaded_by !== req.user.id && !['planning', 'admin'].includes(req.user.role)) {
+  if (a.uploaded_by !== req.user.id && !['planning', 'admin', 'developer'].includes(req.user.role)) {
     return res.status(403).json({ error: 'アップロードした本人または営業企画部のみ削除できます' });
   }
   await db.run('DELETE FROM attachments WHERE id = ?', [a.id]);

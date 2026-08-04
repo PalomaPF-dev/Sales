@@ -90,8 +90,8 @@ export default function App() {
     );
   }
 
-  const canConfig = user.role === 'planning' || user.role === 'admin';
-  const isAdmin = user.role === 'admin';
+  const canConfig = ['planning', 'admin', 'developer'].includes(user.role);
+  const isAdmin = user.role === 'admin' || user.role === 'developer';
 
   return (
     <UserContext.Provider value={user}>

@@ -9,7 +9,7 @@
 CREATE TABLE IF NOT EXISTS users (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
-  role       TEXT NOT NULL CHECK (role IN ('sales','branch_manager','planning','admin')),
+  role       TEXT NOT NULL CHECK (role IN ('sales','branch_manager','planning','admin','developer')),
   branch     TEXT,
   office     TEXT,
   active     INTEGER NOT NULL DEFAULT 1,

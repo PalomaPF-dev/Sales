@@ -93,7 +93,7 @@ export default function Attachments({
                 <td>{a.uploaded_by_name || '—'}</td>
                 <td>{a.uploaded_at?.slice(0, 16).replace('T', ' ')}</td>
                 <td>
-                  {(me.role === 'planning' || me.role === 'admin' || a.uploaded_by_name === me.name) && (
+                  {(['planning', 'admin', 'developer'].includes(me.role) || a.uploaded_by_name === me.name) && (
                     <button className="btn secondary sm" onClick={() => remove(a)}>削除</button>
                   )}
                 </td>

@@ -484,6 +484,15 @@ async function beforeSchema() {
   // （ローカル開発は従来どおり content に入れるため実害はない）。
   if (isPostgres) {
     await tryAlter('ALTER TABLE attachments ALTER COLUMN content DROP NOT NULL');
+
+    // 役割に「開発者」を追加。既存DBはCHECK制約が古い一覧のままなので作り直す。
+    // （SQLiteはCHECKを変更できないが、新規作成分は schema.sql が対応済み。
+    //   既存のSQLite開発DBで必要になったら reset-db で作り直す）
+    await tryAlter('ALTER TABLE users DROP CONSTRAINT users_role_check');
+    await tryAlter(
+      "ALTER TABLE users ADD CONSTRAINT users_role_check"
+      + " CHECK (role IN ('sales','branch_manager','planning','admin','developer'))"
+    );
   }
 }
 

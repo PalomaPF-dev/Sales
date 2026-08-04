@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import { Card, CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
 import Attachments from '../components/Attachments';
+import { useUser } from '../user';
 import type { CorpNegotiation, Deal, Meta } from '../types';
 
 interface DealRes {
@@ -10,12 +11,21 @@ interface DealRes {
   negotiation: CorpNegotiation | null;
 }
 
+interface FixField { key: string; label: string; group: string; type: string }
+
 export default function DealDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const me = useUser();
   const [data, setData] = useState<DealRes | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [msg, setMsg] = useState('');
+  // 開発者の修正モード。取込のズレを全項目直せる
+  const [fixFields, setFixFields] = useState<FixField[]>([]);
+  const [fixing, setFixing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [fixMsg, setFixMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
   const load = () => {
     api<DealRes>(`/deals/${id}`).then(setData).catch((e) => setMsg(e.message));
@@ -24,6 +34,51 @@ export default function DealDetail() {
     load();
     api<Meta>('/meta').then(setMeta).catch(() => {});
   }, [id]);
+
+  useEffect(() => {
+    if (me.role !== 'developer') return;
+    api<{ fields: FixField[] }>('/import/fields')
+      .then((r) => setFixFields(r.fields))
+      .catch(() => {});
+  }, [me.role]);
+
+  const asText = (v: unknown) => (v === null || v === undefined ? '' : String(v));
+
+  const startFix = () => {
+    if (!data) return;
+    const d = data.deal as unknown as Record<string, unknown>;
+    const init: Record<string, string> = {};
+    for (const f of fixFields) init[f.key] = asText(d[f.key]);
+    setDraft(init);
+    setFixMsg(null);
+    setFixing(true);
+  };
+
+  const saveFix = async () => {
+    if (!data) return;
+    const d = data.deal as unknown as Record<string, unknown>;
+    // 変えた項目だけ送る（全項目を送ると「変更なし」でも書き込みになるため）
+    const body: Record<string, string> = {};
+    for (const f of fixFields) {
+      if (draft[f.key] !== asText(d[f.key])) body[f.key] = draft[f.key];
+    }
+    if (!Object.keys(body).length) {
+      setFixMsg({ kind: 'error', text: '変更した項目がありません' });
+      return;
+    }
+    setSaving(true);
+    setFixMsg(null);
+    try {
+      await api(`/deals/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      setFixMsg({ kind: 'ok', text: `${Object.keys(body).length}項目を修正しました` });
+      setFixing(false);
+      load();
+    } catch (e) {
+      setFixMsg({ kind: 'error', text: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (!data) {
     return <div>{msg ? <div className="alert error">{msg}</div> : <p style={{ color: 'var(--muted)' }}>読み込み中...</p>}</div>;
@@ -121,6 +176,58 @@ export default function DealDetail() {
           )}
         </p>
       </Card>
+
+      {me.role === 'developer' && (
+        <Card title="取込データの修正（開発者のみ）">
+          {fixMsg && (
+            <div className={`alert ${fixMsg.kind === 'ok' ? 'ok' : 'error'}`} onClick={() => setFixMsg(null)}>
+              {fixMsg.text}
+            </div>
+          )}
+          {!fixing ? (
+            <>
+              <p className="pt-note" style={{ marginTop: 0 }}>
+                取込で入った全項目（法人・得意先・器種・単価・支店など）をこの画面で直せます。
+                列の取り違えや誤記の修正用です。管理表と食い違わないよう、修正内容は元のExcelにも反映してください。
+              </p>
+              <button className="btn secondary" onClick={startFix} disabled={!fixFields.length}>
+                修正をはじめる
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10 }}>
+                {fixFields.map((f) => {
+                  const orig = asText((d as unknown as Record<string, unknown>)[f.key]);
+                  const changed = draft[f.key] !== orig;
+                  return (
+                    <label key={f.key} style={{ fontSize: 12 }}>
+                      <span style={{ color: changed ? 'var(--accent)' : 'var(--muted)', display: 'block', marginBottom: 2 }}>
+                        {f.group}｜{f.label}{changed && '（変更）'}
+                      </span>
+                      <input
+                        style={{ width: '100%', borderColor: changed ? 'var(--accent)' : undefined }}
+                        value={draft[f.key] ?? ''}
+                        inputMode={f.type === 'number' ? 'decimal' : undefined}
+                        onChange={(e) => setDraft((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                <button className="btn" onClick={saveFix} disabled={saving}>
+                  {saving ? '保存中...' : '変更した項目を保存'}
+                </button>
+                <button className="btn secondary" onClick={() => setFixing(false)} disabled={saving}>やめる</button>
+              </div>
+              <p className="pt-note" style={{ marginTop: 10 }}>
+                変えた項目だけが保存されます（枠が青くなっている項目）。空欄にすると未設定になります。
+              </p>
+            </>
+          )}
+        </Card>
+      )}
 
       <Attachments dealId={d.id} />
     </div>

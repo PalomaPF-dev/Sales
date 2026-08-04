@@ -6,7 +6,7 @@
 //                                             … ユーザーを作って同時にパスワードを設定
 //
 // パスワードを省略すると安全な仮パスワードを生成し、初回ログイン時に変更を求めます。
-// --role は sales / branch_manager / planning / admin（既定は admin）。
+// --role は sales / branch_manager / planning / admin / developer（既定は admin）。
 // 本番DBに対して実行する場合は DATABASE_URL を設定してください。
 import { db, initDb } from '../server/db.js';
 import { hashPassword, generateTempPassword, validatePassword } from '../server/passwords.js';
@@ -41,7 +41,7 @@ if (args.includes('--list') || args.length === 0) {
   process.exit(0);
 }
 
-const ROLES = ['sales', 'branch_manager', 'planning', 'admin'];
+const ROLES = ['sales', 'branch_manager', 'planning', 'admin', 'developer'];
 const create = args.includes('--create');
 
 // --role の値はフラグの直後に来る。位置引数と混ざらないよう先に取り除く

@@ -1,7 +1,7 @@
 export interface User {
   id: number;
   name: string;
-  role: 'sales' | 'branch_manager' | 'planning' | 'admin';
+  role: 'sales' | 'branch_manager' | 'planning' | 'admin' | 'developer';
   branch: string | null;
   office: string | null;
   loginId?: string | null;
@@ -129,4 +129,5 @@ export const ROLE_NAMES: Record<string, string> = {
   branch_manager: '支店長',
   planning: '営業企画部',
   admin: '管理者',
+  developer: '開発者',
 };
