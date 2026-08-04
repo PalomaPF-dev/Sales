@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import type { ApiError } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
 import { parseFile, uploadInChunks } from '../importClient';
@@ -15,6 +16,33 @@ interface Batch {
 
 interface Warning { column: string; label: string; count: number; samples: string[] }
 
+/**
+ * 選んだファイル1つぶんの状態。
+ * 複数ファイルをまとめて選べるため、解析・対応づけ・取込の進みを
+ * ファイルごとに持ち、他のファイルの失敗に引きずられないようにする。
+ */
+interface Entry {
+  key: number;
+  filename: string;
+  status: 'parsing' | 'needs-mapping' | 'ready' | 'importing' | 'done' | 'duplicate' | 'error';
+  parsed?: ParsedFile;
+  mapping: Record<string, number>;
+  message?: string;
+  rowsDone?: number;
+  progress?: { sent: number; total: number };
+  warnings?: Warning[];
+}
+
+const STATUS_LABEL: Record<Entry['status'], { text: string; badge: string }> = {
+  'parsing': { text: '読み取り中…', badge: 'gray' },
+  'needs-mapping': { text: '列の対応が必要', badge: 'red' },
+  'ready': { text: '取込待ち', badge: 'blue' },
+  'importing': { text: '取込中…', badge: 'violet' },
+  'done': { text: '取込完了', badge: 'green' },
+  'duplicate': { text: '二重の疑い', badge: 'yellow' },
+  'error': { text: 'エラー', badge: 'red' },
+};
+
 export default function ImportPage() {
   const me = useUser();
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -22,11 +50,8 @@ export default function ImportPage() {
   const [chunkRows, setChunkRows] = useState(500);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [parsed, setParsed] = useState<ParsedFile | null>(null);
-  const [mapping, setMapping] = useState<Record<string, number>>({});
-  const [progress, setProgress] = useState<{ sent: number; total: number } | null>(null);
-  const [duplicate, setDuplicate] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<Warning[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [selectedKey, setSelectedKey] = useState<number | null>(null);
   const [showAllFields, setShowAllFields] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const canDelete = me.role === 'planning' || me.role === 'admin';
@@ -41,58 +66,117 @@ export default function ImportPage() {
       .catch((e) => setMsg({ kind: 'error', text: e.message }));
   }, []);
 
+  const patch = (key: number, p: Partial<Entry>) => {
+    setEntries((prev) => prev.map((e) => (e.key === key ? { ...e, ...p } : e)));
+  };
+
+  const missingOf = (mapping: Record<string, number>) =>
+    fields.filter((f) => f.required && mapping[f.key] == null);
+
   const reset = () => {
-    setParsed(null);
-    setMapping({});
-    setProgress(null);
-    setDuplicate(null);
+    setEntries([]);
+    setSelectedKey(null);
     if (fileRef.current) fileRef.current.value = '';
   };
 
-  // ファイルを選んだ時点でブラウザ側で解析し、列の対応を見せる
+  // 選んだ時点でブラウザ側で全ファイルを解析し、一覧に状態を出す
   const onPick = async () => {
-    const file = fileRef.current?.files?.[0];
+    const picked = [...(fileRef.current?.files ?? [])];
     setMsg(null);
-    setDuplicate(null);
-    setWarnings([]);
-    if (!file) { setParsed(null); return; }
+    if (!picked.length) { reset(); return; }
     setBusy(true);
+    const initial: Entry[] = picked.map((f, i) => ({
+      key: i, filename: f.name, status: 'parsing', mapping: {},
+    }));
+    setEntries(initial);
+    setSelectedKey(null);
+
+    // 同じ内容のファイルを2回選んでいないかを、送る前に手元で見つける
+    const seen = new Map<string, string>(); // dataHash → filename
+    const statuses: Entry['status'][] = [];
+    for (let i = 0; i < picked.length; i++) {
+      try {
+        const p = await parseFile(picked[i], fields);
+        const dupOf = seen.get(p.dataHash);
+        if (dupOf !== undefined) {
+          statuses[i] = 'duplicate';
+          patch(i, {
+            status: 'duplicate', parsed: p, mapping: p.mapping,
+            message: `「${dupOf}」と同じ内容です。まとめて取込では飛ばします`,
+          });
+        } else {
+          seen.set(p.dataHash, picked[i].name);
+          const st = missingOf(p.mapping).length ? 'needs-mapping' : 'ready';
+          statuses[i] = st;
+          patch(i, { status: st, parsed: p, mapping: p.mapping });
+        }
+      } catch (e) {
+        statuses[i] = 'error';
+        patch(i, { status: 'error', message: (e as Error).message });
+      }
+    }
+    // 直す必要があるファイルがあればそれを、なければ先頭を選んで対応表を出す
+    const attention = statuses.findIndex((s) => s === 'needs-mapping');
+    setSelectedKey(attention >= 0 ? attention : statuses.length ? 0 : null);
+    setBusy(false);
+  };
+
+  /** 1ファイルを取り込む。まとめて取込からも、個別の再取込からも使う */
+  const runOne = async (entry: Entry, force: boolean): Promise<{ status: Entry['status']; count: number }> => {
+    if (!entry.parsed) return { status: entry.status, count: 0 };
+    patch(entry.key, {
+      status: 'importing', message: undefined,
+      progress: { sent: 0, total: entry.parsed.rows.length },
+    });
     try {
-      const p = await parseFile(file, fields);
-      setParsed(p);
-      setMapping(p.mapping);
+      const res = await uploadInChunks(entry.parsed, entry.mapping, {
+        force, chunkRows,
+        onProgress: (p) => patch(entry.key, { progress: p }),
+      });
+      patch(entry.key, {
+        status: 'done', rowsDone: res.count, warnings: res.skipped, progress: undefined,
+      });
+      return { status: 'done', count: res.count };
     } catch (e) {
-      setParsed(null);
-      setMsg({ kind: 'error', text: (e as Error).message });
-    } finally {
-      setBusy(false);
+      const err = e as ApiError;
+      const status: Entry['status'] = err.duplicate ? 'duplicate' : 'error';
+      patch(entry.key, { status, message: err.message, progress: undefined });
+      return { status, count: 0 };
     }
   };
 
-  const run = async (force = false) => {
-    if (!parsed) return;
+  /** 取込待ちのファイルを順に取り込む。1つの失敗で残りを止めない */
+  const runAll = async () => {
+    const targets = entries.filter((e) => e.status === 'ready');
+    if (!targets.length) return;
     setBusy(true);
     setMsg(null);
-    if (!force) setDuplicate(null);
-    setProgress({ sent: 0, total: parsed.rows.length });
-    try {
-      const res = await uploadInChunks(parsed, mapping, {
-        force,
-        chunkRows,
-        onProgress: setProgress,
-      });
-      setMsg({ kind: 'ok', text: `取込完了: ${parsed.filename} → ${res.count.toLocaleString()}行` });
-      setWarnings(res.skipped);
-      reset();
-      load();
-    } catch (e) {
-      const text = (e as Error).message;
-      if (/既に取り込まれています/.test(text)) setDuplicate(text);
-      else setMsg({ kind: 'error', text });
-      setProgress(null);
-    } finally {
-      setBusy(false);
+    let done = 0, rows = 0, dup = 0, err = 0;
+    for (const entry of targets) {
+      const r = await runOne(entry, false);
+      if (r.status === 'done') { done += 1; rows += r.count; }
+      else if (r.status === 'duplicate') dup += 1;
+      else err += 1;
     }
+    const parts = [`取込完了 ${done}ファイル`];
+    if (dup) parts.push(`二重の疑い ${dup}`);
+    if (err) parts.push(`エラー ${err}`);
+    setMsg({
+      kind: err ? 'error' : dup ? 'info' : 'ok',
+      text: `${parts.join(' ／ ')}${done ? `（合計 ${rows.toLocaleString()}行）` : ''}`,
+    });
+    setBusy(false);
+    load();
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  /** 二重の疑いのファイルを、確認のうえ個別に取り込む */
+  const forceOne = async (entry: Entry) => {
+    setBusy(true);
+    setMsg(null);
+    await runOne(entry, true);
+    setBusy(false);
+    load();
   };
 
   const removeBatch = async (b: Batch) => {
@@ -114,10 +198,19 @@ export default function ImportPage() {
     }
   };
 
-  const missing = fields.filter((f) => f.required && mapping[f.key] == null);
-  const shown = showAllFields ? fields : fields.filter((f) => f.required || mapping[f.key] != null);
-  const usedCols = new Set(Object.values(mapping));
-  const ignored = parsed ? parsed.headers
+  const ready = entries.filter((e) => e.status === 'ready');
+  const readyRows = ready.reduce((a, e) => a + (e.parsed?.rows.length ?? 0), 0);
+  const needFix = entries.filter((e) => e.status === 'needs-mapping');
+  const doneWarnings = entries.filter((e) => e.status === 'done' && (e.warnings?.length ?? 0) > 0);
+
+  const selected = entries.find((e) => e.key === selectedKey);
+  const canEditMapping = selected && (selected.status === 'ready' || selected.status === 'needs-mapping');
+  const missing = selected ? missingOf(selected.mapping) : [];
+  const shown = selected
+    ? (showAllFields ? fields : fields.filter((f) => f.required || selected.mapping[f.key] != null))
+    : [];
+  const usedCols = new Set(selected ? Object.values(selected.mapping) : []);
+  const ignored = selected?.parsed ? selected.parsed.headers
     .map((h, i) => ({ header: h, index: i }))
     .filter((c) => c.header && !usedCols.has(c.index)) : [];
 
@@ -125,27 +218,19 @@ export default function ImportPage() {
     <div>
       <h1 className="page-title">Excel取込</h1>
       <p className="page-sub">
-        現行の管理表（器具ごとのExcel）をそのまま取り込めます。見出し行を自動で探し、列の項目名で対応づけます。
-        列の並びや見出しがファイルごとに違っても、対応づけを直せば取り込めます。
+        現行の管理表（器具ごとのExcel）をそのまま取り込めます。
+        <strong>複数のファイルをまとめて選べます</strong>（CtrlキーやShiftキーを押しながら選択）。
+        見出し行を自動で探し、列の項目名で対応づけます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
-      {duplicate && (
-        <div className="alert error">
-          {duplicate}
-          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-            <button className="btn secondary sm" onClick={() => setDuplicate(null)}>取り込まない</button>
-            <button className="btn danger sm" disabled={busy} onClick={() => run(true)}>それでも取り込む</button>
-          </div>
-        </div>
-      )}
-
-      {warnings.length > 0 && (
+      {doneWarnings.length > 0 && (
         <div className="alert info">
           <strong>数値として読めなかった値がありました（未設定として取り込んでいます）</strong>
-          {warnings.map((w) => (
-            <div key={w.column} style={{ marginTop: 4, fontSize: 12.5 }}>
-              {w.label}: {w.count.toLocaleString()}件（例: {w.samples.join(' / ')}）
+          {doneWarnings.map((e) => (
+            <div key={e.key} style={{ marginTop: 4, fontSize: 12.5 }}>
+              {e.filename}:{' '}
+              {(e.warnings ?? []).map((w) => `${w.label} ${w.count.toLocaleString()}件（例: ${w.samples.join(' / ')}）`).join('、')}
             </div>
           ))}
         </div>
@@ -153,42 +238,97 @@ export default function ImportPage() {
 
       <Card title="管理表ファイルの取込">
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input type="file" ref={fileRef} accept=".xlsx,.xlsm,.xls,.csv" onChange={onPick} disabled={busy} />
-          {parsed && (
-            <>
-              <button className="btn" onClick={() => run(false)} disabled={busy || missing.length > 0}>
-                {busy ? '取込中...' : `${parsed.rows.length.toLocaleString()}行を取り込む`}
-              </button>
-              <button className="btn secondary" onClick={reset} disabled={busy}>やめる</button>
-            </>
+          <input
+            type="file" ref={fileRef} multiple
+            accept=".xlsx,.xlsm,.xls,.csv" onChange={onPick} disabled={busy}
+          />
+          {ready.length > 0 && (
+            <button className="btn" onClick={runAll} disabled={busy}>
+              {busy ? '取込中...' : `${ready.length}ファイル（${readyRows.toLocaleString()}行）をまとめて取り込む`}
+            </button>
+          )}
+          {entries.length > 0 && (
+            <button className="btn secondary" onClick={reset} disabled={busy}>選び直す</button>
           )}
         </div>
 
-        {progress && (
-          <div style={{ marginTop: 12 }}>
-            <div className="meter" style={{ marginTop: 0 }}>
-              <span style={{
-                width: `${progress.total ? (progress.sent / progress.total) * 100 : 0}%`,
-                background: 'var(--accent)',
-              }} />
-            </div>
-            <p className="pt-note" style={{ marginTop: 6 }}>
-              {progress.sent.toLocaleString()} / {progress.total.toLocaleString()}行を送信しました
-            </p>
+        {needFix.length > 0 && (
+          <div className="alert error" style={{ marginTop: 12 }}>
+            列の対応が必要なファイルが {needFix.length} つあります。
+            下の一覧で「列の対応」を押して、必須の項目に列を割り当ててください。
+            対応しないままだと、そのファイルだけ取込の対象から外れます。
+          </div>
+        )}
+
+        {entries.length > 0 && (
+          <div className="tbl-scroll" style={{ marginTop: 12 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>#</th><th>ファイル名</th><th className="num">行数</th><th>状態</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((e) => {
+                  const s = STATUS_LABEL[e.status];
+                  const pct = e.progress && e.progress.total
+                    ? Math.round((e.progress.sent / e.progress.total) * 100) : null;
+                  return (
+                    <tr
+                      key={e.key}
+                      style={e.key === selectedKey ? { background: 'rgba(59,130,246,.06)' } : undefined}
+                    >
+                      <td>{e.key + 1}</td>
+                      <td>{e.filename}</td>
+                      <td className="num">{e.parsed ? e.parsed.rows.length.toLocaleString() : '—'}</td>
+                      <td>
+                        <span className={`badge ${s.badge}`}>{s.text}</span>
+                        {e.status === 'importing' && pct != null && (
+                          <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--muted)' }}>
+                            {e.progress!.sent.toLocaleString()} / {e.progress!.total.toLocaleString()}行（{pct}%）
+                          </span>
+                        )}
+                        {e.status === 'done' && e.rowsDone != null && (
+                          <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--muted)' }}>
+                            {e.rowsDone.toLocaleString()}行
+                          </span>
+                        )}
+                        {e.message && (
+                          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>{e.message}</div>
+                        )}
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {e.parsed && (e.status === 'ready' || e.status === 'needs-mapping') && (
+                          <button className="btn secondary sm" disabled={busy} onClick={() => setSelectedKey(e.key)}>
+                            列の対応
+                          </button>
+                        )}
+                        {e.status === 'duplicate' && e.parsed && (
+                          <button className="btn danger sm" disabled={busy} onClick={() => forceOne(e)}>
+                            それでも取り込む
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
 
         <p className="pt-note" style={{ marginTop: 10 }}>
-          ファイルはブラウザ側で読み取り、行データだけを{chunkRows}行ずつ送ります。
-          <strong>ファイルの大きさによる上限はありません。</strong>
+          ファイルはブラウザ側で読み取り、行データだけを{chunkRows}行ずつ順に送ります。
+          <strong>ファイルの数や大きさによる上限はありません。</strong>
         </p>
         <p className="pt-note">
-          ※ 同じ内容のファイルを取り込もうとすると警告が出ます（明細が二重になり、値上げ金額が二倍になるため）。
+          ※ 同じ内容のファイルを取り込もうとすると「二重の疑い」で止まります（明細が二重になり、値上げ金額が二倍になるため）。
+          内容を確かめたうえで「それでも取り込む」で個別に取り込めます。
         </p>
       </Card>
 
-      {parsed && (
-        <Card title={`列の対応（${parsed.filename}／見出しは${parsed.headerRow + 1}行目）`}>
+      {selected?.parsed && canEditMapping && (
+        <Card title={`列の対応（${selected.filename}／見出しは${selected.parsed.headerRow + 1}行目）`}>
           {missing.length > 0 && (
             <div className="alert error">
               必須の項目が対応づけられていません: {missing.map((f) => f.label).join(' / ')}。
@@ -198,7 +338,7 @@ export default function ImportPage() {
 
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <span className="count">
-              自動で対応づけ <b>{Object.keys(mapping).length}</b> 項目 ／
+              自動で対応づけ <b>{Object.keys(selected.mapping).length}</b> 項目 ／
               取り込まない列 <b>{ignored.length}</b>
             </span>
             <div className="grow" />
@@ -224,8 +364,8 @@ export default function ImportPage() {
               </thead>
               <tbody>
                 {shown.map((f) => {
-                  const idx = mapping[f.key];
-                  const sample = idx == null ? [] : parsed.preview
+                  const idx = selected.mapping[f.key];
+                  const sample = idx == null ? [] : selected.parsed!.preview
                     .map((r) => r?.[idx])
                     .filter((v) => v !== null && v !== undefined && String(v) !== '')
                     .slice(0, 2)
@@ -240,19 +380,21 @@ export default function ImportPage() {
                       <td>
                         <select
                           value={idx ?? ''}
+                          disabled={busy}
                           style={{ minWidth: 220, borderColor: f.required && idx == null ? 'var(--critical)' : undefined }}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setMapping((prev) => {
-                              const next = { ...prev };
-                              if (v === '') delete next[f.key];
-                              else next[f.key] = Number(v);
-                              return next;
+                          onChange={(ev) => {
+                            const v = ev.target.value;
+                            const next = { ...selected.mapping };
+                            if (v === '') delete next[f.key];
+                            else next[f.key] = Number(v);
+                            patch(selected.key, {
+                              mapping: next,
+                              status: missingOf(next).length ? 'needs-mapping' : 'ready',
                             });
                           }}
                         >
                           <option value="">（取り込まない）</option>
-                          {parsed.headers.map((h, i) => (
+                          {selected.parsed!.headers.map((h, i) => (
                             h ? <option key={i} value={i}>{colName(i)}列: {h}</option> : null
                           ))}
                         </select>

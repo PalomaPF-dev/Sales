@@ -22,6 +22,8 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
     const err = new Error((data as { error?: string }).error || `エラー (${res.status})`) as ApiError;
     err.status = res.status;
     err.mustChangePassword = Boolean((data as { mustChangePassword?: boolean }).mustChangePassword);
+    // 取込の二重判定。文言は変わりうるので、サーバーが返す印をそのまま持ち回る
+    err.duplicate = Boolean((data as { duplicate?: boolean }).duplicate);
     throw err;
   }
   return data as T;
@@ -30,6 +32,7 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
 export interface ApiError extends Error {
   status?: number;
   mustChangePassword?: boolean;
+  duplicate?: boolean;
 }
 
 export const login = (loginId: string, password: string) =>
