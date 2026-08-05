@@ -27,9 +27,21 @@ interface Row extends Progress {
   office?: string | null;
 }
 
+/** 支店別の値上げ額（目標と実績）。達成率はここから計算する */
+interface BranchAmount {
+  branch: string | null;
+  deals: number;
+  r1_target_amount: number;
+  r1_agreed_amount: number;
+  r2_target_amount: number;
+  r2_agreed_amount: number;
+}
+
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
   totals: Progress;
+  byBranchAmount: BranchAmount[];
+  amountTotals: BranchAmount;
   byOffice: Row[];
   byPerson: Row[];
   byEquip: Row[];
@@ -49,6 +61,31 @@ function Bar({ done, agreed, total }: { done: number; agreed: number; total: num
     <div className="pbar" title={`完了 ${done.toLocaleString()} / 合意済 ${agreed.toLocaleString()} / 全${total.toLocaleString()}`}>
       <span className="seg done" style={{ width: `${d}%` }} />
       <span className="seg agreed" style={{ width: `${a}%` }} />
+    </div>
+  );
+}
+
+const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
+
+/** 達成率。目標が無い場合は「—」 */
+function Rate({ agreed, target }: { agreed: number; target: number }) {
+  if (!(target > 0)) return <span style={{ color: 'var(--muted)' }}>—</span>;
+  const r = Math.round((agreed / target) * 1000) / 10;
+  return (
+    <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600,
+                   color: r >= 100 ? 'var(--ok, #047857)' : undefined }}>
+      {r.toLocaleString()}%
+    </span>
+  );
+}
+
+/** 達成率の帯（100%を上限に塗る） */
+function RateBar({ agreed, target }: { agreed: number; target: number }) {
+  if (!(target > 0)) return null;
+  const w = Math.max(0, Math.min(100, (agreed / target) * 100));
+  return (
+    <div className="pbar" title={`実績 ${yen(agreed)} / 目標 ${yen(target)}`}>
+      <span className="seg done" style={{ width: `${w}%` }} />
     </div>
   );
 }
@@ -281,6 +318,72 @@ export default function Dashboard() {
           </a>
         </div>
       )}
+
+      <Card title="支店別の値上げ額と達成率">
+        {data.byBranchAmount.length === 0 ? (
+          <p className="pt-note" style={{ margin: 0 }}>対象がありません。</p>
+        ) : (
+          <div className="tbl-scroll" style={{ maxHeight: 480 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>支店</th>
+                  <th style={{ textAlign: 'right' }}>案件</th>
+                  <th style={{ textAlign: 'right' }}>第1弾 目標額</th>
+                  <th style={{ textAlign: 'right' }}>実績額</th>
+                  <th style={{ width: 120 }}></th>
+                  <th style={{ textAlign: 'right' }}>達成率</th>
+                  <th style={{ textAlign: 'right' }} className="sep">第2弾 目標額</th>
+                  <th style={{ textAlign: 'right' }}>実績額</th>
+                  <th style={{ width: 120 }}></th>
+                  <th style={{ textAlign: 'right' }}>達成率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.byBranchAmount.map((b, i) => (
+                  <tr key={`${b.branch}-${i}`}>
+                    <td>
+                      <a href="#" onClick={(e) => { e.preventDefault(); toDeals({ branch: b.branch ?? '' }); }}>
+                        {b.branch || '（支店なし）'}
+                      </a>
+                    </td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(b.deals).toLocaleString()}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r1_target_amount))}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r1_agreed_amount))}</td>
+                    <td><RateBar agreed={num(b.r1_agreed_amount)} target={num(b.r1_target_amount)} /></td>
+                    <td style={{ textAlign: 'right' }}><Rate agreed={num(b.r1_agreed_amount)} target={num(b.r1_target_amount)} /></td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }} className="sep">{yen(num(b.r2_target_amount))}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r2_agreed_amount))}</td>
+                    <td><RateBar agreed={num(b.r2_agreed_amount)} target={num(b.r2_target_amount)} /></td>
+                    <td style={{ textAlign: 'right' }}><Rate agreed={num(b.r2_agreed_amount)} target={num(b.r2_target_amount)} /></td>
+                  </tr>
+                ))}
+              </tbody>
+              {data.byBranchAmount.length > 1 && (
+                <tfoot>
+                  <tr style={{ fontWeight: 700, borderTop: '2px solid var(--line, #e2e8f0)' }}>
+                    <td>合計</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(data.amountTotals.deals).toLocaleString()}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r1_target_amount))}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r1_agreed_amount))}</td>
+                    <td></td>
+                    <td style={{ textAlign: 'right' }}><Rate agreed={num(data.amountTotals.r1_agreed_amount)} target={num(data.amountTotals.r1_target_amount)} /></td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }} className="sep">{yen(num(data.amountTotals.r2_target_amount))}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r2_agreed_amount))}</td>
+                    <td></td>
+                    <td style={{ textAlign: 'right' }}><Rate agreed={num(data.amountTotals.r2_agreed_amount)} target={num(data.amountTotals.r2_target_amount)} /></td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        )}
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          目標額 = 目標単価と現行単価の差の合計。実績額 = 実際に上がった単価幅の合計（合意済・完了の案件）。
+          達成率 = 実績額 ÷ 目標額。第2弾は第1弾の目標からの上乗せ分で数えています。
+          支店は都道府県順です。支店名を押すとその支店の案件一覧へ移れます。
+        </p>
+      </Card>
 
       <Card title="法人ごとの交渉状況">
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>

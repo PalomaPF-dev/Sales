@@ -1172,7 +1172,19 @@ api.get('/dashboard', wrap(async (req, res) => {
     SUM(CASE WHEN r2_state <> 'open' AND r2_agreed_price > 0 AND r2_target_price IS NOT NULL
                   AND r2_agreed_price < r2_target_price THEN 1 ELSE 0 END) AS r2_below`;
 
-  const [totals, byOffice, byPerson, byEquip, corpStatus, applied] = await Promise.all([
+  // 値上げ額の合計と目標に対する達成率。
+  // 目標額 = 目標単価と現行単価の差、実績額 = 実際に上がった幅（deal_calcと同じ定義）。
+  // 第2弾の目標幅は第1弾の目標（無ければ現行単価）からの上乗せ分として数える。
+  const amounts = `
+    COUNT(*) AS deals,
+    SUM(CASE WHEN r1_target_price IS NOT NULL AND base_price IS NOT NULL
+             THEN r1_target_price - base_price ELSE 0 END) AS r1_target_amount,
+    SUM(CASE WHEN r1_state <> 'open' THEN COALESCE(r1_raise_unit, 0) ELSE 0 END) AS r1_agreed_amount,
+    SUM(CASE WHEN r2_target_price IS NOT NULL
+             THEN r2_target_price - COALESCE(r1_target_price, base_price) ELSE 0 END) AS r2_target_amount,
+    SUM(CASE WHEN r2_state <> 'open' THEN COALESCE(r2_raise_unit, 0) ELSE 0 END) AS r2_agreed_amount`;
+
+  const [totals, byOffice, byPerson, byEquip, corpStatus, applied, byBranchAmount, amountTotals] = await Promise.all([
     db.get(`SELECT ${progress} FROM deal_calc ${where}`, p),
     db.all(`SELECT branch, office, ${progress} FROM deal_calc ${where}
              GROUP BY branch, office ORDER BY COUNT(*) DESC`, p),
@@ -1196,11 +1208,18 @@ api.get('/dashboard', wrap(async (req, res) => {
         SELECT r2_applied_ym AS ym, 0 AS r1, 1 AS r2 FROM deal_calc
          ${andWhere('r2_done = 1 AND r2_applied_ym IS NOT NULL')}
       ) t GROUP BY ym ORDER BY ym`, [...p, ...p]),
+    db.all(`SELECT branch, ${amounts} FROM deal_calc ${where} GROUP BY branch`, p),
+    db.get(`SELECT ${amounts} FROM deal_calc ${where}`, p),
   ]);
+
+  // 支店は都道府県順（選択肢と同じ並び）
+  byBranchAmount.sort((a, b) => comparePref(a.branch, b.branch));
 
   res.json({
     scope: scopeInfo(req.user),
     totals,
+    byBranchAmount,
+    amountTotals,
     byOffice,
     byPerson,
     byEquip,
