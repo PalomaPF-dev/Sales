@@ -680,8 +680,14 @@ api.get('/admin/status', wrap(async (req, res) => {
 api.get('/admin/data-check', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  // 全角数字・桁区切り・小数点だけでできた値を「数字だけ」とみなす
-  const looksNumeric = (s) => /^[0-9０-９][0-9０-９,，.．\s]*$/.test(String(s).trim());
+  // 名前として疑わしい値:
+  //  ・数字で始まる（「24000」「10:プロパン会社」= 業種などのコード付き値の紛れ込み）
+  //  ・日本語（かな・カナ・漢字）を1文字も含まない（「TA」「LP」などの記号だけの値）
+  const suspicious = (raw) => {
+    const s = String(raw).trim();
+    if (/^[0-9０-９]/.test(s)) return true;
+    return !/[぀-ヿ㐀-鿿豈-﫿々〆]/.test(s);
+  };
 
   const findings = [];
   for (const [col, label, param] of [
@@ -697,7 +703,7 @@ api.get('/admin/data-check', wrap(async (req, res) => {
        WHERE ${col} IS NOT NULL AND ${col} <> ''
        GROUP BY ${col}`);
     for (const r of rows) {
-      if (looksNumeric(r.value)) {
+      if (suspicious(r.value)) {
         findings.push({ column: col, label, param, value: r.value, deals: Number(r.deals) });
       }
     }
@@ -1215,6 +1221,8 @@ const SORTABLE = new Map([
   ['customer_name', 'customer_name'],
   ['model_name', 'model_name'],
   ['equip_name', 'equip_name'],
+  ['branch', 'branch'],
+  ['office', 'office'],
   ['sales_person', 'sales_person'],
   ['base_price', 'base_price'],
   ['r1_target_price', 'r1_target_price'],

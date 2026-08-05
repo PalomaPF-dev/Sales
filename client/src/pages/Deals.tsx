@@ -465,8 +465,8 @@ export default function Deals() {
               <Th col="customer_name">得意先 / 納入先</Th>
               <Th col="model_name">器種名</Th>
               <Th col="equip_name">器具区分</Th>
-              {isDev && <th>支店</th>}
-              {isDev && <th>営業所</th>}
+              {isDev && <Th col="branch">支店</Th>}
+              {isDev && <Th col="office">営業所</Th>}
               <Th col="sales_person">担当者</Th>
               <th className="sep"></th>
               <Th col="base_price" className="num sep" />
