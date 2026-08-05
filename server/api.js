@@ -18,6 +18,7 @@ import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
 import {
   deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
 } from './privateBlob.js';
+import { comparePref } from './prefOrder.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -1061,6 +1062,10 @@ api.get('/meta', wrap(async (req, res) => {
     db.all(`SELECT DISTINCT branch, office AS name, COUNT(*) AS count FROM deals WHERE office IS NOT NULL${and} GROUP BY branch, office ORDER BY count DESC`, sp),
     db.all(`SELECT corp_code AS code, corp_name AS name, COUNT(*) AS count FROM deals WHERE corp_code IS NOT NULL${and} GROUP BY corp_code, corp_name ORDER BY count DESC LIMIT 500`, sp),
   ]);
+  // 支店・営業所は都道府県順（北から南）。件数順だと選択肢を探しづらい
+  branches.sort((a, b) => comparePref(a.name, b.name));
+  offices.sort((a, b) => comparePref(a.name, b.name));
+
   res.json({
     priceTypes, equips, persons, customers, branches, offices,
     corps,
