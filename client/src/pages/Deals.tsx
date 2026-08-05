@@ -314,16 +314,18 @@ export default function Deals() {
   };
 
   /**
-   * 目標欄の下に出す、基準価格表との突き合わせ結果。
-   * 品名と器種名から判別した器種（類似も含む）を示す。
+   * 目標の根拠（どの基準に紐づくか・類似か・基準に無いか）。
+   * 一覧には出さず、目標の欄にカーソルを合わせたときだけツールチップで示す。
    */
-  const stdHint = (d: Deal) => {
-    if (!d.std_name) return null;
-    return (
-      <div className="sub" title="基準価格表で判別した器種です">
-        {d.std_kind === 'similar' ? '類似' : '基準'}: {d.std_name}
-      </div>
-    );
+  const stdTitle = (d: Deal) => {
+    if (d.std_name) {
+      return d.std_kind === 'similar'
+        ? `基準価格表の「${d.std_name}」の類似として判別しています`
+        : `基準価格表の「${d.std_name}」に一致しています`;
+    }
+    // null はマスターと照合したうえで該当なし。undefined はマスター未登録
+    if (d.std_name === null) return '基準価格表に該当する器種がありません';
+    return undefined;
   };
 
   /**
@@ -333,10 +335,10 @@ export default function Deals() {
   const targetCell = (d: Deal) => {
     const t = d.std_targets;
     if (!t || !KUBUN_LIST.some((k) => t[k] != null)) {
-      return <>{yen(d.r2_target_price)}{stdHint(d)}</>;
+      return <div title={stdTitle(d)}>{yen(d.r2_target_price)}</div>;
     }
     return (
-      <>
+      <div title={stdTitle(d)}>
         <div className="std3">
           {KUBUN_LIST.map((k) => (
             <div key={k}>
@@ -351,8 +353,7 @@ export default function Deals() {
         {d.kubun == null && d.r2_target_price != null && (
           <div className="sub">設定中の目標: ¥{yen(d.r2_target_price)}</div>
         )}
-        {stdHint(d)}
-      </>
+      </div>
     );
   };
 
@@ -593,11 +594,10 @@ export default function Deals() {
                   {/* 値上げ交渉（目標・合意・適用年月・状態）。目標は基準価格表の3区分を横並びで出す */}
                   <td className="num sep">
                     {isEditing && isAdmin ? (
-                      <div style={{ display: 'grid', gap: 4, justifyItems: 'end' }}>
+                      <div style={{ display: 'grid', gap: 4, justifyItems: 'end' }} title={stdTitle(d)}>
                         <input type="number" className="cell" value={draft.r2_target_price}
                           onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
                           onBlur={() => saveTarget(d)} />
-                        {stdHint(d)}
                       </div>
                     ) : targetCell(d)}
                   </td>
