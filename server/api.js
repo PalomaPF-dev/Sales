@@ -669,6 +669,43 @@ api.get('/admin/status', wrap(async (req, res) => {
 }));
 
 /**
+ * 取込データの点検。
+ *
+ * 支店・営業所・担当者・器具区分名は名前が入る欄で、数字だけの値が
+ * 入っていたら取込時の列ズレや入力ミスの可能性が高い
+ * （例: 営業所に「24000」）。壊れた値は絞り込みの選択肢にも紛れ込むため、
+ * 見つけて直せるよう、疑わしい値と件数を管理者に見せる。
+ */
+api.get('/admin/data-check', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  // 全角数字・桁区切り・小数点だけでできた値を「数字だけ」とみなす
+  const looksNumeric = (s) => /^[0-9０-９][0-9０-９,，.．\s]*$/.test(String(s).trim());
+
+  const findings = [];
+  for (const [col, label, param] of [
+    ['branch', '支店', 'branch'],
+    ['office', '営業所', 'office'],
+    ['sales_person', '担当者', 'person'],
+    ['equip_name', '器具区分名', 'equip'],
+  ]) {
+    // 値の種類は少ない（営業所名など）ので、まとめて数えてから手元で判定する
+    const rows = await db.all(`
+      SELECT ${col} AS value, COUNT(*) AS deals
+        FROM deals
+       WHERE ${col} IS NOT NULL AND ${col} <> ''
+       GROUP BY ${col}`);
+    for (const r of rows) {
+      if (looksNumeric(r.value)) {
+        findings.push({ column: col, label, param, value: r.value, deals: Number(r.deals) });
+      }
+    }
+  }
+  findings.sort((a, b) => b.deals - a.deals);
+  res.json({ findings });
+}));
+
+/**
  * 案件データに出てくる担当者の一覧。
  *
  * 管理表には担当者コードが無く氏名しか入っていないため、氏名で名寄せする。

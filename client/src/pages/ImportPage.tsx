@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { ApiError } from '../api';
 import { Card } from '../components/ui';
@@ -15,6 +16,9 @@ interface Batch {
 }
 
 interface Warning { column: string; label: string; count: number; samples: string[] }
+
+/** 取込データの点検結果（数字だけになっている名前欄） */
+interface Finding { column: string; label: string; param: string; value: string; deals: number }
 
 /**
  * 選んだファイル1つぶんの状態。
@@ -55,9 +59,18 @@ export default function ImportPage() {
   const [showAllFields, setShowAllFields] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const canDelete = ['planning', 'admin', 'developer'].includes(me.role);
+  const canCheck = me.role === 'admin' || me.role === 'developer';
+  const navigate = useNavigate();
+  const [findings, setFindings] = useState<Finding[]>([]);
 
   const load = () => {
     api<Batch[]>('/import/batches').then(setBatches).catch(() => {});
+    // 取込のたびに点検し直す（列ズレの値が入ったらすぐ気づけるように）
+    if (canCheck) {
+      api<{ findings: Finding[] }>('/admin/data-check')
+        .then((r) => setFindings(r.findings))
+        .catch(() => {});
+    }
   };
   useEffect(() => {
     load();
@@ -336,6 +349,43 @@ export default function ImportPage() {
           「それでも取り込む」で流せますが、すべて変更なしになるだけです。
         </p>
       </Card>
+
+      {canCheck && findings.length > 0 && (
+        <Card title="取込データの点検">
+          <div className="alert error" style={{ marginTop: 0 }}>
+            名前が入るはずの欄に、数字だけの値が入っている明細があります。
+            取込時の列ズレか入力ミスの可能性が高く、絞り込みの選択肢にも紛れ込みます。
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr><th>欄</th><th>入っている値</th><th className="num">件数</th><th></th></tr>
+            </thead>
+            <tbody>
+              {findings.map((f) => (
+                <tr key={`${f.column}:${f.value}`}>
+                  <td>{f.label}</td>
+                  <td><strong>{f.value}</strong></td>
+                  <td className="num">{f.deals.toLocaleString()}</td>
+                  <td>
+                    <button
+                      className="btn secondary sm"
+                      onClick={() => navigate(`/deals?${f.param}=${encodeURIComponent(f.value)}`)}
+                    >
+                      該当の案件を見る
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="pt-note" style={{ marginTop: 10 }}>
+            {me.role === 'developer'
+              ? '案件一覧の「入力」か、案件を開いて「取込データの修正」で正しい値に直せます。'
+              : '修正には開発者の権限が必要です。開発者アカウントでログインして直してください。'}
+            直すべき値が分かっている場合は、修正した管理表を取り込み直しても直せます（伝票NOが同じ行は上書きされます）。
+          </p>
+        </Card>
+      )}
 
       {selected?.parsed && canEditMapping && (
         <Card title={`列の対応（${selected.filename}／見出しは${selected.parsed.headerRow + 1}行目）`}>
