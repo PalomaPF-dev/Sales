@@ -28,7 +28,7 @@ interface Entry {
   parsed?: ParsedFile;
   mapping: Record<string, number>;
   message?: string;
-  rowsDone?: number;
+  result?: { added: number; updated: number; unchanged: number };
   progress?: { sent: number; total: number };
   warnings?: Warning[];
 }
@@ -122,8 +122,10 @@ export default function ImportPage() {
   };
 
   /** 1ファイルを取り込む。まとめて取込からも、個別の再取込からも使う */
-  const runOne = async (entry: Entry, force: boolean): Promise<{ status: Entry['status']; count: number }> => {
-    if (!entry.parsed) return { status: entry.status, count: 0 };
+  const runOne = async (
+    entry: Entry, force: boolean
+  ): Promise<{ status: Entry['status']; added: number; updated: number }> => {
+    if (!entry.parsed) return { status: entry.status, added: 0, updated: 0 };
     patch(entry.key, {
       status: 'importing', message: undefined,
       progress: { sent: 0, total: entry.parsed.rows.length },
@@ -134,14 +136,16 @@ export default function ImportPage() {
         onProgress: (p) => patch(entry.key, { progress: p }),
       });
       patch(entry.key, {
-        status: 'done', rowsDone: res.count, warnings: res.skipped, progress: undefined,
+        status: 'done',
+        result: { added: res.added, updated: res.updated, unchanged: res.unchanged },
+        warnings: res.skipped, progress: undefined,
       });
-      return { status: 'done', count: res.count };
+      return { status: 'done', added: res.added, updated: res.updated };
     } catch (e) {
       const err = e as ApiError;
       const status: Entry['status'] = err.duplicate ? 'duplicate' : 'error';
       patch(entry.key, { status, message: err.message, progress: undefined });
-      return { status, count: 0 };
+      return { status, added: 0, updated: 0 };
     }
   };
 
@@ -151,10 +155,10 @@ export default function ImportPage() {
     if (!targets.length) return;
     setBusy(true);
     setMsg(null);
-    let done = 0, rows = 0, dup = 0, err = 0;
+    let done = 0, added = 0, updated = 0, dup = 0, err = 0;
     for (const entry of targets) {
       const r = await runOne(entry, false);
-      if (r.status === 'done') { done += 1; rows += r.count; }
+      if (r.status === 'done') { done += 1; added += r.added; updated += r.updated; }
       else if (r.status === 'duplicate') dup += 1;
       else err += 1;
     }
@@ -163,7 +167,8 @@ export default function ImportPage() {
     if (err) parts.push(`エラー ${err}`);
     setMsg({
       kind: err ? 'error' : dup ? 'info' : 'ok',
-      text: `${parts.join(' ／ ')}${done ? `（合計 ${rows.toLocaleString()}行）` : ''}`,
+      text: `${parts.join(' ／ ')}`
+        + (done ? `（追加 ${added.toLocaleString()}行 ／ 更新 ${updated.toLocaleString()}行）` : ''),
     });
     setBusy(false);
     load();
@@ -182,7 +187,7 @@ export default function ImportPage() {
   const removeBatch = async (b: Batch) => {
     const ok = confirm(
       `取込 #${b.id}（${b.filename} / ${b.row_count.toLocaleString()}行）を取り消します。\n`
-      + 'この取込で入った明細はすべて削除されます。よろしいですか？'
+      + 'この取込で「追加」された明細が削除されます（上書き更新された行は元に戻りません）。よろしいですか？'
     );
     if (!ok) return;
     setBusy(true);
@@ -288,9 +293,10 @@ export default function ImportPage() {
                             {e.progress!.sent.toLocaleString()} / {e.progress!.total.toLocaleString()}行（{pct}%）
                           </span>
                         )}
-                        {e.status === 'done' && e.rowsDone != null && (
+                        {e.status === 'done' && e.result && (
                           <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--muted)' }}>
-                            {e.rowsDone.toLocaleString()}行
+                            追加 {e.result.added.toLocaleString()} ／ 更新 {e.result.updated.toLocaleString()}
+                            {e.result.unchanged > 0 && ` ／ 変更なし ${e.result.unchanged.toLocaleString()}`}
                           </span>
                         )}
                         {e.message && (
@@ -322,8 +328,12 @@ export default function ImportPage() {
           <strong>ファイルの数や大きさによる上限はありません。</strong>
         </p>
         <p className="pt-note">
-          ※ 同じ内容のファイルを取り込もうとすると「二重の疑い」で止まります（明細が二重になり、値上げ金額が二倍になるため）。
-          内容を確かめたうえで「それでも取り込む」で個別に取り込めます。
+          ※ <strong>既に取り込んだ明細（売上伝票NOが同じ行）は上書き更新され、新しい行だけ追加されます。</strong>
+          更新しても明細は二重になりません。値がまったく同じ行は書き込みません。
+        </p>
+        <p className="pt-note">
+          ※ 中身が前回とまったく同じファイルは「二重の疑い」で止まります。
+          「それでも取り込む」で流せますが、すべて変更なしになるだけです。
         </p>
       </Card>
 

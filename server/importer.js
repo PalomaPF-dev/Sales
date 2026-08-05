@@ -212,6 +212,89 @@ export async function insertRows(batchId, rows) {
   return rows.length;
 }
 
+/**
+ * 変換済みの行を取り込む（上書き更新つき）。
+ *
+ * 管理表は更新されて何度も取り込まれるため、追加だけだと明細が二重になる。
+ * 「売上伝票NO」で既存の明細と突き合わせ、
+ *   ・一致する行があれば、ファイルにある列だけを上書き更新する
+ *   ・無ければ追加する
+ *   ・値がすべて同じ行は書き込まない（変更なし）
+ * 伝票NOが無い行（または伝票NOの列が無い取込）は従来どおり追加する。
+ *
+ * 更新された行の取込元（batch_id）は変えない。取込の「取り消し」は
+ * batch_id で消すため、変えてしまうと取り消しで既存の明細まで消えてしまう。
+ * 完了の判定は取込と同じ規則（deriveDone）で、更新後の値から求め直す。
+ */
+export async function upsertRows(batchId, rows) {
+  const result = { added: 0, updated: 0, unchanged: 0 };
+  if (!rows.length) return result;
+
+  const keyOf = (d) => {
+    const v = d.voucher_no;
+    return v == null || String(v).trim() === '' ? null : String(v).trim();
+  };
+
+  // 既存の明細を伝票NOで引く（IN句は500件ずつに分ける）
+  const keys = [...new Set(rows.map(keyOf).filter(Boolean))];
+  const existing = new Map();
+  for (let i = 0; i < keys.length; i += 500) {
+    const slice = keys.slice(i, i + 500);
+    const found = await db.all(
+      `SELECT * FROM deals WHERE voucher_no IN (${slice.map(() => '?').join(',')})`,
+      slice
+    );
+    for (const row of found) existing.set(String(row.voucher_no).trim(), row);
+  }
+
+  const stamp = new Date().toISOString();
+  const inserts = [];
+  const updates = [];
+
+  for (const d of rows) {
+    const key = keyOf(d);
+    const cur = key ? existing.get(key) : undefined;
+    if (cur?.__pending !== undefined) {
+      // 同じファイルに同じ伝票NOが2行あった場合は、後の行で追加分を差し替える
+      // （二重に追加しない。管理表の実データでは伝票NOは一意）
+      inserts[cur.__pending] = d;
+      continue;
+    }
+    if (!cur) {
+      if (key) existing.set(key, { __pending: inserts.length });
+      inserts.push(d);
+      continue;
+    }
+
+    // ファイルにある列だけを比べ、変わっていなければ書き込まない
+    const changedCols = Object.keys(d).filter((k) => {
+      const before = cur[k];
+      const after = d[k];
+      if (before == null && after == null) return false;
+      if (before == null || after == null) return true;
+      return String(before) !== String(after);
+    });
+    if (!changedCols.length) {
+      result.unchanged += 1;
+      continue;
+    }
+    // 完了はファイルの値から判定し直す（未変更の列は既存の値で補って求める）
+    const done = deriveDone({ ...cur, ...d });
+    updates.push({
+      sql: `UPDATE deals SET ${changedCols.map((c) => `${c} = ?`).join(', ')},`
+        + ' r1_done = ?, r2_done = ?, updated_at = ? WHERE id = ?',
+      params: [...changedCols.map((c) => d[c] ?? null), done.r1_done, done.r2_done, stamp, cur.id],
+    });
+  }
+
+  for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+    await db.batch(updates.slice(i, i + CHUNK_SIZE));
+  }
+  result.updated = updates.length;
+  result.added = await insertRows(batchId, inserts);
+  return result;
+}
+
 /** 取込履歴の件数を現在値へ更新する */
 export async function updateBatchCount(batchId, count) {
   await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [count, batchId]);
@@ -269,6 +352,14 @@ export async function importWorkbook(buffer, filename, userId, onProgress, { for
   const warnings = new Map();
   let pending = [];
   let count = 0;
+  const sums = { added: 0, updated: 0, unchanged: 0 };
+  const flush = async () => {
+    const r = await upsertRows(batchId, pending);
+    sums.added += r.added;
+    sums.updated += r.updated;
+    sums.unchanged += r.unchanged;
+    pending = [];
+  };
 
   for (let i = info.headerRow + 1; i < info.grid.length; i++) {
     const cells = info.grid[i];
@@ -277,18 +368,17 @@ export async function importWorkbook(buffer, filename, userId, onProgress, { for
     count++;
 
     if (pending.length >= CHUNK_SIZE) {
-      await insertRows(batchId, pending);
-      pending = [];
+      await flush();
       // 途中で中断（サーバーレスの実行時間切れなど）しても、
       // どこまで入ったかが取込履歴に残るようにここで件数を更新する
       await updateBatchCount(batchId, count);
       onProgress?.(count);
     }
   }
-  if (pending.length) await insertRows(batchId, pending);
+  if (pending.length) await flush();
 
   await updateBatchCount(batchId, count);
   onProgress?.(count);
 
-  return { batchId, count, skipped: summarizeWarnings(warnings), mapping: useMapping };
+  return { batchId, count, ...sums, skipped: summarizeWarnings(warnings), mapping: useMapping };
 }

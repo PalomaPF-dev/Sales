@@ -5,7 +5,7 @@ import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
 import {
   addBatchCount, assertNotDuplicate, buildRow, createBatch, importWorkbook,
-  insertRows, isSkippableRow, summarizeWarnings, validateMapping,
+  isSkippableRow, summarizeWarnings, upsertRows, validateMapping,
 } from './importer.js';
 import { FIELDS } from './fields.js';
 import { hashPassword, verifyPassword, generateTempPassword, validatePassword, isLegacyHash } from './passwords.js';
@@ -1943,9 +1943,13 @@ api.post('/import/session/:batchId/rows', wrap(async (req, res) => {
     if (!Array.isArray(cells) || isSkippableRow(cells, mapping)) continue;
     built.push(buildRow(cells, mapping, warnings));
   }
-  await insertRows(batchId, built);
+  // 売上伝票NOが一致する既存の明細は上書き更新、無い行だけ追加する
+  const r = await upsertRows(batchId, built);
   const total = await addBatchCount(batchId, built.length);
-  res.json({ added: built.length, total, skipped: summarizeWarnings(warnings) });
+  res.json({
+    added: r.added, updated: r.updated, unchanged: r.unchanged,
+    total, skipped: summarizeWarnings(warnings),
+  });
 }));
 
 api.post('/import/session/:batchId/finish', wrap(async (req, res) => {
@@ -1993,12 +1997,20 @@ api.delete('/import/batches/:id', wrap(async (req, res) => {
   const batch = await db.get('SELECT * FROM import_batches WHERE id = ?', [id]);
   if (!batch) return res.status(404).json({ error: '取込履歴が見つかりません' });
 
-  const used = await db.get(
-    `SELECT COUNT(*) AS c FROM application_items ai
-       JOIN deals d ON d.id = ai.deal_id
-      WHERE d.batch_id = ?`,
-    [id]
-  );
+  // 旧ワークフローの申請に紐づく明細は消さない。
+  // application_items は廃止済みで新しいDBには無いため、無ければ確認を飛ばす
+  // （無いのに問い合わせると取り消し自体が失敗してしまう）。
+  let used = null;
+  try {
+    used = await db.get(
+      `SELECT COUNT(*) AS c FROM application_items ai
+         JOIN deals d ON d.id = ai.deal_id
+        WHERE d.batch_id = ?`,
+      [id]
+    );
+  } catch (e) {
+    if (!/does not exist|no such table/i.test(e?.message || '')) throw e;
+  }
   if (Number(used?.c || 0) > 0) {
     return res.status(400).json({
       error: `この取込には申請済みの明細が${Number(used.c).toLocaleString()}件含まれているため取り消せません。`
@@ -2006,7 +2018,13 @@ api.delete('/import/batches/:id', wrap(async (req, res) => {
     });
   }
 
-  await db.run('DELETE FROM negotiation_logs WHERE deal_id IN (SELECT id FROM deals WHERE batch_id = ?)', [id]);
+  // 交渉履歴は法人単位に移行済みで、新しいDBには deal_id 列が無い。
+  // 旧DBに残っている案件単位の履歴だけ、従来どおり一緒に消す。
+  try {
+    await db.run('DELETE FROM negotiation_logs WHERE deal_id IN (SELECT id FROM deals WHERE batch_id = ?)', [id]);
+  } catch (e) {
+    if (!/does not exist|no such column|no such table/i.test(e?.message || '')) throw e;
+  }
   // 実体（Blob）も一緒に片付ける。行を消す前に URL を控えておく。
   const orphanBlobs = await db.all(
     `SELECT blob_url FROM attachments

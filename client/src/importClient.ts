@@ -159,6 +159,12 @@ export interface UploadProgress {
 export interface UploadResult {
   batchId: number;
   count: number;
+  /** 追加された行数（伝票NOが既存に無かった行） */
+  added: number;
+  /** 上書き更新された行数 */
+  updated: number;
+  /** 値が同じで書き込まなかった行数 */
+  unchanged: number;
   skipped: { column: string; label: string; count: number; samples: string[] }[];
 }
 
@@ -194,14 +200,21 @@ export async function uploadInChunks(
 
   const skipped = new Map<string, { column: string; label: string; count: number; samples: string[] }>();
   let sent = 0;
+  const sums = { added: 0, updated: 0, unchanged: 0 };
   try {
     for (let i = 0; i < parsed.rows.length; i += chunkRows) {
       const slice = parsed.rows.slice(i, i + chunkRows)
         .map((row) => usedCols.map((c) => toSendable(row?.[c])));
-      const res = await api<{ added: number; total: number; skipped: UploadResult['skipped'] }>(
+      const res = await api<{
+        added: number; updated: number; unchanged: number;
+        total: number; skipped: UploadResult['skipped'];
+      }>(
         `/import/session/${batchId}/rows`,
         { method: 'POST', body: JSON.stringify({ rows: slice, mapping: compactMapping }) }
       );
+      sums.added += res.added ?? 0;
+      sums.updated += res.updated ?? 0;
+      sums.unchanged += res.unchanged ?? 0;
       for (const w of res.skipped ?? []) {
         const prev = skipped.get(w.column);
         if (prev) {
@@ -215,7 +228,7 @@ export async function uploadInChunks(
       opts.onProgress?.({ sent, total: parsed.rows.length });
     }
     const fin = await api<{ batchId: number; count: number }>(`/import/session/${batchId}/finish`, { method: 'POST' });
-    return { batchId, count: fin.count, skipped: [...skipped.values()] };
+    return { batchId, count: fin.count, ...sums, skipped: [...skipped.values()] };
   } catch (e) {
     // 中断した分は残さない
     await api(`/import/session/${batchId}`, { method: 'DELETE' }).catch(() => {});
