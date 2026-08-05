@@ -452,8 +452,13 @@ async function tryAlter(sql) {
  * かつビューが参照する列はスキーマ適用時点で存在していなければならない。
  */
 async function beforeSchema() {
-  // 旧定義のビューは CREATE VIEW IF NOT EXISTS では置き換わらないため落としておく
-  try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
+  // SQLiteの CREATE VIEW IF NOT EXISTS は旧定義を置き換えないため落としておく。
+  // PostgreSQLは CREATE OR REPLACE VIEW で置き換わるので落とさない。
+  // （本番はサーバーが並行して起動する。ここで落とすと、作り直すまでの
+  //   一瞬の隙間に他のサーバーの問い合わせが「deal_calc が無い」で失敗する）
+  if (!isPostgres) {
+    try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
+  }
 
   for (const sql of [
     'ALTER TABLE users ADD COLUMN login_id TEXT',
