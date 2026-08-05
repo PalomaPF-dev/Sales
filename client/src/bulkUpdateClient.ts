@@ -14,14 +14,14 @@ import { api } from './api';
 /** 書き出しの見出し → 送る項目。表記ゆれを吸収して突き合わせる */
 const COLUMN_MAP: Record<string, string> = {
   '案件ID': 'id',
-  '値上後単価': 'r1_agreed_price',
-  '第1弾適用年月': 'r1_applied_ym',
-  '第1弾完了': 'r1_done',
+  '合意単価（最終確定単価）': 'r2_agreed_price',
   '最終確定単価': 'r2_agreed_price',
+  '適用年月': 'r2_applied_ym',
   '第2弾適用年月': 'r2_applied_ym',
+  '完了': 'r2_done',
   '第2弾完了': 'r2_done',
   // 目標は管理者だけが変えられる。管理者以外が入れて送るとサーバー側で断られる
-  '新出荷単価': 'r1_target_price',
+  '目標値上げ単価': 'r2_target_price',
   '第2弾新値上げ単価': 'r2_target_price',
 };
 

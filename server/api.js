@@ -1159,29 +1159,21 @@ api.get('/dashboard', wrap(async (req, res) => {
   const andWhere = (cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
 
   // 進捗の数え方は一箇所にまとめる。集計軸が増えても同じ定義で揃うようにする。
+  // （列名の r2_ は旧・第2弾の名残。いまは唯一の交渉を指す）
   const progress = `
     COUNT(*) AS deals,
-    SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
     SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
-    SUM(CASE WHEN r1_state = 'agreed' THEN 1 ELSE 0 END) AS r1_agreed,
     SUM(CASE WHEN r2_state = 'agreed' THEN 1 ELSE 0 END) AS r2_agreed,
-    SUM(CASE WHEN r1_state = 'open' THEN 1 ELSE 0 END) AS r1_open,
     SUM(CASE WHEN r2_state = 'open' THEN 1 ELSE 0 END) AS r2_open,
-    SUM(CASE WHEN r1_state <> 'open' AND r1_agreed_price > 0 AND r1_target_price IS NOT NULL
-                  AND r1_agreed_price < r1_target_price THEN 1 ELSE 0 END) AS r1_below,
     SUM(CASE WHEN r2_state <> 'open' AND r2_agreed_price > 0 AND r2_target_price IS NOT NULL
                   AND r2_agreed_price < r2_target_price THEN 1 ELSE 0 END) AS r2_below`;
 
   // 値上げ額の合計と目標に対する達成率。
   // 目標額 = 目標単価と現行単価の差、実績額 = 実際に上がった幅（deal_calcと同じ定義）。
-  // 第2弾の目標幅は第1弾の目標（無ければ現行単価）からの上乗せ分として数える。
   const amounts = `
     COUNT(*) AS deals,
-    SUM(CASE WHEN r1_target_price IS NOT NULL AND base_price IS NOT NULL
-             THEN r1_target_price - base_price ELSE 0 END) AS r1_target_amount,
-    SUM(CASE WHEN r1_state <> 'open' THEN COALESCE(r1_raise_unit, 0) ELSE 0 END) AS r1_agreed_amount,
-    SUM(CASE WHEN r2_target_price IS NOT NULL
-             THEN r2_target_price - COALESCE(r1_target_price, base_price) ELSE 0 END) AS r2_target_amount,
+    SUM(CASE WHEN r2_target_price IS NOT NULL AND base_price IS NOT NULL
+             THEN r2_target_price - base_price ELSE 0 END) AS r2_target_amount,
     SUM(CASE WHEN r2_state <> 'open' THEN COALESCE(r2_raise_unit, 0) ELSE 0 END) AS r2_agreed_amount`;
 
   const [totals, byOffice, byPerson, byEquip, corpStatus, applied, byBranchAmount, amountTotals] = await Promise.all([
@@ -1201,13 +1193,9 @@ api.get('/dashboard', wrap(async (req, res) => {
        GROUP BY 1`, p),
     // 適用年月ごとの件数（いつから効くのかを見るため）
     db.all(`
-      SELECT ym, SUM(r1) AS r1, SUM(r2) AS r2 FROM (
-        SELECT r1_applied_ym AS ym, 1 AS r1, 0 AS r2 FROM deal_calc
-         ${andWhere('r1_done = 1 AND r1_applied_ym IS NOT NULL')}
-        UNION ALL
-        SELECT r2_applied_ym AS ym, 0 AS r1, 1 AS r2 FROM deal_calc
-         ${andWhere('r2_done = 1 AND r2_applied_ym IS NOT NULL')}
-      ) t GROUP BY ym ORDER BY ym`, [...p, ...p]),
+      SELECT r2_applied_ym AS ym, COUNT(*) AS r2 FROM deal_calc
+       ${andWhere('r2_done = 1 AND r2_applied_ym IS NOT NULL')}
+       GROUP BY r2_applied_ym ORDER BY r2_applied_ym`, p),
     db.all(`SELECT branch, ${amounts} FROM deal_calc ${where} GROUP BY branch`, p),
     db.get(`SELECT ${amounts} FROM deal_calc ${where}`, p),
   ]);
@@ -1244,11 +1232,6 @@ const SORTABLE = new Map([
   ['office', 'office'],
   ['sales_person', 'sales_person'],
   ['base_price', 'base_price'],
-  ['r1_target_price', 'r1_target_price'],
-  ['r1_agreed_price', 'r1_agreed_price'],
-  ['r1_raise_unit', 'r1_raise_unit'],
-  ['r1_applied_ym', 'r1_applied_ym'],
-  ['r1_state', 'r1_state'],
   ['r2_target_price', 'r2_target_price'],
   ['r2_agreed_price', 'r2_agreed_price'],
   ['r2_raise_unit', 'r2_raise_unit'],
@@ -1293,17 +1276,16 @@ function dealFilters(q, user) {
   ]) {
     if (q[key]) { where.push(`${col} = ?`); params.push(q[key]); }
   }
-  // 弾ごとの進み具合（未入力 / 合意済 / 完了）。ビューの r1_state / r2_state と同じ条件で絞る
-  for (const [key, col] of [['r1State', 'r1_state'], ['r2State', 'r2_state']]) {
+  // 交渉の進み具合（未入力 / 合意済 / 完了）。ビューの r2_state と同じ条件で絞る
+  for (const [key, col] of [['r2State', 'r2_state']]) {
     if (['open', 'agreed', 'done'].includes(q[key])) { where.push(`${col} = ?`); params.push(q[key]); }
   }
 
   // 合意単価が目標に届かなかったもの。
   //
-  // 対象は「実際に合意した行」だけ（r*_state が open でない）。
-  // 管理表では未交渉の行にも値が入っており、第1弾は出荷単価と同額、
-  // 第2弾は0が入っている。これを未達に含めると、これから交渉する案件が
-  // 目標額まるごとの不足として並んでしまい、見直すべき行が埋もれる。
+  // 対象は「実際に合意した行」だけ（r2_state が open でない）。
+  // 管理表では未交渉の行にも0が入っている。これを未達に含めると、
+  // これから交渉する案件が目標額まるごとの不足として並んでしまう。
   const below = (n) =>
     `(r${n}_state <> 'open' AND r${n}_agreed_price > 0`
     + ` AND r${n}_target_price IS NOT NULL`
@@ -1325,10 +1307,9 @@ api.get('/deals', wrap(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const [totals, rows] = await Promise.all([
-    // 単価だけの管理表のため件数のみ。弾ごとの完了件数が分かれば運用上は足りる
+    // 単価だけの管理表のため件数のみ。完了件数が分かれば運用上は足りる
     db.get(`
       SELECT COUNT(*) AS count,
-             SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -1450,17 +1431,16 @@ api.get('/deals/:id', wrap(async (req, res) => {
   res.json({ deal, negotiation: negotiation ?? null, logs });
 }));
 
-// 営業担当者が案件一覧から直接入れる項目。
-// 弾ごとに「合意単価・適用年月・完了」を入れて、それぞれ独立して完了にできる。
+// 営業担当者が案件一覧から直接入れる項目（合意単価・適用年月・完了）。
+// 列名の r2_ は旧・第2弾の名残で、いまは唯一の交渉を指す。
 const EDITABLE = [
-  'r1_agreed_price', 'r1_applied_ym', 'r1_done',
   'r2_agreed_price', 'r2_applied_ym', 'r2_done',
   'price_type_code',
 ];
 
 // 目標値上げ単価は管理者だけが直せる。
 // 誰でも直せると目標そのものが動いてしまい、進捗の意味が無くなるため。
-const ADMIN_ONLY_EDITABLE = ['r1_target_price', 'r2_target_price'];
+const ADMIN_ONLY_EDITABLE = ['r2_target_price'];
 
 // 取込で入る残りの列（法人名・器種・出荷単価・支店など）。
 // 取込のズレ（列の取り違え・誤記）を直すためのもので、開発者だけが変更できる。
@@ -1546,13 +1526,8 @@ function buildDealUpdate(body, deal, user) {
   // 何で妥結したのか分からない行が「完了」として残ってしまう。
   const next = { ...deal };
   sets.forEach((set, i) => { next[set.split(' =')[0]] = params[i]; });
-  for (const [doneCol, priceCol, label] of [
-    ['r1_done', 'r1_agreed_price', '第1弾'],
-    ['r2_done', 'r2_agreed_price', '第2弾'],
-  ]) {
-    if (Number(next[doneCol]) === 1 && !(Number(next[priceCol]) > 0)) {
-      throw new Error(`${label}を完了にするには合意単価を入力してください`);
-    }
+  if (Number(next.r2_done) === 1 && !(Number(next.r2_agreed_price) > 0)) {
+    throw new Error('完了にするには合意単価を入力してください');
   }
 
   // 中身が変わらない行は書き込まない（一括取込では大半が変更なしのため）
@@ -1689,7 +1664,6 @@ api.get('/corps', wrap(async (req, res) => {
   const rows = await db.all(`
     SELECT d.corp_code, MIN(d.corp_name) AS corp_name,
            COUNT(*) AS deals,
-           SUM(CASE WHEN d.r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
            SUM(CASE WHEN d.r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
            (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = d.corp_code) AS status,
            (SELECT c.contact_date FROM corp_negotiations c WHERE c.corp_code = d.corp_code) AS contact_date,
@@ -1711,7 +1685,6 @@ async function findCorpInScope(code, user) {
   const where = ['corp_code = ?', ...scope.where].join(' AND ');
   return db.get(`
     SELECT corp_code, MIN(corp_name) AS corp_name, COUNT(*) AS deals,
-           SUM(CASE WHEN r1_done = 1 THEN 1 ELSE 0 END) AS r1_done,
            SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done
       FROM deals WHERE ${where} GROUP BY corp_code`, [code, ...scope.params]);
 }

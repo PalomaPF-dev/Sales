@@ -460,6 +460,23 @@ async function beforeSchema() {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }
 
+  // 第1弾の廃止。r1_ 列が残っている既存DBから列ごと削除する（データも不要と確認済み）。
+  // ビューが列を参照しているため、先にビューを落とす。
+  // 列の構成が変わるので CREATE OR REPLACE では置き換えられず、
+  // この一度だけは PostgreSQL でも DROP → CREATE になる。
+  try {
+    await db.get('SELECT r1_done FROM deals LIMIT 1');   // 旧DBでだけ成功する
+    console.log('第1弾の列を削除します（旧スキーマからの移行）');
+    try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
+    for (const col of [
+      'r1_target_rate', 'r1_target_price', 'negotiated_date', 'negotiation_note',
+      'r1_agreed_price', 'r1_raise_date', 'r1_ringi_no', 'r1_after_rate',
+      'r1_applied_ym', 'r1_done',
+    ]) {
+      await tryAlter(`ALTER TABLE deals DROP COLUMN ${col}`);
+    }
+  } catch { /* 列が無い＝移行済みか新規DB。何もしない */ }
+
   for (const sql of [
     'ALTER TABLE users ADD COLUMN login_id TEXT',
     'ALTER TABLE users ADD COLUMN password_hash TEXT',
@@ -470,9 +487,7 @@ async function beforeSchema() {
     // 同じファイルの二重取込を検知するための内容ハッシュとデータ指紋
     'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',
     'ALTER TABLE import_batches ADD COLUMN data_hash TEXT',
-    // 弾ごとの適用年月と完了（案件一覧から営業担当者が入れる）
-    'ALTER TABLE deals ADD COLUMN r1_applied_ym TEXT',
-    'ALTER TABLE deals ADD COLUMN r1_done INTEGER NOT NULL DEFAULT 0',
+    // 適用年月と完了（案件一覧から営業担当者が入れる）
     'ALTER TABLE deals ADD COLUMN r2_applied_ym TEXT',
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
     // 交渉履歴を法人単位にする
@@ -544,19 +559,15 @@ async function migrate() {
   // 妥結済みの明細は完了として引き継ぐ。
   // 引き継がないと、これまでの妥結がすべて未完了に見えてしまう。
   try {
-    const { c } = await db.get('SELECT COUNT(*) AS c FROM deals WHERE r1_done = 1 OR r2_done = 1');
+    const { c } = await db.get('SELECT COUNT(*) AS c FROM deals WHERE r2_done = 1');
     if (Number(c) === 0) {
-      await db.run(`
-        UPDATE deals SET r1_done = 1
-         WHERE r1_agreed_price IS NOT NULL AND base_price IS NOT NULL
-           AND r1_agreed_price > base_price`);
       await db.run(`
         UPDATE deals SET r2_done = 1
          WHERE r2_agreed_price IS NOT NULL AND r2_agreed_price > 0
            AND (r2_result_symbol LIKE '〇%' OR r2_result_symbol LIKE '○%' OR r2_result_symbol LIKE '◯%')`);
     }
   } catch (e) {
-    console.warn(`マイグレーション警告: 弾ごとの完了を引き継げませんでした → ${e.message}`);
+    console.warn(`マイグレーション警告: 完了を引き継げませんでした → ${e.message}`);
   }
 
   // 申請ワークフローの廃止にともない使わなくなったテーブルを片付ける。

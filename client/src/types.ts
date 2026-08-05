@@ -36,18 +36,11 @@ export interface Deal {
   list_price: number | null;
   rate: number | null;
   base_price: number | null;        // ❶ 出荷単価
-  // 第1弾
-  r1_target_price: number | null;   // ❷ 目標値上げ単価（管理者のみ変更可）
-  r1_agreed_price: number | null;   // ❸ 合意単価
-  r1_raise_unit: number | null;     // ❹ ❸−❶
-  r1_applied_ym: string | null;     // 適用年月
-  r1_done: number;
-  r1_state: RoundState;
-  // 第2弾
-  r2_target_price: number | null;   // ❻ 目標値上げ単価（管理者のみ変更可）
-  r2_agreed_price: number | null;   // ❼ 合意単価
-  r2_raise_unit: number | null;     // ❽ ❼−❸
-  r2_applied_ym: string | null;
+  // 値上げ交渉（列名の r2_ は旧・第2弾の名残。いまは唯一の交渉を指す）
+  r2_target_price: number | null;   // ❷ 目標値上げ単価（管理者のみ変更可）
+  r2_agreed_price: number | null;   // ❸ 合意単価
+  r2_raise_unit: number | null;     // ❹ ❸−❶
+  r2_applied_ym: string | null;     // 適用年月
   r2_done: number;
   r2_state: RoundState;
 
@@ -78,7 +71,6 @@ export interface CorpSummary {
   corp_code: string;
   corp_name: string | null;
   deals: number;
-  r1_done: number;
   r2_done: number;
   status: string | null;
   contact_date: string | null;

@@ -100,8 +100,6 @@ CREATE TABLE IF NOT EXISTS deals (
   list_price      REAL,   -- Z  定価
   rate            REAL,   -- AA 掛け率
   base_price      REAL,   -- AB 出荷単価（❶ 値上げ前単価）
-  r1_target_rate  REAL,   -- AC 新値上げ後掛け率
-  r1_target_price REAL,   -- AD 新出荷単価（❷ 第1弾 目標値上げ単価）
   ship_amount     REAL,   -- AF 出荷金額
   final_price     REAL,   -- AM 最終単価
   voucher_no      TEXT,   -- AP 売上伝票NO
@@ -112,28 +110,20 @@ CREATE TABLE IF NOT EXISTS deals (
   office          TEXT,   -- AU 売上担当者営業所名
   sales_person    TEXT,   -- AV 売上担当者名
   customer_person TEXT,   -- AY 得意先担当者名
-  negotiated_date TEXT,   -- BJ 確定商談日
-  negotiation_note TEXT,  -- BK 商談結果
-  r1_agreed_price REAL,   -- BL 値上後単価（❸ 第1弾 妥結単価）
-  r1_raise_date   TEXT,   -- BM 値上日時
-  r1_ringi_no     TEXT,   -- BN 稟議NO
   new_list_price  REAL,   -- BQ 新定価
-  r1_after_rate   REAL,   -- BR 第1弾値上げ後掛率
-  r2_target_price REAL,   -- BS 第2弾新値上げ単価（❻ 第2弾 目標値上げ単価）
+  r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率
   offer1_price    REAL,   -- BY 1回目提示単価
-  r2_result_symbol TEXT,  -- CB 商談結果（記号入力）※「〇」で第2弾確定
+  r2_result_symbol TEXT,  -- CB 商談結果（記号入力）※「〇」で確定
   final_confirm_date TEXT,-- CC 最終確定日
   final_raise_date   TEXT,-- CD 最終確定値上日
-  r2_ringi_no     TEXT,   -- CE 第2弾稟議NO
+  r2_ringi_no     TEXT,   -- CE 稟議NO
   final_rate      REAL,   -- CF 最終確定掛率
-  r2_agreed_price REAL,   -- CG 最終確定単価（❼ 第2弾 妥結単価）
+  r2_agreed_price REAL,   -- ❸ 合意単価（最終確定単価）
   price_type_code INTEGER REFERENCES price_types(code), -- マスター単価種別（6種）
-  -- 弾ごとの進捗。営業担当者が案件一覧で合意単価と適用年月を入れ、弾ごとに完了にする
-  r1_applied_ym   TEXT,   -- 第1弾 値上げの適用年月（YYYY-MM）
-  r1_done         INTEGER NOT NULL DEFAULT 0,
-  r2_applied_ym   TEXT,   -- 第2弾 値上げの適用年月（YYYY-MM）
+  -- 交渉の進捗。営業担当者が案件一覧で合意単価と適用年月を入れ、完了にする
+  r2_applied_ym   TEXT,   -- 値上げの適用年月（YYYY-MM）
   r2_done         INTEGER NOT NULL DEFAULT 0,
   updated_at      TEXT
 );
@@ -199,22 +189,17 @@ CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
 
 -- 計算列ビュー
 --   単価だけの管理表のため、台数を掛けた金額は扱わない。
---   ❹ r1_raise_unit = ❸値上後単価 - ❶出荷単価
---   ❽ r2_raise_unit = ❼最終確定単価 - ❸値上後単価（未妥結なら❶出荷単価）
---   r1_state / r2_state … 弾ごとの進み具合（未入力 / 合意済 / 完了）
+--   ❹ r2_raise_unit = ❸合意単価 - ❶出荷単価
+--   r2_state … 交渉の進み具合（未入力 / 合意済 / 完了）
+--   列名の r2_ は旧・第2弾の名残（第1弾は廃止済み）
 CREATE OR REPLACE VIEW deal_calc AS
 SELECT
   d.*,
-  CASE WHEN d.r1_agreed_price IS NOT NULL AND d.base_price IS NOT NULL
-       THEN d.r1_agreed_price - d.base_price END AS r1_raise_unit,
-  CASE WHEN d.r2_agreed_price IS NOT NULL
-       THEN d.r2_agreed_price - COALESCE(d.r1_agreed_price, d.base_price) END AS r2_raise_unit,
-  -- 管理表では未交渉の行にも値上後単価に現行単価が入っているため、
+  CASE WHEN d.r2_agreed_price IS NOT NULL AND d.base_price IS NOT NULL
+       THEN d.r2_agreed_price - d.base_price END AS r2_raise_unit,
+  -- 管理表では未交渉の行にも0や現行単価が入っているため、
   -- 「値が入っている」ではなく「実際に上がっている」を合意済みとみなす
-  CASE WHEN d.r1_done = 1 THEN 'done'
-       WHEN d.r1_agreed_price > d.base_price THEN 'agreed'
-       ELSE 'open' END AS r1_state,
   CASE WHEN d.r2_done = 1 THEN 'done'
-       WHEN d.r2_agreed_price > COALESCE(d.r1_agreed_price, d.base_price) THEN 'agreed'
+       WHEN d.r2_agreed_price > d.base_price THEN 'agreed'
        ELSE 'open' END AS r2_state
 FROM deals d;

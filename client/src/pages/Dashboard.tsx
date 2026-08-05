@@ -5,19 +5,15 @@ import { Card } from '../components/ui';
 import type { Meta } from '../types';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
-const FILTER_KEYS = ['q', 'equip', 'person', 'corp', 'branch', 'office', 'r1State', 'r2State', 'below'] as const;
+const FILTER_KEYS = ['q', 'equip', 'person', 'corp', 'branch', 'office', 'r2State', 'below'] as const;
 
 /** 進捗の数え方はサーバーと揃える（件数と割合。金額は扱わない） */
 interface Progress {
   deals: number;
-  r1_done: number;
   r2_done: number;
-  r1_agreed: number;
   r2_agreed: number;
-  r1_open: number;
   r2_open: number;
   /** 合意単価が目標に届かなかった件数 */
-  r1_below: number;
   r2_below: number;
 }
 
@@ -31,8 +27,6 @@ interface Row extends Progress {
 interface BranchAmount {
   branch: string | null;
   deals: number;
-  r1_target_amount: number;
-  r1_agreed_amount: number;
   r2_target_amount: number;
   r2_agreed_amount: number;
 }
@@ -46,7 +40,7 @@ interface DashboardRes {
   byPerson: Row[];
   byEquip: Row[];
   corpStatus: { status: string; corps: number }[];
-  applied: { ym: string; r1: number; r2: number }[];
+  applied: { ym: string; r2: number }[];
   corpStatuses: { code: string; name: string }[];
 }
 
@@ -115,9 +109,7 @@ function ProgressTable({ rows, head, onPick }: {
           <tr>
             <th>{head}</th>
             <th style={{ textAlign: 'right' }}>案件</th>
-            <th style={{ width: 150 }}>第1弾</th>
-            <th style={{ textAlign: 'right' }}>完了率</th>
-            <th style={{ width: 150 }}>第2弾</th>
+            <th style={{ width: 220 }}>進捗</th>
             <th style={{ textAlign: 'right' }}>完了率</th>
             <th style={{ textAlign: 'right' }}>目標未達</th>
           </tr>
@@ -137,15 +129,11 @@ function ProgressTable({ rows, head, onPick }: {
                   )}
                 </td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{total.toLocaleString()}</td>
-                <td><Bar done={num(r.r1_done)} agreed={num(r.r1_agreed)} total={total} /></td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{pct(num(r.r1_done), total)}%</td>
                 <td><Bar done={num(r.r2_done)} agreed={num(r.r2_agreed)} total={total} /></td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{pct(num(r.r2_done), total)}%</td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                  {(() => {
-                    const b = num(r.r1_below) + num(r.r2_below);
-                    return b > 0 ? <span className="badge orange">{b.toLocaleString()}</span> : '—';
-                  })()}
+                  {num(r.r2_below) > 0
+                    ? <span className="badge orange">{num(r.r2_below).toLocaleString()}</span> : '—'}
                 </td>
               </tr>
             );
@@ -244,14 +232,7 @@ export default function Dashboard() {
           </select>
         </label>
         <label className="fld">
-          第1弾
-          <select value={get('r1State')} onChange={(e) => setParam('r1State', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          第2弾
+          状態
           <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
             <option value="">すべて</option>
             {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
@@ -261,9 +242,7 @@ export default function Dashboard() {
           目標との差
           <select value={get('below')} onChange={(e) => setParam('below', e.target.value)}>
             <option value="">すべて</option>
-            <option value="any">目標未達（どちらか）</option>
-            <option value="r1">第1弾が目標未達</option>
-            <option value="r2">第2弾が目標未達</option>
+            <option value="r2">目標未達</option>
           </select>
         </label>
         {filtered && (
@@ -298,22 +277,19 @@ export default function Dashboard() {
 
       <div className="tiles">
         <Kpi label="対象案件" value={total.toLocaleString()} sub="件" />
-        <Kpi label="第1弾 完了" value={`${pct(num(t.r1_done), total)}%`}
-          sub={`${num(t.r1_done).toLocaleString()} / ${total.toLocaleString()} 件`} />
-        <Kpi label="第2弾 完了" value={`${pct(num(t.r2_done), total)}%`}
+        <Kpi label="完了" value={`${pct(num(t.r2_done), total)}%`}
           sub={`${num(t.r2_done).toLocaleString()} / ${total.toLocaleString()} 件`} />
-        <Kpi label="第1弾 未入力" value={num(t.r1_open).toLocaleString()} sub="件" />
-        <Kpi label="第2弾 未入力" value={num(t.r2_open).toLocaleString()} sub="件" />
-        <Kpi label="目標未達" value={(num(t.r1_below) + num(t.r2_below)).toLocaleString()}
-          sub={`第1弾 ${num(t.r1_below).toLocaleString()} ・ 第2弾 ${num(t.r2_below).toLocaleString()} 件`} />
+        <Kpi label="合意済（未完了）" value={num(t.r2_agreed).toLocaleString()} sub="件" />
+        <Kpi label="未入力" value={num(t.r2_open).toLocaleString()} sub="件" />
+        <Kpi label="目標未達" value={num(t.r2_below).toLocaleString()} sub="件" />
       </div>
 
-      {(num(t.r1_below) + num(t.r2_below)) > 0 && (
+      {num(t.r2_below) > 0 && (
         <div className="alert warn">
           合意単価が目標に届かなかった案件が
-          <strong> {(num(t.r1_below) + num(t.r2_below)).toLocaleString()}件 </strong>
+          <strong> {num(t.r2_below).toLocaleString()}件 </strong>
           あります。
-          <a href="#" onClick={(e) => { e.preventDefault(); toDeals({ below: 'any' }); }}>
+          <a href="#" onClick={(e) => { e.preventDefault(); toDeals({ below: 'r2' }); }}>
             一覧で確認する
           </a>
         </div>
@@ -329,13 +305,9 @@ export default function Dashboard() {
                 <tr>
                   <th>支店</th>
                   <th style={{ textAlign: 'right' }}>案件</th>
-                  <th style={{ textAlign: 'right' }}>第1弾 目標額</th>
+                  <th style={{ textAlign: 'right' }}>目標額</th>
                   <th style={{ textAlign: 'right' }}>実績額</th>
-                  <th style={{ width: 120 }}></th>
-                  <th style={{ textAlign: 'right' }}>達成率</th>
-                  <th style={{ textAlign: 'right' }} className="sep">第2弾 目標額</th>
-                  <th style={{ textAlign: 'right' }}>実績額</th>
-                  <th style={{ width: 120 }}></th>
+                  <th style={{ width: 180 }}></th>
                   <th style={{ textAlign: 'right' }}>達成率</th>
                 </tr>
               </thead>
@@ -348,11 +320,7 @@ export default function Dashboard() {
                       </a>
                     </td>
                     <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(b.deals).toLocaleString()}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r1_target_amount))}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r1_agreed_amount))}</td>
-                    <td><RateBar agreed={num(b.r1_agreed_amount)} target={num(b.r1_target_amount)} /></td>
-                    <td style={{ textAlign: 'right' }}><Rate agreed={num(b.r1_agreed_amount)} target={num(b.r1_target_amount)} /></td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }} className="sep">{yen(num(b.r2_target_amount))}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r2_target_amount))}</td>
                     <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r2_agreed_amount))}</td>
                     <td><RateBar agreed={num(b.r2_agreed_amount)} target={num(b.r2_target_amount)} /></td>
                     <td style={{ textAlign: 'right' }}><Rate agreed={num(b.r2_agreed_amount)} target={num(b.r2_target_amount)} /></td>
@@ -364,11 +332,7 @@ export default function Dashboard() {
                   <tr style={{ fontWeight: 700, borderTop: '2px solid var(--line, #e2e8f0)' }}>
                     <td>合計</td>
                     <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(data.amountTotals.deals).toLocaleString()}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r1_target_amount))}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r1_agreed_amount))}</td>
-                    <td></td>
-                    <td style={{ textAlign: 'right' }}><Rate agreed={num(data.amountTotals.r1_agreed_amount)} target={num(data.amountTotals.r1_target_amount)} /></td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }} className="sep">{yen(num(data.amountTotals.r2_target_amount))}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r2_target_amount))}</td>
                     <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r2_agreed_amount))}</td>
                     <td></td>
                     <td style={{ textAlign: 'right' }}><Rate agreed={num(data.amountTotals.r2_agreed_amount)} target={num(data.amountTotals.r2_target_amount)} /></td>
@@ -380,8 +344,7 @@ export default function Dashboard() {
         )}
         <p className="pt-note" style={{ marginTop: 10 }}>
           目標額 = 目標単価と現行単価の差の合計。実績額 = 実際に上がった単価幅の合計（合意済・完了の案件）。
-          達成率 = 実績額 ÷ 目標額。第2弾は第1弾の目標からの上乗せ分で数えています。
-          支店は都道府県順です。支店名を押すとその支店の案件一覧へ移れます。
+          達成率 = 実績額 ÷ 目標額。支店は都道府県順です。支店名を押すとその支店の案件一覧へ移れます。
         </p>
       </Card>
 
@@ -418,12 +381,11 @@ export default function Dashboard() {
         <Card title="値上げの適用年月">
           <div className="tbl-scroll" style={{ maxHeight: 300 }}>
             <table className="tbl">
-              <thead><tr><th>適用年月</th><th style={{ textAlign: 'right' }}>第1弾</th><th style={{ textAlign: 'right' }}>第2弾</th></tr></thead>
+              <thead><tr><th>適用年月</th><th style={{ textAlign: 'right' }}>件数</th></tr></thead>
               <tbody>
                 {data.applied.map((a) => (
                   <tr key={a.ym}>
                     <td>{a.ym}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(a.r1).toLocaleString()}</td>
                     <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(a.r2).toLocaleString()}</td>
                   </tr>
                 ))}

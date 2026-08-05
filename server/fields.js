@@ -58,29 +58,19 @@ export const FIELDS = [
   { key: 'final_price', label: '最終単価', group: '価格', type: 'number', aliases: ['最終単価'] },
   { key: 'new_list_price', label: '新定価', group: '価格', type: 'number', aliases: ['新定価'] },
 
-  // 第1弾
-  { key: 'r1_target_rate', label: '新値上げ後掛け率', group: '第1弾', type: 'number', aliases: ['新値上げ後掛け率', '新値上げ後掛率'] },
-  { key: 'r1_target_price', label: '❷ 目標値上げ単価（新出荷単価）', group: '第1弾', type: 'number', aliases: ['新出荷単価', '目標値上げ単価', '第1弾目標単価'], required: true },
-  { key: 'negotiated_date', label: '確定商談日', group: '第1弾', type: 'date', aliases: ['確定商談日', '商談確定日'] },
-  { key: 'negotiation_note', label: '商談結果', group: '第1弾', type: 'text', aliases: ['商談結果'] },
-  { key: 'r1_agreed_price', label: '❸ 値上後単価', group: '第1弾', type: 'number', aliases: ['値上後単価', '値上げ後単価'] },
-  { key: 'r1_raise_date', label: '値上日時', group: '第1弾', type: 'date', aliases: ['値上日時', '値上げ日時', '値上日'] },
-  { key: 'r1_ringi_no', label: '稟議NO', group: '第1弾', type: 'text', aliases: ['稟議NO', '稟議番号'] },
-  { key: 'r1_applied_ym', label: '第1弾 適用年月', group: '第1弾', type: 'text', aliases: ['第1弾適用年月', '値上げ適用年月', '適用年月'] },
-  { key: 'r1_after_rate', label: '第1弾値上げ後掛率', group: '第1弾', type: 'number', aliases: ['第1弾値上げ後掛率'] },
-
-  // 第2弾
-  { key: 'r2_target_price', label: '❻ 第2弾 目標値上げ単価', group: '第2弾', type: 'number', aliases: ['第2弾新値上げ単価', '第2弾目標単価', '第2弾新値上単価'] },
-  { key: 'offer1_date', label: '1回目提示日', group: '第2弾', type: 'date', aliases: ['1回目提示日'] },
-  { key: 'offer1_rate', label: '1回目提示率', group: '第2弾', type: 'number', aliases: ['1回目提示率'] },
-  { key: 'offer1_price', label: '1回目提示単価', group: '第2弾', type: 'number', aliases: ['1回目提示単価'] },
-  { key: 'r2_result_symbol', label: '商談結果（記号入力）', group: '第2弾', type: 'text', aliases: ['商談結果記号入力', '商談結果記号'] },
-  { key: 'final_confirm_date', label: '最終確定日', group: '第2弾', type: 'date', aliases: ['最終確定日'] },
-  { key: 'final_raise_date', label: '最終確定値上日', group: '第2弾', type: 'date', aliases: ['最終確定値上日'] },
-  { key: 'r2_ringi_no', label: '第2弾稟議NO', group: '第2弾', type: 'text', aliases: ['第2弾稟議NO', '第2弾稟議番号'] },
-  { key: 'final_rate', label: '最終確定掛率', group: '第2弾', type: 'number', aliases: ['最終確定掛率'] },
-  { key: 'r2_agreed_price', label: '❼ 最終確定単価', group: '第2弾', type: 'number', aliases: ['最終確定単価'] },
-  { key: 'r2_applied_ym', label: '第2弾 適用年月', group: '第2弾', type: 'text', aliases: ['第2弾適用年月'] },
+  // 値上げ交渉（旧・第2弾。第1弾は廃止した。
+  //   列名の r2_ は歴史的経緯で残しているが、いまは唯一の交渉を指す）
+  { key: 'r2_target_price', label: '❷ 目標値上げ単価', group: '値上げ交渉', type: 'number', aliases: ['第2弾新値上げ単価', '第2弾目標単価', '第2弾新値上単価', '目標値上げ単価'] },
+  { key: 'offer1_date', label: '1回目提示日', group: '値上げ交渉', type: 'date', aliases: ['1回目提示日'] },
+  { key: 'offer1_rate', label: '1回目提示率', group: '値上げ交渉', type: 'number', aliases: ['1回目提示率'] },
+  { key: 'offer1_price', label: '1回目提示単価', group: '値上げ交渉', type: 'number', aliases: ['1回目提示単価'] },
+  { key: 'r2_result_symbol', label: '商談結果（記号入力）', group: '値上げ交渉', type: 'text', aliases: ['商談結果記号入力', '商談結果記号'] },
+  { key: 'final_confirm_date', label: '最終確定日', group: '値上げ交渉', type: 'date', aliases: ['最終確定日'] },
+  { key: 'final_raise_date', label: '最終確定値上日', group: '値上げ交渉', type: 'date', aliases: ['最終確定値上日'] },
+  { key: 'r2_ringi_no', label: '稟議NO', group: '値上げ交渉', type: 'text', aliases: ['第2弾稟議NO', '第2弾稟議番号'] },
+  { key: 'final_rate', label: '最終確定掛率', group: '値上げ交渉', type: 'number', aliases: ['最終確定掛率'] },
+  { key: 'r2_agreed_price', label: '❸ 合意単価（最終確定単価）', group: '値上げ交渉', type: 'number', aliases: ['最終確定単価', '合意単価'] },
+  { key: 'r2_applied_ym', label: '適用年月', group: '値上げ交渉', type: 'text', aliases: ['第2弾適用年月', '適用年月'] },
 
   // 担当
   { key: 'voucher_no', label: '売上伝票NO', group: '担当', type: 'text', aliases: ['売上伝票NO', '売上伝票番号'] },

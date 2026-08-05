@@ -129,20 +129,11 @@ export default function DealDetail() {
             <dt>出荷単価 ❶</dt><dd>¥{yen(d.base_price)}</dd>
           </dl>
 
-          <div className="section-title">第1弾 <RoundStateBadge state={d.r1_state} /></div>
+          <div className="section-title">交渉 <RoundStateBadge state={d.r2_state} /></div>
           <dl className="kv">
-            <dt>目標値上げ単価 ❷</dt><dd>¥{yen(d.r1_target_price)}</dd>
-            <dt>合意単価 ❸</dt><dd>{d.r1_agreed_price == null ? '—' : `¥${yen(d.r1_agreed_price)}`}</dd>
+            <dt>目標値上げ単価 ❷</dt><dd>¥{yen(d.r2_target_price)}</dd>
+            <dt>合意単価 ❸</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
             <dt>値上がり単価 ❹</dt>
-            <dd>{d.r1_raise_unit == null ? '—' : `¥${yen(d.r1_raise_unit)}`}</dd>
-            <dt>適用年月</dt><dd>{d.r1_applied_ym || '—'}</dd>
-          </dl>
-
-          <div className="section-title">第2弾 <RoundStateBadge state={d.r2_state} /></div>
-          <dl className="kv">
-            <dt>目標値上げ単価 ❻</dt><dd>¥{yen(d.r2_target_price)}</dd>
-            <dt>合意単価 ❼</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
-            <dt>値上がり単価 ❽</dt>
             <dd>{d.r2_raise_unit == null ? '—' : `¥${yen(d.r2_raise_unit)}`}</dd>
             <dt>適用年月</dt><dd>{d.r2_applied_ym || '—'}</dd>
           </dl>

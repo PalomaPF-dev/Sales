@@ -9,7 +9,6 @@ interface CorpDetailRes {
   corp_code: string;
   corp_name: string | null;
   deals: number;
-  r1_done: number;
   r2_done: number;
   negotiation: CorpNegotiation | null;
 }
@@ -73,7 +72,7 @@ export default function CorpDetail() {
       <h1 className="page-title" style={{ marginTop: 8 }}>{data.corp_name}</h1>
       <p className="page-sub">
         法人コード {data.corp_code} ・ 明細 {Number(data.deals).toLocaleString()}件 ・
-        第1弾完了 {Number(data.r1_done).toLocaleString()}件 ・ 第2弾完了 {Number(data.r2_done).toLocaleString()}件
+        完了 {Number(data.r2_done).toLocaleString()}件
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 

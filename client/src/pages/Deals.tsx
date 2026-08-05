@@ -10,12 +10,12 @@ import { useUser } from '../user';
 
 interface DealsRes {
   rows: Deal[];
-  totals: { count: number; r1_done: number; r2_done: number };
+  totals: { count: number; r2_done: number };
   page: number;
   size: number;
 }
 
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'priceType', 'branch', 'office', 'r1State', 'r2State', 'below'] as const;
+const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'priceType', 'branch', 'office', 'r2State', 'below'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -27,15 +27,13 @@ const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
  * 合意単価が目標に届かなかったか。
  *
  * 対象は「実際に合意した行」だけ（状態が未入力でない）。
- * 管理表では未交渉の行にも値が入っており、第1弾は出荷単価と同額、
- * 第2弾は0が入っている。これを未達に含めると、
+ * 管理表では未交渉の行にも0が入っている。これを未達に含めると、
  * これから交渉する案件が目標額まるごとの不足として並んでしまう。
  */
-function belowTarget(d: Deal, round: 1 | 2): boolean {
-  const state = round === 1 ? d.r1_state : d.r2_state;
-  if (state === 'open') return false;
-  const agreed = round === 1 ? d.r1_agreed_price : d.r2_agreed_price;
-  const target = round === 1 ? d.r1_target_price : d.r2_target_price;
+function belowTarget(d: Deal): boolean {
+  if (d.r2_state === 'open') return false;
+  const agreed = d.r2_agreed_price;
+  const target = d.r2_target_price;
   if (agreed == null || target == null) return false;
   if (!(Number(agreed) > 0)) return false;
   return Number(agreed) < Number(target);
@@ -48,10 +46,10 @@ function belowTarget(d: Deal, round: 1 | 2): boolean {
  * 列の数字が縦に揃わなくなる。金額は今までどおりの位置に置いたまま、
  * 差額は下の行へ回す。
  */
-function AgreedCell({ deal, round }: { deal: Deal; round: 1 | 2 }) {
-  const agreed = round === 1 ? deal.r1_agreed_price : deal.r2_agreed_price;
-  const target = round === 1 ? deal.r1_target_price : deal.r2_target_price;
-  if (!belowTarget(deal, round)) return <>{yen(agreed)}</>;
+function AgreedCell({ deal }: { deal: Deal }) {
+  const agreed = deal.r2_agreed_price;
+  const target = deal.r2_target_price;
+  if (!belowTarget(deal)) return <>{yen(agreed)}</>;
   const gap = Number(target) - Number(agreed);
   return (
     <>
@@ -196,11 +194,8 @@ export default function Deals() {
     setEditing(d.id);
     setMsg(null);
     setDraft({
-      r1_agreed_price: d.r1_agreed_price == null ? '' : String(d.r1_agreed_price),
-      r1_applied_ym: d.r1_applied_ym ?? '',
       r2_agreed_price: d.r2_agreed_price == null ? '' : String(d.r2_agreed_price),
       r2_applied_ym: d.r2_applied_ym ?? '',
-      r1_target_price: d.r1_target_price == null ? '' : String(d.r1_target_price),
       r2_target_price: d.r2_target_price == null ? '' : String(d.r2_target_price),
       // 開発者は取込のズレ（法人名・器種・支店・営業所・出荷単価など）も一覧から直せる
       corp_name: d.corp_name ?? '',
@@ -252,13 +247,13 @@ export default function Deals() {
   };
 
   /** 弾ごとの保存。合意単価と適用年月をまとめて送る */
-  const saveRound = async (d: Deal, round: 1 | 2, alsoDone: boolean) => {
-    const priceKey = `r${round}_agreed_price`;
-    const ymKey = `r${round}_applied_ym`;
+  const saveRound = async (d: Deal, alsoDone: boolean) => {
+    const priceKey = 'r2_agreed_price';
+    const ymKey = 'r2_applied_ym';
     const price = draft[priceKey]?.trim() ?? '';
     const ym = draft[ymKey]?.trim() ?? '';
     if (alsoDone && price === '') {
-      setMsg({ kind: 'error', text: `第${round}弾を完了にするには合意単価を入力してください` });
+      setMsg({ kind: 'error', text: '完了にするには合意単価を入力してください' });
       return;
     }
     if (ym && !YM_RE.test(ym)) {
@@ -269,16 +264,16 @@ export default function Deals() {
       [priceKey]: price === '' ? null : Number(price),
       [ymKey]: ym === '' ? null : ym,
     };
-    if (alsoDone) body[`r${round}_done`] = true;
+    if (alsoDone) body.r2_done = true;
     const ok = await patch(d.id, body);
-    if (ok && alsoDone) setMsg({ kind: 'ok', text: `第${round}弾を完了にしました` });
+    if (ok && alsoDone) setMsg({ kind: 'ok', text: '完了にしました' });
   };
 
-  const saveTarget = async (d: Deal, round: 1 | 2) => {
-    const key = `r${round}_target_price`;
+  const saveTarget = async (d: Deal) => {
+    const key = 'r2_target_price';
     const v = draft[key]?.trim() ?? '';
     const ok = await patch(d.id, { [key]: v === '' ? null : Number(v) });
-    if (ok) setMsg({ kind: 'ok', text: `第${round}弾の目標単価を更新しました` });
+    if (ok) setMsg({ kind: 'ok', text: '目標単価を更新しました' });
   };
 
   const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
@@ -288,7 +283,7 @@ export default function Deals() {
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
-        器種ごとの値上げ単価を一元管理します。第1弾・第2弾それぞれに合意単価と適用年月を入れて、弾ごとに完了にできます。
+        器種ごとの値上げ単価を一元管理します。合意単価と適用年月を入れて、案件ごとに完了にできます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -344,14 +339,7 @@ export default function Deals() {
           </select>
         </label>
         <label className="fld">
-          第1弾
-          <select value={get('r1State')} onChange={(e) => setParam('r1State', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          第2弾
+          状態
           <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
             <option value="">すべて</option>
             {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
@@ -368,9 +356,7 @@ export default function Deals() {
           目標との差
           <select value={get('below')} onChange={(e) => setParam('below', e.target.value)}>
             <option value="">すべて</option>
-            <option value="any">目標未達（第1弾・第2弾どちらか）</option>
-            <option value="r1">第1弾が目標未達</option>
-            <option value="r2">第2弾が目標未達</option>
+            <option value="r2">目標未達</option>
           </select>
         </label>
       </div>
@@ -379,8 +365,7 @@ export default function Deals() {
         <div className="toolbar">
           <span className="count">
             <b>{data.totals.count.toLocaleString()}</b>件
-            {' ・ '}第1弾 完了 <b>{Number(data.totals.r1_done || 0).toLocaleString()}</b>
-            {' ・ '}第2弾 完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
+            {' ・ '}完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
           </span>
           <div className="grow" />
           <button className="btn secondary sm" onClick={() => { setBulkOpen((v) => !v); setBulk(null); }}>
@@ -455,8 +440,7 @@ export default function Deals() {
               <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
               <th className="grp sep">交渉状況<br /><small>（法人）</small></th>
               <th className="num grp sep">出荷単価❶</th>
-              <th colSpan={4} className="grp sep">第1弾</th>
-              <th colSpan={4} className="grp sep">第2弾</th>
+              <th colSpan={4} className="grp sep">値上げ交渉</th>
               <th className="grp sep">単価種別</th>
               <th className="grp"></th>
             </tr>
@@ -470,12 +454,8 @@ export default function Deals() {
               <Th col="sales_person">担当者</Th>
               <th className="sep"></th>
               <Th col="base_price" className="num sep" />
-              <Th col="r1_target_price" className="num sep">目標❷</Th>
-              <Th col="r1_agreed_price" className="num">合意❸</Th>
-              <Th col="r1_applied_ym" className="num">適用年月</Th>
-              <Th col="r1_state">状態</Th>
-              <Th col="r2_target_price" className="num sep">目標❻</Th>
-              <Th col="r2_agreed_price" className="num">合意❼</Th>
+              <Th col="r2_target_price" className="num sep">目標❷</Th>
+              <Th col="r2_agreed_price" className="num">合意❸</Th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
               <Th col="price_type_code" className="sep" />
@@ -530,54 +510,19 @@ export default function Deals() {
                     {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
                   </td>
 
-                  {/* 第1弾 */}
-                  <td className="num sep">
-                    {isEditing && isAdmin ? (
-                      <input type="number" className="cell" value={draft.r1_target_price}
-                        onChange={(e) => setDraft({ ...draft, r1_target_price: e.target.value })}
-                        onBlur={() => saveTarget(d, 1)} />
-                    ) : yen(d.r1_target_price)}
-                  </td>
-                  <td className={`num${belowTarget(d, 1) ? ' below' : ''}`}>
-                    {isEditing ? (
-                      <input type="number" className="cell" value={draft.r1_agreed_price}
-                        onChange={(e) => setDraft({ ...draft, r1_agreed_price: e.target.value })} />
-                    ) : <AgreedCell deal={d} round={1} />}
-                  </td>
-                  <td className="num">
-                    {isEditing ? (
-                      <input type="month" className="cell" value={draft.r1_applied_ym}
-                        onChange={(e) => setDraft({ ...draft, r1_applied_ym: e.target.value })} />
-                    ) : (d.r1_applied_ym || '—')}
-                  </td>
-                  <td>
-                    {isEditing ? (
-                      <div className="round-actions">
-                        <button className="btn secondary sm" disabled={busy} onClick={() => saveRound(d, 1, false)}>保存</button>
-                        {!d.r1_done && (
-                          <button className="btn sm" disabled={busy} onClick={() => saveRound(d, 1, true)}>完了</button>
-                        )}
-                        {!!d.r1_done && (
-                          <button className="btn secondary sm" disabled={busy}
-                            onClick={() => patch(d.id, { r1_done: false })}>完了を戻す</button>
-                        )}
-                      </div>
-                    ) : <RoundStateBadge state={d.r1_state} />}
-                  </td>
-
-                  {/* 第2弾 */}
+                  {/* 値上げ交渉（目標・合意・適用年月・状態） */}
                   <td className="num sep">
                     {isEditing && isAdmin ? (
                       <input type="number" className="cell" value={draft.r2_target_price}
                         onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
-                        onBlur={() => saveTarget(d, 2)} />
+                        onBlur={() => saveTarget(d)} />
                     ) : yen(d.r2_target_price)}
                   </td>
-                  <td className={`num${belowTarget(d, 2) ? ' below' : ''}`}>
+                  <td className={`num${belowTarget(d) ? ' below' : ''}`}>
                     {isEditing ? (
                       <input type="number" className="cell" value={draft.r2_agreed_price}
                         onChange={(e) => setDraft({ ...draft, r2_agreed_price: e.target.value })} />
-                    ) : <AgreedCell deal={d} round={2} />}
+                    ) : <AgreedCell deal={d} />}
                   </td>
                   <td className="num">
                     {isEditing ? (
@@ -588,9 +533,9 @@ export default function Deals() {
                   <td>
                     {isEditing ? (
                       <div className="round-actions">
-                        <button className="btn secondary sm" disabled={busy} onClick={() => saveRound(d, 2, false)}>保存</button>
+                        <button className="btn secondary sm" disabled={busy} onClick={() => saveRound(d, false)}>保存</button>
                         {!d.r2_done && (
-                          <button className="btn sm" disabled={busy} onClick={() => saveRound(d, 2, true)}>完了</button>
+                          <button className="btn sm" disabled={busy} onClick={() => saveRound(d, true)}>完了</button>
                         )}
                         {!!d.r2_done && (
                           <button className="btn secondary sm" disabled={busy}
@@ -631,16 +576,16 @@ export default function Deals() {
         <p className="pt-note" style={{ marginTop: 10 }}>
           開発者のため、支店・営業所の列が表示され、「入力」で取込項目
           （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価❶）と
-          目標単価❷❻を直せます。変更は入力欄を離れた時点で保存されます。
+          目標単価❷を直せます。変更は入力欄を離れた時点で保存されます。
           コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
         </p>
       ) : isAdmin ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          管理者のため、目標単価❷❻も「入力」から変更できます（変更は入力欄を離れた時点で保存されます）。
+          管理者のため、目標単価❷も「入力」から変更できます（変更は入力欄を離れた時点で保存されます）。
         </p>
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          目標単価❷❻の変更は管理者のみ行えます。
+          目標単価❷の変更は管理者のみ行えます。
         </p>
       )}
     </div>
