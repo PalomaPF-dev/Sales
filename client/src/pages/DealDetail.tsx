@@ -141,9 +141,9 @@ export default function DealDetail() {
                 </dd>
               </>
             )}
-            <dt>目標値上げ単価 ❷</dt><dd>¥{yen(d.r2_target_price)}</dd>
-            <dt>合意単価 ❸</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
-            <dt>値上がり単価 ❹</dt>
+            <dt>目標値上げ単価</dt><dd>¥{yen(d.r2_target_price)}</dd>
+            <dt>合意単価</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
+            <dt>値上がり単価</dt>
             <dd>{d.r2_raise_unit == null ? '—' : `¥${yen(d.r2_raise_unit)}`}</dd>
             <dt>適用年月</dt><dd>{d.r2_applied_ym || '—'}</dd>
           </dl>
