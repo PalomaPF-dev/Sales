@@ -487,6 +487,8 @@ async function beforeSchema() {
     // 同じファイルの二重取込を検知するための内容ハッシュとデータ指紋
     'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',
     'ALTER TABLE import_batches ADD COLUMN data_hash TEXT',
+    // 基準価格表の区分（担当者が選ぶ。目標はマスターから入る）
+    'ALTER TABLE deals ADD COLUMN kubun TEXT',
     // 適用年月と完了（案件一覧から営業担当者が入れる）
     'ALTER TABLE deals ADD COLUMN r2_applied_ym TEXT',
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',

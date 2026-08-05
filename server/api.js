@@ -19,6 +19,9 @@ import {
   deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
 } from './privateBlob.js';
 import { comparePref } from './prefOrder.js';
+import {
+  KUBUNS, findStandardPrice, parseStandardWorkbook, replaceStandardPrices,
+} from './standardPrices.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -710,6 +713,36 @@ api.get('/admin/data-check', wrap(async (req, res) => {
   }
   findings.sort((a, b) => b.deals - a.deals);
   res.json({ findings });
+}));
+
+// ---- 全国基準価格表（マスター） ----
+
+/**
+ * 基準価格表のExcelを取り込んでマスターを差し替える。
+ * ファイルは小さい（数十器種）のでそのまま受け取る。
+ */
+api.post('/admin/standard-prices', upload.single('file'), wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!req.file) return res.status(400).json({ error: 'ファイルを選択してください' });
+  let rows;
+  try {
+    rows = parseStandardWorkbook(req.file.buffer);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const count = await replaceStandardPrices(rows, decodeUploadName(req.file.originalname), req.user.id);
+  const models = new Set(rows.map((r) => `${r.region}:${r.model_key}`)).size;
+  res.json({ count, models, regions: [...new Set(rows.map((r) => r.region))] });
+}));
+
+/** マスターの一覧。器種ごとに区分の単価を並べて返す */
+api.get('/standard-prices', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const rows = await db.all(`
+    SELECT region, category, model_gas_code, model_name, kubun, current_price, target_price
+      FROM standard_prices ORDER BY region, id`);
+  const meta = await db.get("SELECT value FROM settings WHERE key = 'standard_prices_meta'");
+  res.json({ rows, kubuns: KUBUNS, meta: meta ? JSON.parse(meta.value) : null });
 }));
 
 /**
@@ -1549,15 +1582,48 @@ api.patch('/deals/:id', wrap(async (req, res) => {
   const deal = await findDealInScope(req.params.id, req.user, 'deals');
   if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
 
-  let built;
-  try {
-    built = buildDealUpdate(req.body, deal, req.user);
-  } catch (e) {
-    return res.status(e.message.includes('管理者のみ') ? 403 : 400).json({ error: e.message });
+  // 区分の選択。目標値上げ単価は手入力ではなく、
+  // 選んだ区分に対応する基準価格表の「値上後単価」が入る。
+  // これは営業担当者の操作（どの区分の得意先かは担当者が判断する）。
+  const extraSets = [];
+  const extraParams = [];
+  const body = { ...req.body };
+  if ('kubun' in body) {
+    const kubun = String(body.kubun ?? '').trim();
+    delete body.kubun;
+    if (!kubun) {
+      // 区分を外す。基準の根拠が無くなるため目標も未設定に戻す
+      extraSets.push('kubun = ?', 'r2_target_price = ?');
+      extraParams.push(null, null);
+    } else {
+      if (!KUBUNS.includes(kubun)) {
+        return res.status(400).json({ error: `区分は ${KUBUNS.join(' / ')} から選んでください` });
+      }
+      const std = await findStandardPrice(deal, kubun);
+      if (!std) {
+        return res.status(400).json({
+          error: `基準価格表に「${deal.model_name}」（${kubun}）の単価がありません。`
+            + 'マスターの登録内容をご確認ください',
+        });
+      }
+      extraSets.push('kubun = ?', 'r2_target_price = ?');
+      extraParams.push(kubun, std.target_price);
+    }
   }
 
-  const sets = [...built.sets, 'updated_at = ?'];
-  const params = [...built.params, now(), req.params.id];
+  let built = { sets: [], params: [], changed: true };
+  if (Object.keys(body).length) {
+    try {
+      built = buildDealUpdate(body, deal, req.user);
+    } catch (e) {
+      return res.status(e.message.includes('管理者のみ') ? 403 : 400).json({ error: e.message });
+    }
+  } else if (!extraSets.length) {
+    return res.status(400).json({ error: '更新項目がありません' });
+  }
+
+  const sets = [...extraSets, ...built.sets, 'updated_at = ?'];
+  const params = [...extraParams, ...built.params, now(), req.params.id];
   await db.run(`UPDATE deals SET ${sets.join(', ')} WHERE id = ?`, params);
   res.json(await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]));
 }));

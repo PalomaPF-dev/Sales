@@ -20,6 +20,9 @@ const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'priceType', 'b
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
 
+/** 基準価格表の区分（サーバーの KUBUNS と揃える） */
+const KUBUN_LIST = ['大手', '中規模', '小規模'];
+
 /** 「2026-04」形式かどうか。保存前に画面側でも確かめる */
 const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -269,6 +272,21 @@ export default function Deals() {
     if (ok && alsoDone) setMsg({ kind: 'ok', text: '完了にしました' });
   };
 
+  /**
+   * 区分の選択。基準価格表の値上後単価が目標として入る。
+   * どの区分の得意先かは営業担当者が判断して選ぶ。
+   */
+  const saveKubun = async (d: Deal, kubun: string) => {
+    const ok = await patch(d.id, { kubun });
+    if (ok) {
+      setMsg(kubun
+        ? { kind: 'ok', text: `区分を「${kubun}」にしました。基準価格表の値上後単価が目標に入っています` }
+        : { kind: 'ok', text: '区分を外しました（目標も未設定に戻ります）' });
+      // 画面の目標欄も追随させる
+      setDraft((prev) => ({ ...prev, r2_target_price: '' }));
+    }
+  };
+
   const saveTarget = async (d: Deal) => {
     const key = 'r2_target_price';
     const v = draft[key]?.trim() ?? '';
@@ -283,7 +301,7 @@ export default function Deals() {
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
-        器種ごとの値上げ単価を一元管理します。合意単価と適用年月を入れて、案件ごとに完了にできます。
+        器種ごとの値上げ単価を一元管理します。「入力」で得意先の区分（大手・中規模・小規模）を選ぶと基準価格表の単価が目標に入ります。合意単価と適用年月を入れて、案件ごとに完了にできます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -510,13 +528,33 @@ export default function Deals() {
                     {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
                   </td>
 
-                  {/* 値上げ交渉（目標・合意・適用年月・状態） */}
+                  {/* 値上げ交渉（区分→目標・合意・適用年月・状態） */}
                   <td className="num sep">
-                    {isEditing && isAdmin ? (
-                      <input type="number" className="cell" value={draft.r2_target_price}
-                        onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
-                        onBlur={() => saveTarget(d)} />
-                    ) : yen(d.r2_target_price)}
+                    {isEditing ? (
+                      <div style={{ display: 'grid', gap: 4, justifyItems: 'end' }}>
+                        <select
+                          value={d.kubun ?? ''}
+                          disabled={busy}
+                          title="得意先の区分。選ぶと基準価格表の値上後単価が目標に入ります"
+                          onChange={(e) => saveKubun(d, e.target.value)}
+                        >
+                          <option value="">区分を選ぶ</option>
+                          {KUBUN_LIST.map((k) => <option key={k} value={k}>{k}</option>)}
+                        </select>
+                        {isAdmin ? (
+                          <input type="number" className="cell" value={draft.r2_target_price}
+                            onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
+                            onBlur={() => saveTarget(d)} />
+                        ) : (
+                          <span>{yen(d.r2_target_price)}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        {yen(d.r2_target_price)}
+                        {d.kubun && <div className="sub">{d.kubun}</div>}
+                      </>
+                    )}
                   </td>
                   <td className={`num${belowTarget(d) ? ' below' : ''}`}>
                     {isEditing ? (

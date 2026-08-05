@@ -36,6 +36,8 @@ export interface Deal {
   list_price: number | null;
   rate: number | null;
   base_price: number | null;        // ❶ 出荷単価
+  /** 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶと目標が入る */
+  kubun: string | null;
   // 値上げ交渉（列名の r2_ は旧・第2弾の名残。いまは唯一の交渉を指す）
   r2_target_price: number | null;   // ❷ 目標値上げ単価（管理者のみ変更可）
   r2_agreed_price: number | null;   // ❸ 合意単価

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS deals (
   sales_person    TEXT,   -- AV 売上担当者名
   customer_person TEXT,   -- AY 得意先担当者名
   new_list_price  REAL,   -- BQ 新定価
+  kubun           TEXT,   -- 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶ
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率
@@ -197,3 +198,22 @@ SELECT
        WHEN d.r2_agreed_price > d.base_price THEN 'agreed'
        ELSE 'open' END AS r2_state
 FROM deals d;
+
+-- 全国基準価格表（マスター）。器種 × 区分ごとの基準単価。
+-- 案件で区分を選ぶと、この表の値上後単価が目標値上げ単価になる。
+CREATE TABLE IF NOT EXISTS standard_prices (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  region        TEXT NOT NULL DEFAULT '全国', -- 全国 / 北海道 など（地域シート）
+  category      TEXT,           -- 【給湯器】などのまとまり
+  model_gas_code TEXT,          -- 器種ガスコード（器種コード＋ガスコード）
+  model_name    TEXT NOT NULL,  -- 品名
+  model_key     TEXT NOT NULL,  -- 品名の正規化（案件との突き合わせ用）
+  kubun         TEXT NOT NULL,  -- 大手 / 中規模 / 小規模
+  kubun_note    TEXT,           -- 見出しの説明（例企業）
+  current_price REAL,           -- 現単価（想定）
+  target_price  REAL NOT NULL,  -- 値上後（これが目標になる）
+  source_file   TEXT,
+  updated_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_std_model ON standard_prices(region, kubun, model_key);
+CREATE INDEX IF NOT EXISTS idx_std_code  ON standard_prices(region, kubun, model_gas_code);
