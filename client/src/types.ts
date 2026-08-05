@@ -38,6 +38,12 @@ export interface Deal {
   base_price: number | null;        // ❶ 出荷単価
   /** 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶと目標が入る */
   kubun: string | null;
+  /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */
+  std_name?: string | null;
+  /** 判別の方法。code=器種ガスコード一致 / name=品名一致 / similar=類似（先頭一致） */
+  std_kind?: 'code' | 'name' | 'similar' | null;
+  /** 判別した器種の、区分ごとの値上後単価（区分を選ぶ前の候補表示に使う） */
+  std_targets?: Record<string, number> | null;
   // 値上げ交渉（列名の r2_ は旧・第2弾の名残。いまは唯一の交渉を指す）
   r2_target_price: number | null;   // ❷ 目標値上げ単価（管理者のみ変更可）
   r2_agreed_price: number | null;   // ❸ 合意単価

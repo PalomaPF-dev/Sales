@@ -140,36 +140,113 @@ export async function replaceStandardPrices(rows, filename, userId) {
 }
 
 /**
- * 案件に対応する基準価格の行を探す。
- *
- * 突き合わせは 器種ガスコード（器種コード＋ガスコードの連結）を最優先にし、
- * 無ければ器種名（正規化）で当てる。
- * 北海道の支店は北海道シートの単価を優先し、無ければ全国を使う。
+ * マスター全体を器種単位でまとめた索引。
+ * 一覧の各行と突き合わせるため、1回のSELECTで読み込んでメモリ上で照合する
+ * （マスターは器種×区分で高々数百行）。
  */
-export async function findStandardPrice(deal, kubun) {
-  const keys = [];
-  if (deal.model_code != null && deal.gas_code != null) {
-    const m = String(deal.model_code).trim();
-    const g = String(deal.gas_code).trim();
-    keys.push(m + g, m + g.padStart(3, '0'));
+export async function loadStandardIndex() {
+  const rows = await db.all('SELECT * FROM standard_prices');
+  // region → [ { model_key, model_name, codes:Set, targets:{区分→値上後} } ]
+  const byRegion = new Map();
+  for (const r of rows) {
+    if (!byRegion.has(r.region)) byRegion.set(r.region, new Map());
+    const models = byRegion.get(r.region);
+    if (!models.has(r.model_key)) {
+      models.set(r.model_key, {
+        model_key: r.model_key, model_name: r.model_name, category: r.category,
+        region: r.region, codes: new Set(), targets: {},
+      });
+    }
+    const m = models.get(r.model_key);
+    if (r.model_gas_code) m.codes.add(String(r.model_gas_code).trim());
+    m.targets[r.kubun] = Number(r.target_price);
   }
-  const nameKey = modelKey(deal.model_name);
-  const regions = prefRank(deal.branch) === 1 ? ['北海道', '全国'] : ['全国'];
+  return { empty: rows.length === 0, byRegion };
+}
 
+/** 案件の器種ガスコードの候補（器種コード＋ガスコード。ガスコードは3桁詰めも試す） */
+function dealCodes(deal) {
+  if (deal.model_code == null || deal.gas_code == null) return [];
+  const m = String(deal.model_code).trim();
+  const g = String(deal.gas_code).trim();
+  if (!m || !g) return [];
+  return [m + g, m + g.padStart(3, '0')];
+}
+
+/**
+ * 類似器種の判別。
+ *
+ * 完全一致（コード → 正規化した品名）を最優先にし、無ければ
+ * 「片方がもう片方の先頭に一致する」（例: PH-2015AW と PH-2015AW（K））か、
+ * 「共通の先頭部分が十分に長い」（例: FH-2013SAW-1 と FH-2013SAW-2）ものを
+ * 類似として当てる。中身の離れた器種まで結び付けないよう、先頭一致に限る。
+ *
+ * 北海道の支店は北海道シートを優先する。ただし完全一致は地域をまたいでも
+ * 類似より優先する（類似の思い込みで別地域の正しい単価を隠さないため）。
+ *
+ * 戻り値: { model_name, region, kind: 'code'|'name'|'similar', targets } または null
+ */
+export function matchStandardModel(index, deal) {
+  if (!index || index.empty) return null;
+  const regions = prefRank(deal.branch) === 1 ? ['北海道', '全国'] : ['全国'];
+  const codes = dealCodes(deal);
+  const nameKey = modelKey(deal.model_name);
+
+  const hit = (m, kind) =>
+    ({ model_name: m.model_name, region: m.region, kind, targets: m.targets });
+
+  // 1) 完全一致（コード → 品名）
   for (const region of regions) {
-    if (keys.length) {
-      const byCode = await db.get(
-        `SELECT * FROM standard_prices
-          WHERE region = ? AND kubun = ? AND model_gas_code IN (${keys.map(() => '?').join(',')})
-          LIMIT 1`, [region, kubun, ...keys]);
-      if (byCode) return byCode;
+    const models = index.byRegion.get(region);
+    if (!models) continue;
+    for (const m of models.values()) {
+      if (codes.some((c) => m.codes.has(c))) return hit(m, 'code');
     }
-    if (nameKey) {
-      const byName = await db.get(
-        'SELECT * FROM standard_prices WHERE region = ? AND kubun = ? AND model_key = ? LIMIT 1',
-        [region, kubun, nameKey]);
-      if (byName) return byName;
+    if (nameKey && models.has(nameKey)) return hit(models.get(nameKey), 'name');
+  }
+
+  // 2) 類似（先頭一致）。品名が短すぎると何にでも当たるため5文字以上に限る
+  if (!nameKey || nameKey.length < 5) return null;
+  for (const region of regions) {
+    const models = index.byRegion.get(region);
+    if (!models) continue;
+    let best = null;
+    let bestScore = 0;
+    for (const m of models.values()) {
+      const k = m.model_key;
+      if (!k || k.length < 5) continue;
+      let score = 0;
+      if (nameKey.startsWith(k) || k.startsWith(nameKey)) {
+        // 片方が片方の先頭そのもの。重なりが長いものを採る
+        score = 1000 + Math.min(k.length, nameKey.length);
+      } else {
+        let p = 0;
+        while (p < k.length && p < nameKey.length && k[p] === nameKey[p]) p++;
+        // 末尾の枝番違い程度まで（共通部分が両方の85%以上）
+        if (p >= 6 && p >= Math.max(k.length, nameKey.length) * 0.85) score = 500 + p;
+      }
+      if (score > bestScore) { bestScore = score; best = m; }
     }
+    if (best) return hit(best, 'similar');
   }
   return null;
+}
+
+/**
+ * 案件に対応する基準価格を探す（区分の選択時に使う）。
+ *
+ * 器種の判別は matchStandardModel と同じ（一覧の表示と結果がずれないように）。
+ * 器種は当たったが選んだ区分の単価が無い場合は target_price: null で返し、
+ * 呼び出し側が器種名入りの案内を出せるようにする。
+ */
+export async function findStandardPrice(deal, kubun) {
+  const index = await loadStandardIndex();
+  const m = matchStandardModel(index, deal);
+  if (!m) return null;
+  return {
+    model_name: m.model_name,
+    region: m.region,
+    kind: m.kind,
+    target_price: m.targets[kubun] ?? null,
+  };
 }

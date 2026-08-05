@@ -20,7 +20,8 @@ import {
 } from './privateBlob.js';
 import { comparePref } from './prefOrder.js';
 import {
-  KUBUNS, findStandardPrice, parseStandardWorkbook, replaceStandardPrices,
+  KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
+  parseStandardWorkbook, replaceStandardPrices,
 } from './standardPrices.js';
 
 export const api = Router();
@@ -1271,6 +1272,7 @@ const SORTABLE = new Map([
   ['r2_applied_ym', 'r2_applied_ym'],
   ['r2_state', 'r2_state'],
   ['price_type_code', 'price_type_code'],
+  ['kubun', 'kubun'],
 ]);
 
 const DEFAULT_ORDER = 'corp_name, customer_name, equip_name, model_name, id';
@@ -1335,6 +1337,23 @@ function dealFilters(q, user) {
   return { where: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
 }
 
+/**
+ * 案件に基準価格表との突き合わせ結果を添える（画面の目標欄に出すため）。
+ * std_name: 判別した品名 / std_kind: code(コード一致)・name(品名一致)・similar(類似) /
+ * std_targets: 区分ごとの値上後単価（区分を選ぶ前の候補として見せる）。
+ * マスターが空のときは何も付けない。
+ */
+function attachStandardMatch(rows, index) {
+  if (!index || index.empty) return rows;
+  for (const r of rows) {
+    const m = matchStandardModel(index, r);
+    r.std_name = m?.model_name ?? null;
+    r.std_kind = m?.kind ?? null;
+    r.std_targets = m?.targets ?? null;
+  }
+  return rows;
+}
+
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -1358,6 +1377,7 @@ api.get('/deals', wrap(async (req, res) => {
       ORDER BY ${dealOrder(req.query)}
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
+  attachStandardMatch(rows, await loadStandardIndex());
   res.json({ rows, totals, page, size });
 }));
 
@@ -1450,6 +1470,7 @@ api.get('/deals/:id', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const deal = await findDealInScope(req.params.id, req.user);
   if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
+  attachStandardMatch([deal], await loadStandardIndex());
   // 交渉は法人単位で進むため、法人の交渉情報と履歴を一緒に返す
   const negotiation = deal.corp_code
     ? await db.get('SELECT * FROM corp_negotiations WHERE corp_code = ?', [deal.corp_code])
@@ -1600,9 +1621,11 @@ api.patch('/deals/:id', wrap(async (req, res) => {
         return res.status(400).json({ error: `区分は ${KUBUNS.join(' / ')} から選んでください` });
       }
       const std = await findStandardPrice(deal, kubun);
-      if (!std) {
+      if (!std || std.target_price == null) {
+        // 器種が当たったのに区分の単価だけ無い場合は、判別した品名で案内する
+        const name = std?.model_name ?? deal.model_name;
         return res.status(400).json({
-          error: `基準価格表に「${deal.model_name}」（${kubun}）の単価がありません。`
+          error: `基準価格表に「${name}」（${kubun}）の単価がありません。`
             + 'マスターの登録内容をご確認ください',
         });
       }
@@ -1625,7 +1648,10 @@ api.patch('/deals/:id', wrap(async (req, res) => {
   const sets = [...extraSets, ...built.sets, 'updated_at = ?'];
   const params = [...extraParams, ...built.params, now(), req.params.id];
   await db.run(`UPDATE deals SET ${sets.join(', ')} WHERE id = ?`, params);
-  res.json(await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]));
+  const updated = await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]);
+  // 器種名や支店を直した直後も、画面の「基準: ○○」表示が追随するように添える
+  attachStandardMatch([updated], await loadStandardIndex());
+  res.json(updated);
 }));
 
 // 一括取込で一度に受け取る行数。JSONにして数百KBに収まる大きさにする

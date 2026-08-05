@@ -132,6 +132,15 @@ export default function DealDetail() {
           <div className="section-title">交渉 <RoundStateBadge state={d.r2_state} /></div>
           <dl className="kv">
             <dt>区分</dt><dd>{d.kubun || '未選択'}</dd>
+            {d.std_name && (
+              <>
+                <dt>基準の器種</dt>
+                <dd>
+                  {d.std_name}
+                  {d.std_kind === 'similar' && <span style={{ color: 'var(--muted)' }}>（類似）</span>}
+                </dd>
+              </>
+            )}
             <dt>目標値上げ単価 ❷</dt><dd>¥{yen(d.r2_target_price)}</dd>
             <dt>合意単価 ❸</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
             <dt>値上がり単価 ❹</dt>
