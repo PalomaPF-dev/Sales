@@ -425,8 +425,20 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; 
 .tbl.deals tbody tr:hover td.below { background: #ffedd5; }
 /*
   目標との差は合意の金額の横に小さく出す。
+  差の欄は幅を決め打ちにする。行ごとに差の桁数が違っても
+  合意の金額が同じ位置に並ぶようにするため。
   不足（マイナス）は赤、上回り（プラス）は緑。
 */
+.tbl.deals .agreed-cell {
+  display: flex; justify-content: flex-end; align-items: baseline; gap: 8px;
+}
+.tbl.deals .agreed-cell .amt { font-variant-numeric: tabular-nums; }
+.tbl.deals .agreed-cell .diff {
+  min-width: 58px; text-align: right; white-space: nowrap;
+  font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+/* 見出しも差の欄の分だけ内側に寄せ、金額の並びの上に来るようにする */
+.tbl.deals th.agreed-h { padding-right: 76px; }
 .tbl.deals .shortfall,
 .tbl.deals .surplus {
   font-size: 10.5px; font-weight: 700;

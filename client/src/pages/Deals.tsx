@@ -62,19 +62,21 @@ function belowTarget(d: Deal): boolean {
 /**
  * 合意単価と、目標との差の表示。差は金額の横に並べる。
  * 不足は −（赤）、上回りは ＋（緑）。
+ *
+ * 差の欄は幅を決め打ちにして、差の有無や桁数にかかわらず
+ * 合意の金額が同じ位置に並ぶようにする（行ごとに左右へずれないため）。
  */
 function AgreedCell({ deal }: { deal: Deal }) {
   const agreed = deal.r2_agreed_price;
   const b = diffBase(deal);
-  if (!hasAgreed(deal) || b == null) return <>{yen(agreed)}</>;
-  const diff = Number(agreed) - b.base;
-  if (diff === 0) return <>{yen(agreed)}</>;
+  const diff = hasAgreed(deal) && b != null ? Number(agreed) - b.base : null;
+  const show = diff != null && diff !== 0;
   return (
-    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'baseline' }}>
-      <span>{yen(agreed)}</span>
-      <span className={diff < 0 ? 'shortfall' : 'surplus'}
-            title={`${b.label} ¥${yen(b.base)} との差です`}>
-        {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
+    <span className="agreed-cell">
+      <span className="amt">{yen(agreed)}</span>
+      <span className={`diff${show ? (diff < 0 ? ' shortfall' : ' surplus') : ''}`}
+            title={show ? `${b!.label} ¥${yen(b!.base)} との差です` : undefined}>
+        {show ? `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}` : ''}
       </span>
     </span>
   );
@@ -512,7 +514,7 @@ export default function Deals() {
               <th className="num">中規模</th>
               <th className="num">小規模</th>
               <Th col="r2_target_price" className="num sep">設定中の目標</Th>
-              <Th col="r2_agreed_price" className="num">合意</Th>
+              <Th col="r2_agreed_price" className="num agreed-h">合意</Th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
               <Th col="kubun" className="sep" />
