@@ -27,17 +27,20 @@ const KUBUN_LIST = ['大手', '中規模', '小規模'];
 const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 /**
- * 一番安い目標。基準価格表の3区分（大手・中規模・小規模）のうち最安の値上後単価。
- * 基準に無い器種は、設定済みの目標単価を使う。
- * 合意との差はこの「最低限ここまで」と比べて示す。
+ * 合意との差の比較元。設定中の目標があればそれと比べる。
+ * まだ目標が無い行は、基準価格表の3区分のうち一番安い値上後単価と比べる
+ * （最低限ここまで、の当たりを付けるため）。
  */
-function cheapestTarget(d: Deal): number | null {
+function diffBase(d: Deal): { base: number; label: string } | null {
+  if (d.r2_target_price != null) {
+    return { base: Number(d.r2_target_price), label: '設定中の目標' };
+  }
   const t = d.std_targets;
   if (t) {
     const vals = Object.values(t).filter((v) => v != null).map(Number);
-    if (vals.length) return Math.min(...vals);
+    if (vals.length) return { base: Math.min(...vals), label: '基準価格表の一番安い値上後' };
   }
-  return d.r2_target_price == null ? null : Number(d.r2_target_price);
+  return null;
 }
 
 /**
@@ -49,34 +52,31 @@ function hasAgreed(d: Deal): boolean {
   return d.r2_state !== 'open' && d.r2_agreed_price != null && Number(d.r2_agreed_price) > 0;
 }
 
-/** 合意が一番安い目標に届いていないか（欄の色付けに使う） */
+/** 合意が目標に届いていないか（欄の色付けに使う） */
 function belowTarget(d: Deal): boolean {
   if (!hasAgreed(d)) return false;
-  const base = cheapestTarget(d);
-  return base != null && Number(d.r2_agreed_price) < base;
+  const b = diffBase(d);
+  return b != null && Number(d.r2_agreed_price) < b.base;
 }
 
 /**
- * 合意単価と、一番安い目標との差の表示。
- *
- * 差額を金額と同じ行に置くと、その行だけ金額が左へ押し出されて
- * 列の数字が縦に揃わなくなる。金額は今までどおりの位置に置いたまま、
- * 差額は下の行へ回す。不足は −（赤）、上回りは ＋（緑）。
+ * 合意単価と、目標との差の表示。差は金額の横に並べる。
+ * 不足は −（赤）、上回りは ＋（緑）。
  */
 function AgreedCell({ deal }: { deal: Deal }) {
   const agreed = deal.r2_agreed_price;
-  const base = cheapestTarget(deal);
-  if (!hasAgreed(deal) || base == null) return <>{yen(agreed)}</>;
-  const diff = Number(agreed) - base;
+  const b = diffBase(deal);
+  if (!hasAgreed(deal) || b == null) return <>{yen(agreed)}</>;
+  const diff = Number(agreed) - b.base;
   if (diff === 0) return <>{yen(agreed)}</>;
   return (
-    <>
-      <div>{yen(agreed)}</div>
-      <div className={diff < 0 ? 'shortfall' : 'surplus'}
-           title={`一番安い目標 ¥${yen(base)} との差です`}>
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'baseline' }}>
+      <span>{yen(agreed)}</span>
+      <span className={diff < 0 ? 'shortfall' : 'surplus'}
+            title={`${b.label} ¥${yen(b.base)} との差です`}>
         {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
-      </div>
-    </>
+      </span>
+    </span>
   );
 }
 
@@ -328,35 +328,6 @@ export default function Deals() {
     return undefined;
   };
 
-  /**
-   * 目標欄。基準価格表の3区分（大手・中規模・小規模）の値上後単価を横並びで出す。
-   * 選択中の区分は色を付け、基準に無い器種は設定済みの目標単価をそのまま出す。
-   */
-  const targetCell = (d: Deal) => {
-    const t = d.std_targets;
-    if (!t || !KUBUN_LIST.some((k) => t[k] != null)) {
-      return <div title={stdTitle(d)}>{yen(d.r2_target_price)}</div>;
-    }
-    return (
-      <div title={stdTitle(d)}>
-        <div className="std3">
-          {KUBUN_LIST.map((k) => (
-            <div key={k}>
-              <div className="k">{k}</div>
-              <div className={d.kubun === k ? 'picked' : undefined}
-                   style={t[k] == null ? { color: 'var(--muted)' } : undefined}>
-                {t[k] == null ? '—' : yen(t[k])}
-              </div>
-            </div>
-          ))}
-        </div>
-        {d.kubun == null && d.r2_target_price != null && (
-          <div className="sub">設定中の目標: ¥{yen(d.r2_target_price)}</div>
-        )}
-      </div>
-    );
-  };
-
   const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
@@ -364,7 +335,7 @@ export default function Deals() {
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
-        器種ごとの値上げ単価を一元管理します。器種名は基準価格表の品名と自動で突き合わせ、目標の欄に3区分（大手・中規模・小規模）の値上後単価を横並びで表示します。「入力」から区分を選ぶとその単価が目標になります。合意の欄には、一番安い目標との差が出ます。
+        器種ごとの値上げ単価を一元管理します。器種名は基準価格表の品名と自動で突き合わせ、目標（基準価格表）の大手・中規模・小規模の列に値上後単価を表示します。「入力」から区分を選ぶとその単価が「設定中の目標」に入ります。合意の欄には目標との差が横に出ます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -522,6 +493,7 @@ export default function Deals() {
               <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
               <th className="grp sep">交渉状況<br /><small>（法人）</small></th>
               <th className="num grp sep">出荷単価❶</th>
+              <th colSpan={3} className="grp sep">目標（基準価格表）</th>
               <th colSpan={4} className="grp sep">値上げ交渉</th>
               <th className="grp sep">区分</th>
               <th className="grp"></th>
@@ -536,7 +508,10 @@ export default function Deals() {
               <Th col="sales_person">担当者</Th>
               <th className="sep"></th>
               <Th col="base_price" className="num sep" />
-              <Th col="r2_target_price" className="num sep">目標（基準価格表）</Th>
+              <th className="num sep">大手</th>
+              <th className="num">中規模</th>
+              <th className="num">小規模</th>
+              <Th col="r2_target_price" className="num sep">設定中の目標</Th>
               <Th col="r2_agreed_price" className="num">合意</Th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
@@ -591,15 +566,26 @@ export default function Deals() {
                     {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
                   </td>
 
-                  {/* 値上げ交渉（目標・合意・適用年月・状態）。目標は基準価格表の3区分を横並びで出す */}
+                  {/* 目標（基準価格表）: 大手・中規模・小規模の3列。選択中の区分は色付き */}
+                  {KUBUN_LIST.map((k, i) => {
+                    const v = d.std_targets?.[k];
+                    return (
+                      <td key={k} className={`num${i === 0 ? ' sep' : ''}`} title={stdTitle(d)}>
+                        <span className={d.kubun === k ? 'picked' : undefined}
+                              style={v == null ? { color: 'var(--muted)' } : undefined}>
+                          {v == null ? '—' : yen(v)}
+                        </span>
+                      </td>
+                    );
+                  })}
+
+                  {/* 値上げ交渉（設定中の目標・合意・適用年月・状態） */}
                   <td className="num sep">
                     {isEditing && isAdmin ? (
-                      <div style={{ display: 'grid', gap: 4, justifyItems: 'end' }} title={stdTitle(d)}>
-                        <input type="number" className="cell" value={draft.r2_target_price}
-                          onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
-                          onBlur={() => saveTarget(d)} />
-                      </div>
-                    ) : targetCell(d)}
+                      <input type="number" className="cell" value={draft.r2_target_price}
+                        onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
+                        onBlur={() => saveTarget(d)} />
+                    ) : yen(d.r2_target_price)}
                   </td>
                   <td className={`num${belowTarget(d) ? ' below' : ''}`}>
                     {isEditing ? (

@@ -424,18 +424,15 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; 
 .tbl.deals td.below { background: #fff7ed; }
 .tbl.deals tbody tr:hover td.below { background: #ffedd5; }
 /*
-  一番安い目標との差は金額の下の行に出す。同じ行に置くと、その行だけ金額が
-  左へ押し出されて列の数字が縦に揃わなくなるため。
+  目標との差は合意の金額の横に小さく出す。
   不足（マイナス）は赤、上回り（プラス）は緑。
 */
 .tbl.deals .shortfall,
 .tbl.deals .surplus {
-  margin-top: 2px; font-size: 10.5px; font-weight: 700;
+  font-size: 10.5px; font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 .tbl.deals .shortfall { color: #c2410c; }
 .tbl.deals .surplus { color: #15803d; }
-/* 目標欄の3区分の横並び。区分名は小さく、金額は他の列と同じ書式で */
-.tbl.deals .std3 { display: flex; gap: 10px; justify-content: flex-end; }
-.tbl.deals .std3 .k { font-size: 10px; color: var(--muted); }
-.tbl.deals .std3 .picked { font-weight: 700; color: var(--accent); }
+/* 目標（基準価格表）の3列のうち、選択中の区分の単価 */
+.tbl.deals .picked { font-weight: 700; color: var(--accent); }
