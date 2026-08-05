@@ -202,11 +202,13 @@ export default function Deals() {
       r2_applied_ym: d.r2_applied_ym ?? '',
       r1_target_price: d.r1_target_price == null ? '' : String(d.r1_target_price),
       r2_target_price: d.r2_target_price == null ? '' : String(d.r2_target_price),
-      // 開発者は取込のズレ（法人名・器種・出荷単価など）も一覧から直せる
+      // 開発者は取込のズレ（法人名・器種・支店・営業所・出荷単価など）も一覧から直せる
       corp_name: d.corp_name ?? '',
       customer_name: d.customer_name ?? '',
       model_name: d.model_name ?? '',
       equip_name: d.equip_name ?? '',
+      branch: d.branch ?? '',
+      office: d.office ?? '',
       sales_person: d.sales_person ?? '',
       base_price: d.base_price == null ? '' : String(d.base_price),
     });
@@ -450,7 +452,7 @@ export default function Deals() {
         <table className="tbl deals">
           <thead>
             <tr>
-              <th colSpan={5} className="grp">基本情報</th>
+              <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
               <th className="grp sep">交渉状況<br /><small>（法人）</small></th>
               <th className="num grp sep">出荷単価❶</th>
               <th colSpan={4} className="grp sep">第1弾</th>
@@ -463,6 +465,8 @@ export default function Deals() {
               <Th col="customer_name">得意先 / 納入先</Th>
               <Th col="model_name">器種名</Th>
               <Th col="equip_name">器具区分</Th>
+              {isDev && <th>支店</th>}
+              {isDev && <th>営業所</th>}
               <Th col="sales_person">担当者</Th>
               <th className="sep"></th>
               <Th col="base_price" className="num sep" />
@@ -511,6 +515,8 @@ export default function Deals() {
                     )}
                   </td>
                   <td>{isEditing && isDev ? baseCell(d, 'equip_name') : d.equip_name}</td>
+                  {isDev && <td>{isEditing ? baseCell(d, 'branch') : d.branch}</td>}
+                  {isDev && <td>{isEditing ? baseCell(d, 'office') : d.office}</td>}
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : d.sales_person}</td>
 
                   <td className="sep">
@@ -623,9 +629,10 @@ export default function Deals() {
 
       {isDev ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          開発者のため、「入力」で取込項目（法人名・得意先名・器種名・器具区分・担当者・出荷単価❶）と
-          目標単価❷❻も直せます。変更は入力欄を離れた時点で保存されます。
-          支店・営業所・コード類など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
+          開発者のため、支店・営業所の列が表示され、「入力」で取込項目
+          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価❶）と
+          目標単価❷❻を直せます。変更は入力欄を離れた時点で保存されます。
+          コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
         </p>
       ) : isAdmin ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
