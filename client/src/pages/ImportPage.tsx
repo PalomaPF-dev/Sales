@@ -6,14 +6,6 @@ import { useUser } from '../user';
 import AggImportCard from '../components/AggImportCard';
 import HistImportCard from '../components/HistImportCard';
 
-interface Batch {
-  id: number;
-  filename: string;
-  row_count: number;
-  imported_by_name: string | null;
-  imported_at: string;
-}
-
 /** 取込データの点検結果（数字だけになっている名前欄） */
 interface Finding { column: string; label: string; param: string; value: string; deals: number }
 
@@ -28,16 +20,12 @@ interface Finding { column: string; label: string; param: string; value: string;
  */
 export default function ImportPage() {
   const me = useUser();
-  const [batches, setBatches] = useState<Batch[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const canDelete = ['planning', 'admin', 'developer'].includes(me.role);
   const canCheck = me.role === 'admin' || me.role === 'developer';
   const navigate = useNavigate();
 
   const load = () => {
-    api<Batch[]>('/import/batches').then(setBatches).catch(() => {});
     // 取込のたびに点検し直す（列ズレの値が入ったらすぐ気づけるように）
     if (canCheck) {
       api<{ findings: Finding[] }>('/admin/data-check')
@@ -46,25 +34,6 @@ export default function ImportPage() {
     }
   };
   useEffect(load, []);
-
-  const removeBatch = async (b: Batch) => {
-    const ok = confirm(
-      `取込 #${b.id}（${b.filename} / ${b.row_count.toLocaleString()}行）を取り消します。\n`
-      + 'この取込で「追加」された明細が削除されます（上書き更新された行は元に戻りません）。よろしいですか？'
-    );
-    if (!ok) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await api<{ deleted: number }>(`/import/batches/${b.id}`, { method: 'DELETE' });
-      setMsg({ kind: 'ok', text: `取込 #${b.id} を取り消しました（${res.deleted.toLocaleString()}行を削除）` });
-      load();
-    } catch (e) {
-      setMsg({ kind: 'error', text: (e as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div>
@@ -126,46 +95,6 @@ export default function ImportPage() {
         </Card>
       )}
 
-      <Card title="取込履歴">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>#</th><th>ファイル名</th><th className="num">行数</th><th>取込者</th><th>取込日時</th>
-              {canDelete && <th></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {batches.map((b) => (
-              <tr key={b.id}>
-                <td>{b.id}</td>
-                <td>{b.filename}</td>
-                <td className="num">{b.row_count.toLocaleString()}</td>
-                <td>{b.imported_by_name || 'CLI'}</td>
-                <td>{b.imported_at}</td>
-                {canDelete && (
-                  <td>
-                    <button className="btn secondary sm" disabled={busy} onClick={() => removeBatch(b)}>
-                      取り消し
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-            {batches.length === 0 && (
-              <tr>
-                <td colSpan={canDelete ? 6 : 5} style={{ color: 'var(--muted)', textAlign: 'center', padding: 24 }}>
-                  取込履歴はありません
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          毎日の取り込み直しは「更新」になるため、行数が増えるのは新しい得意先×納入先×商品が
-          増えたときだけです。「取り消し」は、その取込で新しく追加された行だけを削除します
-          （上書き更新された値は元に戻りません）。
-        </p>
-      </Card>
     </div>
   );
 }
