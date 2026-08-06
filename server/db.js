@@ -385,10 +385,29 @@ export const db = {
 let initialized = null;
 
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
+// スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
+// この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
+const SCHEMA_VERSION = '2026-08-06-agg-hist';
+
+/**
+ * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
+ * サーバーレスでは起動のたびに initDb が走るため、
+ * ここを省けるかどうかが初回表示の速さに直結する。
+ */
+async function isUpToDate() {
+  try {
+    const row = await db.get("SELECT value FROM settings WHERE key = 'schema_version'");
+    return row?.value === SCHEMA_VERSION;
+  } catch {
+    return false;   // settings が無い＝初回。通常の初期化へ
+  }
+}
+
 export async function initDb() {
   if (initialized) return initialized;
   initialized = (async () => {
     if (isPostgres) await preparePostgresSchema();
+    if (await isUpToDate()) return;
     // スキーマ適用より先に、既存DBの形をそろえておく。
     // 計算列ビューは列構成が変わると作り直しになり、
     // ビューが参照する列はスキーマ適用前に存在している必要がある。
@@ -398,6 +417,12 @@ export async function initDb() {
     await db.exec(schema);
     await migrate();
     await seedMasters();
+    // 次回以降の起動で重い確認を省くための印
+    try {
+      await db.run(
+        `INSERT INTO settings (key, value) VALUES ('schema_version', ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value`, [SCHEMA_VERSION]);
+    } catch { /* 印を残せなくても動作に支障はない（毎回確認になるだけ） */ }
   })();
   try {
     return await initialized;
