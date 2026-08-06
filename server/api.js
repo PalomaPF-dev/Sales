@@ -1191,56 +1191,13 @@ function scopeInfo(user) {
 api.get('/dashboard', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
-  // 同じ条件で「一覧を見る」「集計を見る」を行き来できるようにするため、
-  // 判定を別に持たず dealFilters を共有する。
   const { where, params: p } = dealFilters(req.query, req.user);
   const andWhere = (cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
 
-  // 進捗の数え方は一箇所にまとめる。集計軸が増えても同じ定義で揃うようにする。
-  // （列名の r2_ は旧・第2弾の名残。いまは唯一の交渉を指す）
-  const progress = `
-    COUNT(*) AS deals,
-    SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
-    SUM(CASE WHEN r2_state = 'agreed' THEN 1 ELSE 0 END) AS r2_agreed,
-    SUM(CASE WHEN r2_state = 'open' THEN 1 ELSE 0 END) AS r2_open,
-    SUM(CASE WHEN r2_state <> 'open' AND r2_agreed_price > 0 AND r2_target_price IS NOT NULL
-                  AND r2_agreed_price < r2_target_price THEN 1 ELSE 0 END) AS r2_below`;
-
-  // 値上げ額の合計と目標に対する達成率。
-  // 目標額 = 目標単価と現行単価の差、実績額 = 実際に上がった幅（deal_calcと同じ定義）。
-  const amounts = `
-    COUNT(*) AS deals,
-    SUM(CASE WHEN r2_target_price IS NOT NULL AND base_price IS NOT NULL
-             THEN r2_target_price - base_price ELSE 0 END) AS r2_target_amount,
-    SUM(CASE WHEN r2_state <> 'open' THEN COALESCE(r2_raise_unit, 0) ELSE 0 END) AS r2_agreed_amount`;
-
-  const [totals, byOffice, byPerson, byEquip, corpStatus, applied, byBranchAmount, amountTotals] = await Promise.all([
-    db.get(`SELECT ${progress} FROM deal_calc ${where}`, p),
-    db.all(`SELECT branch, office, ${progress} FROM deal_calc ${where}
-             GROUP BY branch, office ORDER BY COUNT(*) DESC`, p),
-    db.all(`SELECT sales_person AS name, branch, office, ${progress} FROM deal_calc ${where}
-             GROUP BY sales_person, branch, office ORDER BY COUNT(*) DESC`, p),
-    db.all(`SELECT equip_name AS name, ${progress} FROM deal_calc ${where}
-             GROUP BY equip_name ORDER BY COUNT(*) DESC`, p),
-    // 法人ごとの交渉状況の内訳。未設定は「未着手」として数える
-    db.all(`
-      SELECT COALESCE((SELECT c.status FROM corp_negotiations c
-                        WHERE c.corp_code = deal_calc.corp_code), 'not_started') AS status,
-             COUNT(DISTINCT corp_code) AS corps
-        FROM deal_calc ${andWhere('corp_code IS NOT NULL')}
-       GROUP BY 1`, p),
-    // 適用年月ごとの件数（いつから効くのかを見るため）
-    db.all(`
-      SELECT r2_applied_ym AS ym, COUNT(*) AS r2 FROM deal_calc
-       ${andWhere('r2_done = 1 AND r2_applied_ym IS NOT NULL')}
-       GROUP BY r2_applied_ym ORDER BY r2_applied_ym`, p),
-    db.all(`SELECT branch, ${amounts} FROM deal_calc ${where} GROUP BY branch`, p),
-    db.get(`SELECT ${amounts} FROM deal_calc ${where}`, p),
-  ]);
-
-  // 出荷金額とA基準の月別合計（マスタ登録の行だけが対象）。
-  // 出荷金額 = 出荷単価×数量の合計。A基準の各月は、数量を固定したまま
-  // その月の申請単価に置き換えた場合の合計（申請どおり通ったときの売上の見通し）。
+  // 支店別・法人別の値上げ額。
+  //   目標額 = 現状の出荷単価 × 数量の合計
+  //   実績   = マスタ登録単価（A基準）前提で、数量を固定したままの月別合計
+  //   値上げ額 = 実績（3か月後） − 目標額
   const ab = `
     COUNT(*) AS deals,
     SUM(qty) AS qty,
@@ -1254,30 +1211,18 @@ api.get('/dashboard', wrap(async (req, res) => {
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
              GROUP BY branch`, p),
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM(base_price * qty) DESC LIMIT 20`, p),
+             GROUP BY corp_name ORDER BY SUM(base_price * qty) DESC LIMIT 30`, p),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
 
-  // 支店は都道府県順（選択肢と同じ並び）
-  byBranchAmount.sort((a, b) => comparePref(a.branch, b.branch));
-
   res.json({
     scope: scopeInfo(req.user),
-    totals,
     abTotals,
     abByBranch,
     abByCorp,
     aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
-    byBranchAmount,
-    amountTotals,
-    byOffice,
-    byPerson,
-    byEquip,
-    corpStatus,
-    applied,
-    corpStatuses: CORP_STATUSES,
   });
 }));
 

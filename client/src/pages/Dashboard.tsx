@@ -1,103 +1,38 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card } from '../components/ui';
 import type { Meta } from '../types';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
-const FILTER_KEYS = ['q', 'equip', 'person', 'corp', 'branch', 'office', 'r2State', 'below'] as const;
+const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office'] as const;
 
-/** 進捗の数え方はサーバーと揃える（件数と割合。金額は扱わない） */
-interface Progress {
-  deals: number;
-  r2_done: number;
-  r2_agreed: number;
-  r2_open: number;
-  /** 合意単価が目標に届かなかった件数 */
-  r2_below: number;
-}
-
-interface Row extends Progress {
-  name?: string | null;
-  branch?: string | null;
-  office?: string | null;
-}
-
-/** 支店別の値上げ額（目標と実績）。達成率はここから計算する */
-interface BranchAmount {
-  branch: string | null;
-  deals: number;
-  r2_target_amount: number;
-  r2_agreed_amount: number;
-}
-
-/** 出荷金額とA基準の月別合計（マスタ登録の行の集計） */
+/**
+ * 支店別・法人別の値上げ額の集計。
+ *   目標額 = 現状の出荷単価 × 数量の合計
+ *   実績   = マスタ登録単価（A基準）前提で、数量を固定したままの月別合計
+ *   値上げ額 = 実績（3か月後） − 目標額
+ */
 interface AbRow {
   name?: string | null;
   deals: number;
   qty: number;
-  base_amt: number;   // 出荷単価×数量の合計
-  a1_amt: number;     // A基準（翌月）×数量の合計
+  base_amt: number;
+  a1_amt: number;
   a2_amt: number;
   a3_amt: number;
 }
 
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
-  totals: Progress;
   abTotals?: AbRow;
   abByBranch?: AbRow[];
   abByCorp?: AbRow[];
   aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string } | null;
-  byBranchAmount: BranchAmount[];
-  amountTotals: BranchAmount;
-  byOffice: Row[];
-  byPerson: Row[];
-  byEquip: Row[];
-  corpStatus: { status: string; corps: number }[];
-  applied: { ym: string; r2: number }[];
-  corpStatuses: { code: string; name: string }[];
 }
 
-const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
 const num = (n: unknown) => Number(n ?? 0);
-
-/** 進捗の帯。完了・合意済・未入力の3段階を並べて、量と割合を同時に見せる */
-function Bar({ done, agreed, total }: { done: number; agreed: number; total: number }) {
-  const d = pct(done, total);
-  const a = pct(agreed, total);
-  return (
-    <div className="pbar" title={`完了 ${done.toLocaleString()} / 合意済 ${agreed.toLocaleString()} / 全${total.toLocaleString()}`}>
-      <span className="seg done" style={{ width: `${d}%` }} />
-      <span className="seg agreed" style={{ width: `${a}%` }} />
-    </div>
-  );
-}
-
 const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
-
-/** 達成率。目標が無い場合は「—」 */
-function Rate({ agreed, target }: { agreed: number; target: number }) {
-  if (!(target > 0)) return <span style={{ color: 'var(--muted)' }}>—</span>;
-  const r = Math.round((agreed / target) * 1000) / 10;
-  return (
-    <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600,
-                   color: r >= 100 ? 'var(--ok, #047857)' : undefined }}>
-      {r.toLocaleString()}%
-    </span>
-  );
-}
-
-/** 達成率の帯（100%を上限に塗る） */
-function RateBar({ agreed, target }: { agreed: number; target: number }) {
-  if (!(target > 0)) return null;
-  const w = Math.max(0, Math.min(100, (agreed / target) * 100));
-  return (
-    <div className="pbar" title={`実績 ${yen(agreed)} / 目標 ${yen(target)}`}>
-      <span className="seg done" style={{ width: `${w}%` }} />
-    </div>
-  );
-}
 
 /** KPIタイル。既存の .tiles / .tile の見た目に合わせる */
 function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -110,74 +45,17 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
-/** 集計表。行の見出しだけ差し替えて使い回す */
-function ProgressTable({ rows, head, onPick }: {
-  rows: Row[];
-  head: string;
-  onPick?: (r: Row) => void;
-}) {
-  if (!rows.length) return <p className="pt-note">対象がありません。</p>;
-  return (
-    <div className="tbl-scroll" style={{ maxHeight: 420 }}>
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th>{head}</th>
-            <th style={{ textAlign: 'right' }}>案件</th>
-            <th style={{ width: 220 }}>進捗</th>
-            <th style={{ textAlign: 'right' }}>完了率</th>
-            <th style={{ textAlign: 'right' }}>目標未達</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const total = num(r.deals);
-            const label = r.name ?? [r.branch, r.office].filter(Boolean).join(' / ') ?? '—';
-            return (
-              <tr key={`${label}-${i}`}>
-                <td>
-                  {onPick ? (
-                    <a href="#" onClick={(e) => { e.preventDefault(); onPick(r); }}>{label || '—'}</a>
-                  ) : (label || '—')}
-                  {r.name && (r.branch || r.office) && (
-                    <div className="sub">{[r.branch, r.office].filter(Boolean).join(' / ')}</div>
-                  )}
-                </td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{total.toLocaleString()}</td>
-                <td><Bar done={num(r.r2_done)} agreed={num(r.r2_agreed)} total={total} /></td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{pct(num(r.r2_done), total)}%</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                  {num(r.r2_below) > 0
-                    ? <span className="badge orange">{num(r.r2_below).toLocaleString()}</span> : '—'}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 export default function Dashboard() {
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<DashboardRes | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [msg, setMsg] = useState('');
-  const navigate = useNavigate();
 
   const get = (k: string) => params.get(k) || '';
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value); else next.delete(key);
     setParams(next, { replace: true });
-  };
-  /** いまの絞り込みを引き継いで案件一覧へ移る */
-  const toDeals = (extra: Record<string, string> = {}) => {
-    const qs = new URLSearchParams();
-    for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
-    for (const [k, v] of Object.entries(extra)) if (v) qs.set(k, v);
-    navigate(`/deals?${qs}`);
   };
 
   useEffect(() => {
@@ -191,21 +69,66 @@ export default function Dashboard() {
     api<DashboardRes>(`/dashboard?${qs}`).then(setData).catch((e) => setMsg(e.message));
   }, [params]);
 
-  const filtered = FILTER_KEYS.some((k) => get(k));
-
   if (msg) return <div className="alert error">{msg}</div>;
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
 
-  const t = data.totals;
-  const total = num(t.deals);
-  const statusName = (code: string) =>
-    data.corpStatuses.find((s) => s.code === code)?.name ?? code;
+  const t = data.abTotals;
+  const totalGain = num(t?.a3_amt) - num(t?.base_amt);
+  const m1 = data.aggMeta?.m1 || '翌月';
+  const m2 = data.aggMeta?.m2 || '翌々月';
+  const m3 = data.aggMeta?.m3 || '3か月後';
+  const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
+
+  /** 集計表。支店別・法人別で同じ形を使う */
+  const AbTable = ({ head, rows }: { head: string; rows: AbRow[] }) => (
+    <div className="tbl-scroll" style={{ maxHeight: 420 }}>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>{head}</th>
+            <th style={{ textAlign: 'right' }}>件数</th>
+            <th style={{ textAlign: 'right' }}>数量</th>
+            <th style={{ textAlign: 'right' }} title="現状の出荷単価 × 数量の合計">目標額<br /><small>（出荷単価前提）</small></th>
+            <th style={{ textAlign: 'right' }}>実績 {m1}</th>
+            <th style={{ textAlign: 'right' }}>実績 {m2}</th>
+            <th style={{ textAlign: 'right' }}>実績 {m3}</th>
+            <th style={{ textAlign: 'right' }} title="実績（3か月後）− 目標額">値上げ額</th>
+          </tr>
+        </thead>
+        <tbody>
+          {[...rows, { ...t!, name: '合計' }].map((r, i) => {
+            const last = i === rows.length;
+            const gain = num(r.a3_amt) - num(r.base_amt);
+            return (
+              <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
+                <td>{r.name || '—'}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.deals).toLocaleString()}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.qty).toLocaleString()}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.base_amt))}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.a1_amt))}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.a2_amt))}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.a3_amt))}</td>
+                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600,
+                             color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
+                  {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
     <div>
       <h1 className="page-title">ダッシュボード</h1>
       <p className="page-sub">
-        値上げの進み具合です。表示範囲: <strong>{data.scope.label}</strong>
+        支店別・法人別の値上げ額です。<strong>目標額</strong>は現状の出荷単価
+        {data.aggMeta?.basePeriod && `（${data.aggMeta.basePeriod}）`} × 数量の合計、
+        <strong>実績</strong>はマスタ登録単価（A基準）前提で数量を固定した月別合計、
+        その差が<strong>値上げ額</strong>です。
+        表示範囲: <strong>{data.scope.label}</strong>
       </p>
 
       <div className="filters">
@@ -219,7 +142,7 @@ export default function Dashboard() {
         <label className="fld">
           支店
           <select value={get('branch')} onChange={(e) => { setParam('branch', e.target.value); setParam('office', ''); }}>
-            <option value="">すべて</option>
+            <option value="">全社</option>
             {meta?.branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
           </select>
         </label>
@@ -227,16 +150,7 @@ export default function Dashboard() {
           営業所
           <select value={get('office')} onChange={(e) => setParam('office', e.target.value)}>
             <option value="">すべて</option>
-            {meta?.offices
-              .filter((o) => !get('branch') || o.branch === get('branch'))
-              .map((o) => <option key={`${o.branch}-${o.name}`} value={o.name}>{o.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          担当者
-          <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+            {offices.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
           </select>
         </label>
         <label className="fld">
@@ -247,226 +161,29 @@ export default function Dashboard() {
           </select>
         </label>
         <label className="fld">
-          状態
-          <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
+          担当者
+          <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
             <option value="">すべて</option>
-            {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
+            {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           </select>
         </label>
-        <label className="fld">
-          目標との差
-          <select value={get('below')} onChange={(e) => setParam('below', e.target.value)}>
-            <option value="">すべて</option>
-            <option value="r2">目標未達</option>
-          </select>
-        </label>
-        {filtered && (
-          <label className="fld" style={{ justifyContent: 'flex-end' }}>
-            <span style={{ visibility: 'hidden' }}>操作</span>
-            <button className="btn secondary" onClick={() => setParams(new URLSearchParams(), { replace: true })}>
-              絞り込みを解除
-            </button>
-          </label>
-        )}
       </div>
-
-      <div className="toolbar">
-        <span className="count">
-          {filtered ? '絞り込んだ結果を集計しています' : '全体を集計しています'}
-        </span>
-        <div className="grow" />
-        <button className="btn dark sm" onClick={() => toDeals()}>この条件で案件一覧を見る</button>
-      </div>
-
-      {data.scope.note && <div className="alert error">{data.scope.note}</div>}
-
-      {total === 0 && !data.scope.note && (
-        <div className="alert info">
-          {data.scope.level === 'all'
-            ? '対象の案件がありません。Excel取込が済んでいるかご確認ください。'
-            : `「${data.scope.label}」に該当する案件がありません。`
-              + 'Excel取込が済んでいないか、登録されている支店・営業所の表記が'
-              + '案件データと一致していない可能性があります。営業企画部にご確認ください。'}
-        </div>
-      )}
 
       <div className="tiles">
-        <Kpi label="対象案件" value={total.toLocaleString()} sub="件" />
-        <Kpi label="完了" value={`${pct(num(t.r2_done), total)}%`}
-          sub={`${num(t.r2_done).toLocaleString()} / ${total.toLocaleString()} 件`} />
-        <Kpi label="合意済（未完了）" value={num(t.r2_agreed).toLocaleString()} sub="件" />
-        <Kpi label="未入力" value={num(t.r2_open).toLocaleString()} sub="件" />
-        <Kpi label="目標未達" value={num(t.r2_below).toLocaleString()} sub="件" />
+        <Kpi label="対象" value={`${num(t?.deals).toLocaleString()}件`} sub={`数量 ${num(t?.qty).toLocaleString()}`} />
+        <Kpi label="目標額（出荷単価前提）" value={yen(num(t?.base_amt))} />
+        <Kpi label={`実績（${m3}・A基準前提）`} value={yen(num(t?.a3_amt))} />
+        <Kpi label="値上げ額の合計" value={`${totalGain >= 0 ? '＋' : '−'}${yen(Math.abs(totalGain))}`}
+             sub={num(t?.base_amt) > 0 ? `目標額比 ${(Math.round((totalGain / num(t?.base_amt)) * 1000) / 10).toLocaleString()}%` : undefined} />
       </div>
 
-      {num(t.r2_below) > 0 && (
-        <div className="alert warn">
-          合意単価が目標に届かなかった案件が
-          <strong> {num(t.r2_below).toLocaleString()}件 </strong>
-          あります。
-          <a href="#" onClick={(e) => { e.preventDefault(); toDeals({ below: 'r2' }); }}>
-            一覧で確認する
-          </a>
-        </div>
-      )}
-
-      {num(data.abTotals?.deals) > 0 && (
-        <Card title="出荷金額とA基準の月別合計">
-          <p className="pt-note" style={{ marginTop: 0 }}>
-            出荷金額 = 出荷単価{data.aggMeta?.basePeriod && `（${data.aggMeta.basePeriod}）`} × 数量の合計。
-            A基準の各月は、数量を固定したまま、その月の申請単価に置き換えた場合の合計です
-            （申請どおりに通ったときの売上の見通し）。
-          </p>
-          {([
-            { title: '支店別', rows: data.abByBranch ?? [] },
-            { title: '法人別（出荷金額の上位20）', rows: data.abByCorp ?? [] },
-          ] as { title: string; rows: AbRow[] }[]).map((sec) => (
-            <div key={sec.title} style={{ marginBottom: 14 }}>
-              <div className="section-title">{sec.title}</div>
-              <div className="tbl-scroll" style={{ maxHeight: 340 }}>
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>{sec.title.startsWith('法人') ? '法人' : '支店'}</th>
-                      <th style={{ textAlign: 'right' }}>件数</th>
-                      <th style={{ textAlign: 'right' }}>数量</th>
-                      <th style={{ textAlign: 'right' }}>出荷金額</th>
-                      <th style={{ textAlign: 'right' }}>A基準 {data.aggMeta?.m1 || '翌月'}</th>
-                      <th style={{ textAlign: 'right' }}>A基準 {data.aggMeta?.m2 || '翌々月'}</th>
-                      <th style={{ textAlign: 'right' }}>A基準 {data.aggMeta?.m3 || '3か月後'}</th>
-                      <th style={{ textAlign: 'right' }} title="A基準（3か月後）の合計と出荷金額の差">増加額</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...sec.rows, { ...data.abTotals!, name: '合計' }].map((r, i) => {
-                      const last = i === sec.rows.length;
-                      const gain = num(r.a3_amt) - num(r.base_amt);
-                      return (
-                        <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
-                          <td>{r.name || '—'}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.deals).toLocaleString()}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.qty).toLocaleString()}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.base_amt))}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.a1_amt))}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.a2_amt))}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.a3_amt))}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums',
-                                       color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
-                            {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}¥${yen(Math.abs(gain))}`}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
-        </Card>
-      )}
-
-      <Card title="支店別の値上げ額と達成率">
-        {data.byBranchAmount.length === 0 ? (
-          <p className="pt-note" style={{ margin: 0 }}>対象がありません。</p>
-        ) : (
-          <div className="tbl-scroll" style={{ maxHeight: 480 }}>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>支店</th>
-                  <th style={{ textAlign: 'right' }}>案件</th>
-                  <th style={{ textAlign: 'right' }}>目標額</th>
-                  <th style={{ textAlign: 'right' }}>実績額</th>
-                  <th style={{ width: 180 }}></th>
-                  <th style={{ textAlign: 'right' }}>達成率</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.byBranchAmount.map((b, i) => (
-                  <tr key={`${b.branch}-${i}`}>
-                    <td>
-                      <a href="#" onClick={(e) => { e.preventDefault(); toDeals({ branch: b.branch ?? '' }); }}>
-                        {b.branch || '（支店なし）'}
-                      </a>
-                    </td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(b.deals).toLocaleString()}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r2_target_amount))}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(b.r2_agreed_amount))}</td>
-                    <td><RateBar agreed={num(b.r2_agreed_amount)} target={num(b.r2_target_amount)} /></td>
-                    <td style={{ textAlign: 'right' }}><Rate agreed={num(b.r2_agreed_amount)} target={num(b.r2_target_amount)} /></td>
-                  </tr>
-                ))}
-              </tbody>
-              {data.byBranchAmount.length > 1 && (
-                <tfoot>
-                  <tr style={{ fontWeight: 700, borderTop: '2px solid var(--line, #e2e8f0)' }}>
-                    <td>合計</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(data.amountTotals.deals).toLocaleString()}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r2_target_amount))}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(data.amountTotals.r2_agreed_amount))}</td>
-                    <td></td>
-                    <td style={{ textAlign: 'right' }}><Rate agreed={num(data.amountTotals.r2_agreed_amount)} target={num(data.amountTotals.r2_target_amount)} /></td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
-        )}
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          目標額 = 目標単価と現行単価の差の合計。実績額 = 実際に上がった単価幅の合計（合意済・完了の案件）。
-          達成率 = 実績額 ÷ 目標額。支店は都道府県順です。支店名を押すとその支店の案件一覧へ移れます。
-        </p>
+      <Card title="支店別の値上げ額">
+        <AbTable head="支店" rows={data.abByBranch ?? []} />
       </Card>
 
-      <Card title="法人ごとの交渉状況">
-        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-          {data.corpStatus.length === 0 && <p className="pt-note" style={{ margin: 0 }}>対象がありません。</p>}
-          {data.corpStatus.map((s) => (
-            <div key={s.status}>
-              <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>{statusName(s.status)}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{num(s.corps).toLocaleString()}<span style={{ fontSize: 12, fontWeight: 400 }}> 法人</span></div>
-            </div>
-          ))}
-        </div>
+      <Card title="法人別の値上げ額（目標額の上位30）">
+        <AbTable head="法人" rows={data.abByCorp ?? []} />
       </Card>
-
-      {data.byOffice.length > 1 && (
-        <Card title="営業所別の進捗">
-          <ProgressTable rows={data.byOffice} head="支店 / 営業所"
-            onPick={(r) => navigate(`/deals?branch=${encodeURIComponent(r.branch ?? '')}&office=${encodeURIComponent(r.office ?? '')}`)} />
-        </Card>
-      )}
-
-      <Card title="担当者別の進捗">
-        <ProgressTable rows={data.byPerson} head="担当者"
-          onPick={(r) => navigate(`/deals?person=${encodeURIComponent(r.name ?? '')}`)} />
-      </Card>
-
-      <Card title="器具区分別の進捗">
-        <ProgressTable rows={data.byEquip} head="器具区分"
-          onPick={(r) => navigate(`/deals?equip=${encodeURIComponent(r.name ?? '')}`)} />
-      </Card>
-
-      {data.applied.length > 0 && (
-        <Card title="値上げの適用年月">
-          <div className="tbl-scroll" style={{ maxHeight: 300 }}>
-            <table className="tbl">
-              <thead><tr><th>適用年月</th><th style={{ textAlign: 'right' }}>件数</th></tr></thead>
-              <tbody>
-                {data.applied.map((a) => (
-                  <tr key={a.ym}>
-                    <td>{a.ym}</td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(a.r2).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="pt-note" style={{ marginTop: 10 }}>
-            完了にした案件のうち、適用年月が入っているものを数えています。
-          </p>
-        </Card>
-      )}
     </div>
   );
 }
