@@ -24,6 +24,7 @@ interface SimRow {
 const GROUPS = [
   { key: 'equip', label: '器具区分ごと' },
   { key: 'corp', label: '法人ごと' },
+  { key: 'corp_equip', label: '法人×器具区分ごと' },
   { key: 'branch', label: '支店ごと' },
 ];
 
@@ -45,8 +46,10 @@ export default function Simulation() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [adj, setAdj] = useState('0');       // 販売数量の増減（%）全体の初期値
   const [assume, setAssume] = useState('100'); // B未入力の想定（Aの%）
-  // グループ（法人・器具区分・支店）ごとの増減%。空欄は全体の%に従う
+  // グループ（法人・器具区分・支店・法人×器具区分）ごとの増減%。空欄は全体の%に従う
   const [rowAdj, setRowAdj] = useState<Record<string, string>>({});
+  // 表示の絞り込み（法人×器具区分は数万グループになるため）。合計は全グループ分のまま
+  const [q, setQ] = useState('');
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
@@ -54,7 +57,7 @@ export default function Simulation() {
   }, []);
   useEffect(() => {
     api<{ rows: SimRow[]; withCost: boolean }>(`/simulation?group=${group}`)
-      .then((r) => { setRows(r.rows); setWithCost(r.withCost); setRowAdj({}); })
+      .then((r) => { setRows(r.rows); setWithCost(r.withCost); setRowAdj({}); setQ(''); })
       .catch((e) => setMsg(e.message));
   }, [group]);
 
@@ -89,9 +92,11 @@ export default function Simulation() {
     aSales: t.aSales + r.aSales, bSales: t.bSales + r.bSales, diff: t.diff + r.diff,
   }), { deals: 0, qty: 0, baseSales: 0, aSales: 0, bSales: 0, diff: 0 }), [calc]);
 
-  // 法人ごとは数千グループになるため、表示は数量上位に絞る（合計は全グループ分）
+  // 法人ごと・法人×器具区分は数千〜数万グループになるため、表示は数量上位に絞る
+  // （合計は全グループ分のまま）。名前の絞り込みで目的の法人・器具を出せる
   const DISPLAY_MAX = 300;
-  const shown = calc.slice(0, DISPLAY_MAX);
+  const filtered = q.trim() ? calc.filter((r) => r.name.includes(q.trim())) : calc;
+  const shown = filtered.slice(0, DISPLAY_MAX);
 
   const m3 = meta?.aggMeta?.m3 || '3か月後';
 
@@ -121,6 +126,11 @@ export default function Simulation() {
           B未入力の想定（Aの%）
           <input type="number" value={assume} step="1"
             onChange={(e) => setAssume(e.target.value)} style={{ width: 110 }} />
+        </label>
+        <label className="fld" style={{ minWidth: 220, flex: '1 1 220px' }}>
+          表示の絞り込み（法人名・器具区分）
+          <input type="text" value={q} placeholder="例: 東京ガス ／ ビルトイン"
+            onChange={(e) => setQ(e.target.value)} />
         </label>
       </div>
 

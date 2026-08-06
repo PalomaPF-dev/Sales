@@ -1287,8 +1287,20 @@ api.get('/dashboard', wrap(async (req, res) => {
  */
 api.get('/simulation', wrap(async (req, res) => {
   if (!requireRole(req, res, ['planning'])) return;
-  const colMap = { equip: 'equip_name', corp: 'corp_name', branch: 'branch' };
-  const col = colMap[String(req.query.group ?? 'equip')] ?? 'equip_name';
+  // 法人×器具区分は、法人の中で器具ごとに単価が決まるため、
+  // 販売計画の増減もその粒度で設定できるようにする
+  const group = String(req.query.group ?? 'equip');
+  let nameSel;
+  let groupBy;
+  if (group === 'corp_equip') {
+    nameSel = "corp_name || '｜' || COALESCE(equip_name, '—') AS name";
+    groupBy = 'corp_name, equip_name';
+  } else {
+    const colMap = { equip: 'equip_name', corp: 'corp_name', branch: 'branch' };
+    const col = colMap[group] ?? 'equip_name';
+    nameSel = `${col} AS name`;
+    groupBy = col;
+  }
   const scope = scopeConditions(req.user);
   const where = ['agg_key IS NOT NULL', 'qty > 0', ...scope.where].join(' AND ');
   const isAdm = isAdminRole(req.user.role);
@@ -1297,7 +1309,7 @@ api.get('/simulation', wrap(async (req, res) => {
         SUM(CASE WHEN cost_price IS NOT NULL THEN qty ELSE 0 END) AS cost_qty`
     : '';
   const rows = await db.all(`
-    SELECT ${col} AS name, COUNT(*) AS deals, SUM(qty) AS qty,
+    SELECT ${nameSel}, COUNT(*) AS deals, SUM(qty) AS qty,
            SUM(base_price * qty) AS base_amt,
            SUM(a_price_m1 * qty) AS a1_amt,
            SUM(a_price_m2 * qty) AS a2_amt,
@@ -1308,7 +1320,7 @@ api.get('/simulation', wrap(async (req, res) => {
            SUM(CASE WHEN b_price IS NULL THEN a_price_m3 * qty ELSE 0 END) AS a3_amt_nob
            ${costCols}
       FROM deal_calc WHERE ${where}
-     GROUP BY ${col} ORDER BY SUM(qty) DESC`, scope.params);
+     GROUP BY ${groupBy} ORDER BY SUM(qty) DESC`, scope.params);
   res.json({ rows, withCost: isAdm });
 }));
 
