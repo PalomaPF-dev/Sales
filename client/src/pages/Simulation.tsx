@@ -43,8 +43,10 @@ export default function Simulation() {
   const [rows, setRows] = useState<SimRow[]>([]);
   const [withCost, setWithCost] = useState(false);
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [adj, setAdj] = useState('0');       // 販売数量の増減（%）
+  const [adj, setAdj] = useState('0');       // 販売数量の増減（%）全体の初期値
   const [assume, setAssume] = useState('100'); // B未入力の想定（Aの%）
+  // グループ（法人・器具区分・支店）ごとの増減%。空欄は全体の%に従う
+  const [rowAdj, setRowAdj] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
@@ -52,18 +54,21 @@ export default function Simulation() {
   }, []);
   useEffect(() => {
     api<{ rows: SimRow[]; withCost: boolean }>(`/simulation?group=${group}`)
-      .then((r) => { setRows(r.rows); setWithCost(r.withCost); })
+      .then((r) => { setRows(r.rows); setWithCost(r.withCost); setRowAdj({}); })
       .catch((e) => setMsg(e.message));
   }, [group]);
 
-  const adjRate = 1 + (Number(adj) || 0) / 100;
   const assumeRate = (Number(assume) || 0) / 100;
 
   const calc = useMemo(() => rows.map((r) => {
+    // 増減%は、そのグループに個別の値があればそれを、無ければ全体の値を使う
+    const own = (rowAdj[r.name ?? ''] ?? '').trim();
+    const adjRate = 1 + (Number(own === '' ? adj : own) || 0) / 100;
     const aSales = num(r.a3_amt) * adjRate;
     const bSales = (num(r.b_amt) + num(r.a3_amt_nob) * assumeRate) * adjRate;
     return {
       name: r.name || '—',
+      ownAdj: own,
       deals: num(r.deals),
       qty: num(r.qty) * adjRate,
       baseSales: num(r.base_amt) * adjRate,
@@ -77,12 +82,16 @@ export default function Simulation() {
       grossB: withCost && r.cost_amt != null
         ? (num(r.b_amt) + num(r.a3_amt_nob) * assumeRate - num(r.cost_amt)) * adjRate : null,
     };
-  }), [rows, adjRate, assumeRate, withCost]);
+  }), [rows, adj, rowAdj, assumeRate, withCost]);
 
   const total = useMemo(() => calc.reduce((t, r) => ({
     deals: t.deals + r.deals, qty: t.qty + r.qty, baseSales: t.baseSales + r.baseSales,
     aSales: t.aSales + r.aSales, bSales: t.bSales + r.bSales, diff: t.diff + r.diff,
   }), { deals: 0, qty: 0, baseSales: 0, aSales: 0, bSales: 0, diff: 0 }), [calc]);
+
+  // 法人ごとは数千グループになるため、表示は数量上位に絞る（合計は全グループ分）
+  const DISPLAY_MAX = 300;
+  const shown = calc.slice(0, DISPLAY_MAX);
 
   const m3 = meta?.aggMeta?.m3 || '3か月後';
 
@@ -118,14 +127,17 @@ export default function Simulation() {
       <Card title={`試算結果（${GROUPS.find((g) => g.key === group)?.label}）`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
           売上 = 単価 × 数量の合計 ×（1 + 増減%）。
+          <strong>増減%の欄に入れると、その{GROUPS.find((g) => g.key === group)?.label.replace('ごと', '')}だけ販売計画を変えて試算できます</strong>（空欄は上の全体の%に従います）。
           B想定売上は、決定済みの行はB基準、未入力の行は「A基準 × 想定%」で計算しています。
           {withCost && ' 粗利は実績原価を引いた概算です（管理者のみ表示）。'}
+          {calc.length > shown.length && ` 表示は数量上位${DISPLAY_MAX}グループまで（合計は全グループ分）。`}
         </p>
         <div className="tbl-scroll" style={{ maxHeight: 480 }}>
           <table className="tbl">
             <thead>
               <tr>
                 <th>{GROUPS.find((g) => g.key === group)?.label.replace('ごと', '')}</th>
+                <th style={{ textAlign: 'right' }} title="このグループだけの増減%。空欄は上の全体の%に従います">増減%</th>
                 <th style={{ textAlign: 'right' }}>数量</th>
                 <th style={{ textAlign: 'right' }}>過去実績売上</th>
                 <th style={{ textAlign: 'right' }}>A基準売上</th>
@@ -139,9 +151,17 @@ export default function Simulation() {
               </tr>
             </thead>
             <tbody>
-              {calc.map((r, i) => (
-                <tr key={i}>
+              {shown.map((r) => (
+                <tr key={r.name}>
                   <td>{r.name}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <input
+                      type="number" className="cell" placeholder={adj || '0'}
+                      value={r.ownAdj}
+                      onChange={(e) => setRowAdj((prev) => ({ ...prev, [r.name]: e.target.value }))}
+                      style={{ width: 64, textAlign: 'right' }}
+                    />
+                  </td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{Math.round(r.qty).toLocaleString()}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(r.baseSales)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(r.aSales)}</td>
@@ -159,7 +179,8 @@ export default function Simulation() {
               ))}
               {calc.length > 1 && (
                 <tr style={{ fontWeight: 700, borderTop: '2px solid var(--grid)' }}>
-                  <td>合計</td>
+                  <td>合計{calc.length > shown.length && <small style={{ fontWeight: 400 }}>（全{calc.length.toLocaleString()}グループ分）</small>}</td>
+                  <td />
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{Math.round(total.qty).toLocaleString()}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(total.baseSales)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(total.aSales)}</td>
