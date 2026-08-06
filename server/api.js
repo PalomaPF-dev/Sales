@@ -2046,6 +2046,23 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
 api.post('/agg-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const filename = String(req.body?.filename ?? 'マスタ登録.xlsx');
+
+  // 置き換えの削除は取込の「前」に行う。DB（Neon）は容量上限があり、
+  // 旧形式の行を残したまま追加すると上限に達して取込が失敗するため。
+  let removed = 0;
+  if (req.body?.removeOld === true) {
+    for (const sql of [
+      'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
+      'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
+    ]) {
+      try { await db.run(sql); } catch { /* テーブルや列が無ければ何もしない */ }
+    }
+    const r = await db.run('DELETE FROM deals WHERE agg_key IS NULL');
+    removed = Number(r?.changes ?? 0);
+    // 空いた領域をすぐ再利用できるようにする（失敗しても取込は続ける）
+    try { await db.run('VACUUM deals'); } catch { try { await db.run('VACUUM'); } catch { /* 権限が無ければ自動VACUUMに任せる */ } }
+  }
+
   const batchId = await createBatch(filename, req.user.id, null, null);
   // A基準の月（翌月・翌々月・3か月後）と出荷単価の期間の見出し
   const meta = req.body?.meta;
@@ -2060,7 +2077,7 @@ api.post('/agg-import/start', wrap(async (req, res) => {
       })]
     );
   }
-  res.json({ batchId });
+  res.json({ batchId, removed });
 }));
 
 api.post('/agg-import/chunk', wrap(async (req, res) => {

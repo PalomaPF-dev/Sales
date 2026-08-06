@@ -151,9 +151,9 @@ export async function sendAggImport(
   filename: string,
   opts: { removeOld: boolean; onProgress?: (done: number, total: number) => void }
 ): Promise<AggResult> {
-  const { batchId } = await api<{ batchId: number }>('/agg-import/start', {
+  const { batchId, removed } = await api<{ batchId: number; removed: number }>('/agg-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, meta: parsed.meta }),
+    body: JSON.stringify({ filename, meta: parsed.meta, removeOld: opts.removeOld }),
   });
   let inserted = 0;
   let updated = 0;
@@ -168,7 +168,7 @@ export async function sendAggImport(
   }
   const fin = await api<{ removed: number; total: number }>('/agg-import/finish', {
     method: 'POST',
-    body: JSON.stringify({ batchId, removeOld: opts.removeOld }),
+    body: JSON.stringify({ batchId }),
   });
-  return { inserted, updated, removed: fin.removed, total: fin.total };
+  return { inserted, updated, removed: removed + fin.removed, total: fin.total };
 }
