@@ -14,6 +14,7 @@ import CorpDetail from './pages/CorpDetail';
 import Settings from './pages/Settings';
 import Users from './pages/Users';
 import ImportPage from './pages/ImportPage';
+import Simulation from './pages/Simulation';
 import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings, IconUsers } from './components/icons';
 
 export default function App() {
@@ -113,6 +114,7 @@ export default function App() {
           <nav>
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
+            {canConfig && <NavLink to="/simulation"><IconDashboard /><span className="lbl">シミュレーション</span></NavLink>}
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
             {canConfig && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
@@ -139,6 +141,7 @@ export default function App() {
             <Route path="/deals/:id" element={<DealDetail />} />
             <Route path="/corps/:code" element={<CorpDetail />} />
             <Route path="/import" element={<ImportPage />} />
+            <Route path="/simulation" element={<Simulation />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/users" element={<Users />} />
             <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />

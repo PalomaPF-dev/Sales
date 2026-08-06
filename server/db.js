@@ -489,6 +489,14 @@ async function beforeSchema() {
     'ALTER TABLE import_batches ADD COLUMN data_hash TEXT',
     // 基準価格表の区分（担当者が選ぶ。目標はマスターから入る）
     'ALTER TABLE deals ADD COLUMN kubun TEXT',
+    // マスタ登録（集約表）の取込。得意先×納入先×商品の単位で管理する
+    'ALTER TABLE deals ADD COLUMN agg_key TEXT',
+    'ALTER TABLE deals ADD COLUMN qty REAL',
+    'ALTER TABLE deals ADD COLUMN cost_price REAL',
+    'ALTER TABLE deals ADD COLUMN a_price_m1 REAL',
+    'ALTER TABLE deals ADD COLUMN a_price_m2 REAL',
+    'ALTER TABLE deals ADD COLUMN a_price_m3 REAL',
+    'ALTER TABLE deals ADD COLUMN b_price REAL',
     // 適用年月と完了（案件一覧から営業担当者が入れる）
     'ALTER TABLE deals ADD COLUMN r2_applied_ym TEXT',
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
@@ -499,6 +507,15 @@ async function beforeSchema() {
     'ALTER TABLE attachments ADD COLUMN blob_url TEXT',
   ]) {
     await tryAlter(sql);
+  }
+
+  // マスタ登録の列追加で deal_calc の列構成が変わる。CREATE OR REPLACE では
+  // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
+  // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
+  try {
+    await db.get('SELECT agg_key FROM deal_calc LIMIT 1');
+  } catch {
+    try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }
 
   // 実体を Blob へ移した行では content が空になるため NOT NULL を外す。

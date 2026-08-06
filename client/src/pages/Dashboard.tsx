@@ -31,9 +31,24 @@ interface BranchAmount {
   r2_agreed_amount: number;
 }
 
+/** A基準とB基準の妥結進捗（マスタ登録の行の集計） */
+interface AbRow {
+  name?: string | null;
+  deals: number;
+  qty: number;
+  a_amt: number;
+  b_rows: number;
+  b_qty: number;
+  b_amt: number;
+  settle_diff: number;
+}
+
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
   totals: Progress;
+  abTotals?: AbRow;
+  abByEquip?: AbRow[];
+  abByCorp?: AbRow[];
   byBranchAmount: BranchAmount[];
   amountTotals: BranchAmount;
   byOffice: Row[];
@@ -293,6 +308,65 @@ export default function Dashboard() {
             一覧で確認する
           </a>
         </div>
+      )}
+
+      {num(data.abTotals?.deals) > 0 && (
+        <Card title="A基準とB基準の妥結進捗（マスタ登録）">
+          <p className="pt-note" style={{ marginTop: 0 }}>
+            A基準は3か月後の申請単価、B基準は実際の決定単価です。
+            加重平均売価 = 単価×数量の合計 ÷ 数量の合計。
+            妥結差額は、B基準を入れた行の（B − A）× 数量の合計です。
+          </p>
+          {([
+            { title: '器具区分ごと', rows: data.abByEquip ?? [] },
+            { title: '法人ごと（数量上位20）', rows: data.abByCorp ?? [] },
+          ] as { title: string; rows: AbRow[] }[]).map((sec) => (
+            <div key={sec.title} style={{ marginBottom: 14 }}>
+              <div className="section-title">{sec.title}</div>
+              <div className="tbl-scroll" style={{ maxHeight: 320 }}>
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>{sec.title.startsWith('法人') ? '法人' : '器具区分'}</th>
+                      <th style={{ textAlign: 'right' }}>件数</th>
+                      <th style={{ textAlign: 'right' }}>数量</th>
+                      <th style={{ textAlign: 'right' }}>A加重平均</th>
+                      <th style={{ textAlign: 'right' }}>B加重平均</th>
+                      <th style={{ textAlign: 'right' }}>B入力</th>
+                      <th style={{ textAlign: 'right' }}>妥結差額</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...sec.rows, { ...data.abTotals!, name: '合計' }].map((r, i) => {
+                      const last = i === sec.rows.length;
+                      const diff = num(r.settle_diff);
+                      return (
+                        <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
+                          <td>{r.name || '—'}</td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.deals).toLocaleString()}</td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.qty).toLocaleString()}</td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                            {num(r.qty) > 0 ? `¥${yen(num(r.a_amt) / num(r.qty))}` : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                            {num(r.b_qty) > 0 ? `¥${yen(num(r.b_amt) / num(r.b_qty))}` : '未入力'}
+                          </td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                            {pct(num(r.b_rows), num(r.deals))}%
+                          </td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums',
+                                       color: diff < 0 ? '#c2410c' : diff > 0 ? '#15803d' : undefined }}>
+                            {diff === 0 ? '—' : `${diff > 0 ? '＋' : '−'}¥${yen(Math.abs(diff))}`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </Card>
       )}
 
       <Card title="支店別の値上げ額と達成率">

@@ -38,6 +38,14 @@ export interface Deal {
   base_price: number | null;        // ❶ 出荷単価
   /** 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶと目標が入る */
   kubun: string | null;
+  // マスタ登録（集約表）で入る項目
+  agg_key?: string | null;
+  qty?: number | null;              // 出荷数量
+  cost_price?: number | null;       // 実績原価（管理者・開発者にだけ返る）
+  a_price_m1?: number | null;       // A基準: 翌月の申請単価
+  a_price_m2?: number | null;       // A基準: 翌々月の申請単価
+  a_price_m3?: number | null;       // A基準: 3か月後の申請単価
+  b_price?: number | null;          // B基準: 実際の決定単価
   /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */
   std_name?: string | null;
   /** 判別の方法。code=器種ガスコード一致 / name=品名一致 / similar=類似（先頭一致） */
@@ -109,6 +117,8 @@ export interface Meta {
   exportMaxRows?: number;
   states: { code: RoundState; name: string }[];
   corpStatuses: { code: string; name: string }[];
+  /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
+  aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
 }
 
 export const ROUND_STATE_NAMES: Record<string, string> = {

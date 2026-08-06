@@ -4,6 +4,7 @@ import { api } from '../api';
 import type { ApiError } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
+import AggImportCard from '../components/AggImportCard';
 import { parseFile, uploadInChunks } from '../importClient';
 import type { FieldDef, ParsedFile } from '../importClient';
 
@@ -253,6 +254,8 @@ export default function ImportPage() {
           ))}
         </div>
       )}
+
+      {canCheck && <AggImportCard />}
 
       <Card title="管理表ファイルの取込">
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>

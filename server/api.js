@@ -1106,9 +1106,13 @@ api.get('/meta', wrap(async (req, res) => {
   branches.sort((a, b) => comparePref(a.name, b.name));
   offices.sort((a, b) => comparePref(a.name, b.name));
 
+  // マスタ登録（集約表）の取込情報。A基準の月の見出しなどに使う
+  const aggMetaRow = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
+
   res.json({
     priceTypes, equips, persons, customers, branches, offices,
     corps,
+    aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
     // 画面に「いま何が見えているか」を出すための情報
     scope: scopeInfo(req.user),
     exportMaxRows: EXPORT_MAX_ROWS,
@@ -1234,12 +1238,34 @@ api.get('/dashboard', wrap(async (req, res) => {
     db.get(`SELECT ${amounts} FROM deal_calc ${where}`, p),
   ]);
 
+  // A基準とB基準の妥結進捗（マスタ登録の行だけが対象）。
+  // 加重平均売価 = Σ(単価×数量) ÷ Σ数量。Aは3か月後の申請単価を使う。
+  const ab = `
+    COUNT(*) AS deals,
+    SUM(qty) AS qty,
+    SUM(a_price_m3 * qty) AS a_amt,
+    SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows,
+    SUM(CASE WHEN b_price IS NOT NULL THEN qty ELSE 0 END) AS b_qty,
+    SUM(CASE WHEN b_price IS NOT NULL THEN b_price * qty ELSE 0 END) AS b_amt,
+    SUM(CASE WHEN b_price IS NOT NULL THEN (b_price - a_price_m3) * qty ELSE 0 END) AS settle_diff`;
+  const abCond = 'agg_key IS NOT NULL AND qty > 0';
+  const [abTotals, abByEquip, abByCorp] = await Promise.all([
+    db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
+    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
+             GROUP BY equip_name ORDER BY SUM(qty) DESC`, p),
+    db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
+             GROUP BY corp_name ORDER BY SUM(qty) DESC LIMIT 20`, p),
+  ]);
+
   // 支店は都道府県順（選択肢と同じ並び）
   byBranchAmount.sort((a, b) => comparePref(a.branch, b.branch));
 
   res.json({
     scope: scopeInfo(req.user),
     totals,
+    abTotals,
+    abByEquip,
+    abByCorp,
     byBranchAmount,
     amountTotals,
     byOffice,
@@ -1251,7 +1277,48 @@ api.get('/dashboard', wrap(async (req, res) => {
   });
 }));
 
+/**
+ * A基準とB基準のシミュレーション用の集計。
+ *
+ * グループごとに Σ数量・ΣA売上・ΣB売上（入力分）・B未入力分のA売上を返し、
+ * 画面側で「販売数量の増減」「B未入力の想定（Aの何%）」を掛けて試算する。
+ * 過去実績（出荷単価×数量）も返すので、値上げ前との比較もできる。
+ * 実績原価は管理者・開発者のときだけ返す（粗利の試算用）。
+ */
+api.get('/simulation', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const colMap = { equip: 'equip_name', corp: 'corp_name', branch: 'branch' };
+  const col = colMap[String(req.query.group ?? 'equip')] ?? 'equip_name';
+  const scope = scopeConditions(req.user);
+  const where = ['agg_key IS NOT NULL', 'qty > 0', ...scope.where].join(' AND ');
+  const isAdm = isAdminRole(req.user.role);
+  const costCols = isAdm
+    ? `, SUM(cost_price * qty) AS cost_amt,
+        SUM(CASE WHEN cost_price IS NOT NULL THEN qty ELSE 0 END) AS cost_qty`
+    : '';
+  const rows = await db.all(`
+    SELECT ${col} AS name, COUNT(*) AS deals, SUM(qty) AS qty,
+           SUM(base_price * qty) AS base_amt,
+           SUM(a_price_m1 * qty) AS a1_amt,
+           SUM(a_price_m2 * qty) AS a2_amt,
+           SUM(a_price_m3 * qty) AS a3_amt,
+           SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows,
+           SUM(CASE WHEN b_price IS NOT NULL THEN qty ELSE 0 END) AS b_qty,
+           SUM(CASE WHEN b_price IS NOT NULL THEN b_price * qty ELSE 0 END) AS b_amt,
+           SUM(CASE WHEN b_price IS NULL THEN a_price_m3 * qty ELSE 0 END) AS a3_amt_nob
+           ${costCols}
+      FROM deal_calc WHERE ${where}
+     GROUP BY ${col} ORDER BY SUM(qty) DESC`, scope.params);
+  res.json({ rows, withCost: isAdm });
+}));
+
 // ---- 案件（deals） ----
+
+/** 実績原価は管理者・開発者だけに返す（社外秘に準ずる扱い） */
+function hideCost(rows, user) {
+  if (!isAdminRole(user.role)) for (const r of rows) delete r.cost_price;
+  return rows;
+}
 
 /**
  * 並び替えできる列。
@@ -1266,6 +1333,11 @@ const SORTABLE = new Map([
   ['office', 'office'],
   ['sales_person', 'sales_person'],
   ['base_price', 'base_price'],
+  ['qty', 'qty'],
+  ['a_price_m1', 'a_price_m1'],
+  ['a_price_m2', 'a_price_m2'],
+  ['a_price_m3', 'a_price_m3'],
+  ['b_price', 'b_price'],
   ['r2_target_price', 'r2_target_price'],
   ['r2_agreed_price', 'r2_agreed_price'],
   ['r2_raise_unit', 'r2_raise_unit'],
@@ -1381,6 +1453,7 @@ api.get('/deals', wrap(async (req, res) => {
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   attachStandardMatch(rows, await loadStandardIndex());
+  hideCost(rows, req.user);
   res.json({ rows, totals, page, size });
 }));
 
@@ -1474,6 +1547,7 @@ api.get('/deals/:id', wrap(async (req, res) => {
   const deal = await findDealInScope(req.params.id, req.user);
   if (!deal) return res.status(404).json({ error: '案件が見つかりません' });
   attachStandardMatch([deal], await loadStandardIndex());
+  hideCost([deal], req.user);
   // 交渉は法人単位で進むため、法人の交渉情報と履歴を一緒に返す
   const negotiation = deal.corp_code
     ? await db.get('SELECT * FROM corp_negotiations WHERE corp_code = ?', [deal.corp_code])
@@ -1562,6 +1636,14 @@ function buildDealUpdate(body, deal, user) {
     }
     sets.push(`${f} = ?`);
     params.push(toPrice(body[f]));
+  }
+  // B基準（実際の決定単価）。同課（営業企画）と管理者が入れる
+  if ('b_price' in body) {
+    if (!['planning', 'admin', 'developer'].includes(user.role)) {
+      throw new Error('決定単価（B基準）を入力できるのは営業企画・管理者のみです');
+    }
+    sets.push('b_price = ?');
+    params.push(toPrice(body.b_price));
   }
   for (const f of DEVELOPER_EDITABLE) {
     if (!(f.key in body)) continue;
@@ -1654,6 +1736,7 @@ api.patch('/deals/:id', wrap(async (req, res) => {
   const updated = await db.get('SELECT * FROM deal_calc WHERE id = ?', [req.params.id]);
   // 器種名や支店を直した直後も、画面の「基準: ○○」表示が追随するように添える
   attachStandardMatch([updated], await loadStandardIndex());
+  hideCost([updated], req.user);
   res.json(updated);
 }));
 
@@ -1986,6 +2069,119 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
   // DB から消えた後に実体も消す。失敗しても業務は止めない（privateBlob 側でログのみ）
   await deleteAttachment(a.blob_url);
   res.json({ ok: true });
+}));
+
+// ---- マスタ登録（集約表）の取込 ----
+//
+// 値上げ結果の集約表（得意先×納入先×商品の単位）を案件として取り込む。
+// Vercelは本文が約4.5MBまでのため、ブラウザで読み取って小分けに送ってもらう。
+// agg_key（得意先|納入先|商品コード）で突き合わせ、マスター由来の項目だけを
+// 更新する。区分・合意・決定単価（B基準）などアプリで入れた値は残す。
+
+api.post('/agg-import/start', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const filename = String(req.body?.filename ?? 'マスタ登録.xlsx');
+  const batchId = await createBatch(filename, req.user.id, null, null);
+  // A基準の月（翌月・翌々月・3か月後）と出荷単価の期間の見出し
+  const meta = req.body?.meta;
+  if (meta && typeof meta === 'object') {
+    await db.run(
+      `INSERT INTO settings (key, value) VALUES ('agg_meta', ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      [JSON.stringify({
+        m1: String(meta.m1 ?? ''), m2: String(meta.m2 ?? ''), m3: String(meta.m3 ?? ''),
+        basePeriod: String(meta.basePeriod ?? ''), filename,
+        updatedAt: new Date().toISOString(),
+      })]
+    );
+  }
+  res.json({ batchId });
+}));
+
+api.post('/agg-import/chunk', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const batchId = Number(req.body?.batchId);
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!batchId || !rows.length) return res.status(400).json({ error: '取り込む行がありません' });
+  if (rows.length > 500) return res.status(400).json({ error: '一度に送れるのは500行までです' });
+
+  const num = (v) => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const n = Number(String(v).replace(/[,¥\s]/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+  const txt = (v) => {
+    const s = String(v ?? '').trim();
+    return s && s !== '－' && s !== '-' ? s : null;
+  };
+
+  const keys = rows.map((r) => String(r.agg_key ?? '').trim()).filter(Boolean);
+  if (keys.length !== rows.length) return res.status(400).json({ error: 'キーの無い行があります' });
+  const existing = await db.all(
+    `SELECT id, agg_key FROM deals WHERE agg_key IN (${keys.map(() => '?').join(',')})`, keys);
+  const byKey = new Map(existing.map((r) => [r.agg_key, r.id]));
+
+  const stamp = now();
+  const statements = [];
+  const seen = new Set();
+  let inserted = 0;
+  let updated = 0;
+  for (const r of rows) {
+    const key = String(r.agg_key).trim();
+    if (seen.has(key)) continue;   // ファイル内の重複キーは最初の行だけ使う
+    seen.add(key);
+    const vals = {
+      customer_code: txt(r.customer_code), customer_name: txt(r.customer_name),
+      delivery_name: txt(r.delivery_name),
+      model_code: txt(r.model_code), model_name: txt(r.model_name), gas_type: txt(r.gas_type),
+      equip_name: txt(r.equip_name), category_name: txt(r.category_name),
+      list_price: num(r.list_price), sales_person: txt(r.sales_person),
+      office: txt(r.office), branch: txt(r.branch),
+      base_price: num(r.base_price), qty: num(r.qty), cost_price: num(r.cost_price),
+      a_price_m1: num(r.a_price_m1), a_price_m2: num(r.a_price_m2), a_price_m3: num(r.a_price_m3),
+    };
+    const id = byKey.get(key);
+    if (id) {
+      updated += 1;
+      const sets = Object.keys(vals).map((k) => `${k} = ?`);
+      statements.push({
+        sql: `UPDATE deals SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`,
+        params: [...Object.values(vals), stamp, id],
+      });
+    } else {
+      inserted += 1;
+      // 法人の列がないファイルのため、得意先を法人として扱う（法人ごとの集計・交渉情報用）
+      const cols = ['agg_key', ...Object.keys(vals), 'corp_code', 'corp_name', 'batch_id', 'r2_done', 'updated_at'];
+      statements.push({
+        sql: `INSERT INTO deals (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
+        params: [key, ...Object.values(vals), txt(r.customer_code), txt(r.customer_name), batchId, 0, stamp],
+      });
+    }
+  }
+  await db.batch(statements);
+  res.json({ inserted, updated });
+}));
+
+api.post('/agg-import/finish', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const batchId = Number(req.body?.batchId);
+  let removed = 0;
+  if (req.body?.removeOld === true) {
+    // 旧形式（伝票単位）の行を関連データごと削除し、集約表への置き換えを完了する
+    for (const sql of [
+      'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
+      'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
+    ]) {
+      try { await db.run(sql); } catch { /* テーブルや列が無ければ何もしない */ }
+    }
+    const r = await db.run('DELETE FROM deals WHERE agg_key IS NULL');
+    removed = Number(r?.changes ?? 0);
+  }
+  const { c } = await db.get('SELECT COUNT(*) AS c FROM deals WHERE agg_key IS NOT NULL');
+  if (batchId) {
+    try { await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [Number(c), batchId]); } catch { /* 記録用 */ }
+  }
+  res.json({ removed, total: Number(c) });
 }));
 
 api.get('/import/fields', wrap(async (req, res) => {

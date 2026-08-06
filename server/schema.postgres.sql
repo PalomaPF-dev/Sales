@@ -112,6 +112,13 @@ CREATE TABLE IF NOT EXISTS deals (
   customer_person TEXT,   -- AY 得意先担当者名
   new_list_price  REAL,   -- BQ 新定価
   kubun           TEXT,   -- 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶ
+  agg_key         TEXT,   -- 集約表（マスタ登録）のキー: 得意先|納入先|商品コード。取込の突き合わせ用
+  qty             REAL,   -- 出荷数量（マスタ単価売上数）
+  cost_price      REAL,   -- 実績原価（管理者・開発者のみ表示。他の役割には返さない）
+  a_price_m1      REAL,   -- A基準: 翌月の申請単価（マスタ単価）
+  a_price_m2      REAL,   -- A基準: 翌々月の申請単価
+  a_price_m3      REAL,   -- A基準: 3か月後の申請単価
+  b_price         REAL,   -- B基準: 実際の決定単価（アプリで入力。取込では上書きしない）
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率
@@ -193,6 +200,8 @@ CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
 --   ❹ r2_raise_unit = ❸合意単価 - ❶出荷単価
 --   r2_state … 交渉の進み具合（未入力 / 合意済 / 完了）
 --   列名の r2_ は旧・第2弾の名残（第1弾は廃止済み）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deals_agg ON deals(agg_key) WHERE agg_key IS NOT NULL;
+
 CREATE OR REPLACE VIEW deal_calc AS
 SELECT
   d.*,

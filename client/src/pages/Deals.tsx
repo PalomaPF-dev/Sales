@@ -26,6 +26,10 @@ const KUBUN_LIST = ['大手', '中規模', '小規模'];
 /** 「2026-04」形式かどうか。保存前に画面側でも確かめる */
 const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
+/** A基準の月の見出し。「2026-09」→「9月」。取込前は仮の名前で出す */
+const ymLabel = (ym: string | undefined, fallback: string) =>
+  ym && /^\d{4}-\d{2}$/.test(ym) ? `${Number(ym.slice(5, 7))}月` : fallback;
+
 /**
  * 合意との差の比較元。設定中の目標があればそれと比べる。
  * まだ目標が無い行は、基準価格表の3区分のうち一番安い値上後単価と比べる
@@ -94,6 +98,8 @@ export default function Deals() {
   const navigate = useNavigate();
   const isAdmin = me.role === 'admin' || me.role === 'developer';
   const isDev = me.role === 'developer';
+  // B基準（実際の決定単価）は同課（営業企画）と管理者が入れる
+  const canB = ['planning', 'admin', 'developer'].includes(me.role);
 
   // Excelでの一括取込
   const bulkFileRef = useRef<HTMLInputElement>(null);
@@ -218,6 +224,8 @@ export default function Deals() {
       r2_agreed_price: d.r2_agreed_price == null ? '' : String(d.r2_agreed_price),
       r2_applied_ym: d.r2_applied_ym ?? '',
       r2_target_price: d.r2_target_price == null ? '' : String(d.r2_target_price),
+      b_price: d.b_price == null ? '' : String(d.b_price),
+      qty: d.qty == null ? '' : String(d.qty),
       // 開発者は取込のズレ（法人名・器種・支店・営業所・出荷単価など）も一覧から直せる
       corp_name: d.corp_name ?? '',
       customer_name: d.customer_name ?? '',
@@ -315,6 +323,14 @@ export default function Deals() {
     if (ok) setMsg({ kind: 'ok', text: '目標単価を更新しました' });
   };
 
+  /** B基準（決定単価）の保存。欄を離れた時点で、変わっていた場合だけ送る */
+  const saveB = async (d: Deal) => {
+    const v = (draft.b_price ?? '').trim();
+    if (v === (d.b_price == null ? '' : String(d.b_price))) return;
+    const ok = await patch(d.id, { b_price: v === '' ? null : Number(v) });
+    if (ok) setMsg({ kind: 'ok', text: v === '' ? '決定単価（B基準）を未入力に戻しました' : '決定単価（B基準）を保存しました' });
+  };
+
   /**
    * 目標の根拠（どの基準に紐づくか・類似か・基準に無いか）。
    * 一覧には出さず、目標の欄にカーソルを合わせたときだけツールチップで示す。
@@ -337,7 +353,10 @@ export default function Deals() {
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
-        器種ごとの値上げ単価を一元管理します。器種名は基準価格表の品名と自動で突き合わせ、目標（基準価格表）の大手・中規模・小規模の列に値上後単価を表示します。「入力」から区分を選ぶとその単価が「設定中の目標」に入ります。合意の欄には目標との差が横に出ます。
+        値上げ結果の集約表（得意先×納入先×商品）を一元管理します。
+        A基準は価格申請した向こう3か月の単価、B基準は実際の決定単価（営業企画・管理者が入力）です。
+        器種名は基準価格表の品名と自動で突き合わせ、目標（基準価格表）の列に区分ごとの値上後単価を表示します。
+        {meta?.aggMeta?.basePeriod && ` 出荷単価❶は ${meta.aggMeta.basePeriod} の実績です。`}
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -495,6 +514,9 @@ export default function Deals() {
               <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
               <th className="grp sep">交渉状況<br /><small>（法人）</small></th>
               <th className="num grp sep">出荷単価❶</th>
+              <th className="num grp">数量</th>
+              <th colSpan={3} className="grp sep">A基準（申請単価）</th>
+              <th className="num grp sep">B基準</th>
               <th colSpan={3} className="grp sep">目標（基準価格表）</th>
               <th colSpan={4} className="grp sep">値上げ交渉</th>
               <th className="grp sep">区分</th>
@@ -510,6 +532,11 @@ export default function Deals() {
               <Th col="sales_person">担当者</Th>
               <th className="sep"></th>
               <Th col="base_price" className="num sep" />
+              <Th col="qty" className="num" />
+              <Th col="a_price_m1" className="num sep">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
+              <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
+              <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
+              <Th col="b_price" className="num sep">決定単価</Th>
               <th className="num sep">大手</th>
               <th className="num">中規模</th>
               <th className="num">小規模</th>
@@ -566,6 +593,23 @@ export default function Deals() {
 
                   <td className="num sep">
                     {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
+                  </td>
+                  <td className="num">
+                    {isEditing && isDev ? baseCell(d, 'qty', true) : yen(d.qty)}
+                  </td>
+
+                  {/* A基準（マスタ登録の申請単価: 翌月・翌々月・3か月後） */}
+                  <td className="num sep">{yen(d.a_price_m1)}</td>
+                  <td className="num">{yen(d.a_price_m2)}</td>
+                  <td className="num">{yen(d.a_price_m3)}</td>
+
+                  {/* B基準: 実際の決定単価。同課（営業企画）と管理者が入れる */}
+                  <td className="num sep">
+                    {isEditing && canB ? (
+                      <input type="number" className="cell" value={draft.b_price}
+                        onChange={(e) => setDraft({ ...draft, b_price: e.target.value })}
+                        onBlur={() => saveB(d)} />
+                    ) : yen(d.b_price)}
                   </td>
 
                   {/* 目標（基準価格表）: 大手・中規模・小規模の3列。選択中の区分は色付き */}

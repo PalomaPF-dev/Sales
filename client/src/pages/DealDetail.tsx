@@ -126,7 +126,27 @@ export default function DealDetail() {
 
         <Card title="値上げ状況">
           <dl className="kv">
-            <dt>出荷単価 ❶</dt><dd>¥{yen(d.base_price)}</dd>
+            <dt>出荷単価 ❶{meta?.aggMeta?.basePeriod && `（${meta.aggMeta.basePeriod}）`}</dt>
+            <dd>¥{yen(d.base_price)}</dd>
+            <dt>出荷数量</dt><dd>{d.qty == null ? '—' : Number(d.qty).toLocaleString()}</dd>
+          </dl>
+
+          <div className="section-title">A基準（申請単価）とB基準</div>
+          <dl className="kv">
+            <dt>A基準 {meta?.aggMeta?.m1 || '翌月'}</dt>
+            <dd>{d.a_price_m1 == null ? '—' : `¥${yen(d.a_price_m1)}`}</dd>
+            <dt>A基準 {meta?.aggMeta?.m2 || '翌々月'}</dt>
+            <dd>{d.a_price_m2 == null ? '—' : `¥${yen(d.a_price_m2)}`}</dd>
+            <dt>A基準 {meta?.aggMeta?.m3 || '3か月後'}</dt>
+            <dd>{d.a_price_m3 == null ? '—' : `¥${yen(d.a_price_m3)}`}</dd>
+            <dt>決定単価（B基準）</dt>
+            <dd>{d.b_price == null ? '未入力' : `¥${yen(d.b_price)}`}</dd>
+            {(me.role === 'admin' || me.role === 'developer') && d.cost_price != null && (
+              <>
+                <dt>実績原価（管理者のみ）</dt>
+                <dd>¥{yen(d.cost_price)}</dd>
+              </>
+            )}
           </dl>
 
           <div className="section-title">交渉 <RoundStateBadge state={d.r2_state} /></div>
