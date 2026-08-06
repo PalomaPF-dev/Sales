@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import type { Deal, Meta, RoundState } from '../types';
-import { CorpStatusBadge, RoundStateBadge } from '../components/ui';
+import { RoundStateBadge } from '../components/ui';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
 import { parseBulkFile, sendBulkUpdate, type BulkResult } from '../bulkUpdateClient';
@@ -512,7 +512,6 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
-              <th className="grp sep">交渉状況<br /><small>（法人）</small></th>
               <th className="num grp sep">出荷単価❶</th>
               <th className="num grp">数量</th>
               <th colSpan={3} className="grp sep">A基準（申請単価）</th>
@@ -530,7 +529,6 @@ export default function Deals() {
               {isDev && <Th col="branch">支店</Th>}
               {isDev && <Th col="office">営業所</Th>}
               <Th col="sales_person">担当者</Th>
-              <th className="sep"></th>
               <Th col="base_price" className="num sep" />
               <Th col="qty" className="num" />
               <Th col="a_price_m1" className="num sep">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
@@ -583,13 +581,6 @@ export default function Deals() {
                   {isDev && <td>{isEditing ? baseCell(d, 'branch') : d.branch}</td>}
                   {isDev && <td>{isEditing ? baseCell(d, 'office') : d.office}</td>}
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : d.sales_person}</td>
-
-                  <td className="sep">
-                    <CorpStatusBadge status={d.corp_status} />
-                    {d.corp_contact_date && (
-                      <><br /><small style={{ color: 'var(--muted)' }}>{String(d.corp_contact_date).slice(0, 10)}</small></>
-                    )}
-                  </td>
 
                   <td className="num sep">
                     {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
