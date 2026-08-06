@@ -141,6 +141,7 @@ const CHUNK = 500;
 export interface AggResult {
   inserted: number;
   updated: number;
+  unchanged: number;
   removed: number;
   total: number;
 }
@@ -157,18 +158,20 @@ export async function sendAggImport(
   });
   let inserted = 0;
   let updated = 0;
+  let unchanged = 0;
   for (let i = 0; i < parsed.rows.length; i += CHUNK) {
-    const r = await api<{ inserted: number; updated: number }>('/agg-import/chunk', {
+    const r = await api<{ inserted: number; updated: number; unchanged: number }>('/agg-import/chunk', {
       method: 'POST',
       body: JSON.stringify({ batchId, rows: parsed.rows.slice(i, i + CHUNK) }),
     });
     inserted += r.inserted;
     updated += r.updated;
+    unchanged += r.unchanged ?? 0;
     opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
   }
   const fin = await api<{ removed: number; total: number }>('/agg-import/finish', {
     method: 'POST',
     body: JSON.stringify({ batchId }),
   });
-  return { inserted, updated, removed: removed + fin.removed, total: fin.total };
+  return { inserted, updated, unchanged, removed: removed + fin.removed, total: fin.total };
 }

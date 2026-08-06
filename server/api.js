@@ -2114,15 +2114,22 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
 
   const keys = rows.map((r) => String(r.agg_key ?? '').trim()).filter(Boolean);
   if (keys.length !== rows.length) return res.status(400).json({ error: 'キーの無い行があります' });
+  // 既存行は「中身が変わったか」を見るために、比べる列も取っておく。
+  // 毎日取り込み直す運用では大半の行が変わらないため、
+  // 変わらない行に UPDATE をかけないだけでDBの膨張（容量）を大きく抑えられる。
   const existing = await db.all(
-    `SELECT id, agg_key FROM deals WHERE agg_key IN (${keys.map(() => '?').join(',')})`, keys);
-  const byKey = new Map(existing.map((r) => [r.agg_key, r.id]));
+    `SELECT id, agg_key, customer_code, customer_name, delivery_name, model_code, model_name,
+            gas_type, equip_name, category_name, list_price, sales_person, office, branch,
+            base_price, qty, cost_price, a_price_m1, a_price_m2, a_price_m3
+       FROM deals WHERE agg_key IN (${keys.map(() => '?').join(',')})`, keys);
+  const byKey = new Map(existing.map((r) => [r.agg_key, r]));
 
   const stamp = now();
   const statements = [];
   const seen = new Set();
   let inserted = 0;
   let updated = 0;
+  let unchanged = 0;
   for (const r of rows) {
     const key = String(r.agg_key).trim();
     if (seen.has(key)) continue;   // ファイル内の重複キーは最初の行だけ使う
@@ -2137,13 +2144,21 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       base_price: num(r.base_price), qty: num(r.qty), cost_price: num(r.cost_price),
       a_price_m1: num(r.a_price_m1), a_price_m2: num(r.a_price_m2), a_price_m3: num(r.a_price_m3),
     };
-    const id = byKey.get(key);
-    if (id) {
+    const cur = byKey.get(key);
+    if (cur) {
+      // 値がすべて同じなら書き込まない（同じ内容の更新でも行が複製され容量を食うため）
+      const same = Object.entries(vals).every(([k, v]) => {
+        const before = cur[k];
+        if (before == null && v == null) return true;
+        if (before == null || v == null) return false;
+        return typeof v === 'number' ? Number(before) === v : String(before) === String(v);
+      });
+      if (same) { unchanged += 1; continue; }
       updated += 1;
       const sets = Object.keys(vals).map((k) => `${k} = ?`);
       statements.push({
         sql: `UPDATE deals SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`,
-        params: [...Object.values(vals), stamp, id],
+        params: [...Object.values(vals), stamp, cur.id],
       });
     } else {
       inserted += 1;
@@ -2155,8 +2170,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       });
     }
   }
-  await db.batch(statements);
-  res.json({ inserted, updated });
+  if (statements.length) await db.batch(statements);
+  res.json({ inserted, updated, unchanged });
 }));
 
 api.post('/agg-import/finish', wrap(async (req, res) => {
@@ -2248,9 +2263,12 @@ api.post('/hist-import/chunk', wrap(async (req, res) => {
   if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
   if (rows.length > 1000) return res.status(400).json({ error: '一度に送れるのは1000行までです' });
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  // 同じ値なら書き込まない（IS DISTINCT FROM）。毎回の反映で行が複製されるのを防ぐ
   await db.batch(rows.map(([cd, product, avg, qty]) => ({
-    sql: 'UPDATE deals SET hist_avg_price = ?, hist_qty = ? WHERE hist_ent_cd = ? AND model_code = ?',
-    params: [num(avg), num(qty), String(cd), String(product)],
+    sql: `UPDATE deals SET hist_avg_price = ?, hist_qty = ?
+           WHERE hist_ent_cd = ? AND model_code = ?
+             AND (hist_avg_price IS DISTINCT FROM ? OR hist_qty IS DISTINCT FROM ?)`,
+    params: [num(avg), num(qty), String(cd), String(product), num(avg), num(qty)],
   })));
   res.json({ ok: true });
 }));

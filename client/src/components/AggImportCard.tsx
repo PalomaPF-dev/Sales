@@ -70,6 +70,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
           取り込みました: 新規 {result.inserted.toLocaleString()}件 ・ 更新 {result.updated.toLocaleString()}件
+          ・ 変更なし {result.unchanged.toLocaleString()}件
           {result.removed > 0 && ` ・ 旧形式の行を ${result.removed.toLocaleString()}件削除`}
           （現在 {result.total.toLocaleString()}件）
         </div>
