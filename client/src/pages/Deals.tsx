@@ -476,12 +476,30 @@ export default function Deals() {
                     {isEditing && isDev ? baseCell(d, 'qty', true) : yen(d.qty)}
                   </td>
 
-                  {/* 出荷実績（月別履歴）: 法人×品目の平均単価と数量合計（参照） */}
-                  <td className="num sep" title="出荷実績の平均単価（法人×品目・期間全体）">
-                    {yen(d.hist_avg_price)}
+                  {/* 出荷実績（月別履歴）: 法人×品目の平均単価と数量合計（参照）。
+                      実績が無い行は、マスタ登録の出荷単価・数量（1-3月）を代わりに出し、
+                      それと分かるように薄い色と（期間）の注記を付ける */}
+                  <td className="num sep"
+                      title={d.hist_avg_price != null
+                        ? '出荷実績の平均単価（法人×品目・期間全体）'
+                        : `出荷実績が無いため、マスタ登録の出荷単価（${meta?.aggMeta?.basePeriod || '1-3月'}）を表示しています`}>
+                    {d.hist_avg_price != null ? yen(d.hist_avg_price) : d.base_price != null ? (
+                      <>
+                        <span style={{ color: 'var(--muted)' }}>{yen(d.base_price)}</span>
+                        <div className="sub">マスタ{meta?.aggMeta?.basePeriod || '1-3月'}</div>
+                      </>
+                    ) : '—'}
                   </td>
-                  <td className="num" title="出荷実績の数量合計（法人×品目・期間全体。同じ法人×品目の行には同じ値が入ります）">
-                    {yen(d.hist_qty)}
+                  <td className="num"
+                      title={d.hist_qty != null
+                        ? '出荷実績の数量合計（法人×品目・期間全体。同じ法人×品目の行には同じ値が入ります）'
+                        : `出荷実績が無いため、マスタ登録の数量（${meta?.aggMeta?.basePeriod || '1-3月'}）を表示しています`}>
+                    {d.hist_qty != null ? yen(d.hist_qty) : d.qty != null ? (
+                      <>
+                        <span style={{ color: 'var(--muted)' }}>{yen(d.qty)}</span>
+                        <div className="sub">マスタ{meta?.aggMeta?.basePeriod || '1-3月'}</div>
+                      </>
+                    ) : '—'}
                   </td>
 
                   {/* A基準（マスタ登録の申請単価: 翌月・翌々月・3か月後） */}
