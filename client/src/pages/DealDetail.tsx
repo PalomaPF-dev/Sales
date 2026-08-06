@@ -126,7 +126,7 @@ export default function DealDetail() {
 
         <Card title="値上げ状況">
           <dl className="kv">
-            <dt>出荷単価 ❶{meta?.aggMeta?.basePeriod && `（${meta.aggMeta.basePeriod}）`}</dt>
+            <dt>出荷単価{meta?.aggMeta?.basePeriod && `（${meta.aggMeta.basePeriod}）`}</dt>
             <dd>¥{yen(d.base_price)}</dd>
             <dt>出荷数量</dt><dd>{d.qty == null ? '—' : Number(d.qty).toLocaleString()}</dd>
           </dl>

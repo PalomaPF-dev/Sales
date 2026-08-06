@@ -54,7 +54,7 @@ export const FIELDS = [
   // 価格
   { key: 'list_price', label: '定価', group: '価格', type: 'number', aliases: ['定価'] },
   { key: 'rate', label: '掛け率', group: '価格', type: 'number', aliases: ['掛け率', '掛率'] },
-  { key: 'base_price', label: '❶ 出荷単価', group: '価格', type: 'number', aliases: ['出荷単価', '現行単価'], required: true },
+  { key: 'base_price', label: '出荷単価', group: '価格', type: 'number', aliases: ['出荷単価', '現行単価'], required: true },
   // マスタ登録（集約表）で入る項目。取込のズレを開発者が直せるよう FIELDS に載せる
   { key: 'qty', label: '出荷数量', group: '価格', type: 'number', aliases: ['マスタ単価売上数', '出荷数量'] },
   { key: 'a_price_m1', label: 'A基準 翌月単価', group: '価格', type: 'number', aliases: [] },

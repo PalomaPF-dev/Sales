@@ -356,7 +356,7 @@ export default function Deals() {
         値上げ結果の集約表（得意先×納入先×商品）を一元管理します。
         A基準は価格申請した向こう3か月の単価、B基準は実際の決定単価（営業企画・管理者が入力）です。
         器種名は基準価格表の品名と自動で突き合わせ、目標（基準価格表）の列に区分ごとの値上後単価を表示します。
-        {meta?.aggMeta?.basePeriod && ` 出荷単価❶は ${meta.aggMeta.basePeriod} の実績です。`}
+        {meta?.aggMeta?.basePeriod && ` 出荷単価は ${meta.aggMeta.basePeriod} の出荷実績です。`}
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -512,7 +512,9 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
-              <th className="num grp sep">出荷単価❶</th>
+              <th className="num grp sep">
+                出荷単価{meta?.aggMeta?.basePeriod && <><br /><small>（{meta.aggMeta.basePeriod}）</small></>}
+              </th>
               <th className="num grp">数量</th>
               <th colSpan={3} className="grp sep">A基準（申請単価）</th>
               <th className="num grp sep">B基準</th>
@@ -690,7 +692,7 @@ export default function Deals() {
       {isDev ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
           開発者のため、支店・営業所の列が表示され、「入力」で取込項目
-          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価❶）と
+          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価）と
           目標単価を直せます。変更は入力欄を離れた時点で保存されます。
           コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
         </p>
