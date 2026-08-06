@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
@@ -17,22 +17,6 @@ interface Status {
   items: StatusItem[];
 }
 
-/** 全国基準価格表の1行（器種 × 区分） */
-interface StdRow {
-  region: string;
-  category: string | null;
-  model_gas_code: string | null;
-  model_name: string;
-  kubun: string;
-  current_price: number | null;
-  target_price: number;
-}
-interface StdRes {
-  rows: StdRow[];
-  kubuns: string[];
-  meta: { filename?: string; count?: number; updatedAt?: string } | null;
-}
-
 /**
  * 設定。
  * 承認ワークフローを廃止したため、ここは参照用のマスター情報だけを扱う。
@@ -45,10 +29,6 @@ export default function Settings() {
   const me = useUser();
   const [meta, setMeta] = useState<Meta | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [std, setStd] = useState<StdRes | null>(null);
-  const [stdBusy, setStdBusy] = useState(false);
-  const [stdMsg, setStdMsg] = useState('');
-  const stdFileRef = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
@@ -60,32 +40,6 @@ export default function Settings() {
     if (me.role !== 'admin' && me.role !== 'developer') return;
     api<Status>('/admin/status').then(setStatus).catch((e) => setMsg(e.message));
   }, [me.role]);
-
-  const loadStd = () => {
-    api<StdRes>('/standard-prices').then(setStd).catch((e) => setMsg(e.message));
-  };
-  useEffect(loadStd, []);
-
-  /** 基準価格表のExcelを取り込む（マスターを丸ごと差し替える） */
-  const importStd = async () => {
-    const file = stdFileRef.current?.files?.[0];
-    if (!file) { setMsg('ファイルを選択してください'); return; }
-    setStdBusy(true);
-    setMsg('');
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const r = await api<{ count: number; models: number; regions: string[] }>(
-        '/admin/standard-prices', { method: 'POST', body: fd });
-      setStdMsg(`取り込みました: ${r.models}器種 × 区分 = ${r.count}行（${r.regions.join('・')}）`);
-      if (stdFileRef.current) stdFileRef.current.value = '';
-      loadStd();
-    } catch (e) {
-      setMsg((e as Error).message);
-    } finally {
-      setStdBusy(false);
-    }
-  };
 
   return (
     <div>
@@ -125,64 +79,6 @@ export default function Settings() {
           </p>
         </Card>
       )}
-
-      <Card title="全国基準価格表（マスター）">
-        {stdMsg && <div className="alert ok" onClick={() => setStdMsg('')}>{stdMsg}</div>}
-        <p className="pt-note" style={{ marginTop: 0 }}>
-          器種 × 区分（大手・中規模・小規模）ごとの基準単価です。
-          案件一覧で担当者が区分を選ぶと、この表の「値上後単価」がその案件の目標になります。
-          {std?.meta?.updatedAt && (
-            <>
-              {' '}現在: <strong>{std.meta.filename}</strong>
-              （{std.meta.count}行 ／ {String(std.meta.updatedAt).slice(0, 16).replace('T', ' ')} 取込）
-            </>
-          )}
-        </p>
-        {me.role === 'admin' || me.role === 'developer' ? (
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-            <input type="file" ref={stdFileRef} accept=".xlsx,.xlsm" disabled={stdBusy} />
-            <button className="btn" onClick={importStd} disabled={stdBusy}>
-              {stdBusy ? '取込中...' : '基準価格表を取り込む（差し替え）'}
-            </button>
-          </div>
-        ) : null}
-        {std && std.rows.length > 0 ? (
-          <div className="tbl-scroll" style={{ maxHeight: 420 }}>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>地域</th><th>まとまり</th><th>品名</th>
-                  {std.kubuns.map((k) => <th key={k} style={{ textAlign: 'right' }}>{k} 値上後</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {(() => {
-                  const grouped = new Map<string, { region: string; category: string | null; name: string; t: Record<string, number> }>();
-                  for (const r of std.rows) {
-                    const key = `${r.region}|${r.model_name}`;
-                    if (!grouped.has(key)) grouped.set(key, { region: r.region, category: r.category, name: r.model_name, t: {} });
-                    grouped.get(key)!.t[r.kubun] = r.target_price;
-                  }
-                  return [...grouped.values()].map((g, i) => (
-                    <tr key={i}>
-                      <td>{g.region}</td>
-                      <td style={{ color: 'var(--muted)' }}>{g.category ?? ''}</td>
-                      <td><strong>{g.name}</strong></td>
-                      {std.kubuns.map((k) => (
-                        <td key={k} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                          {g.t[k] != null ? `¥${g.t[k].toLocaleString()}` : '—'}
-                        </td>
-                      ))}
-                    </tr>
-                  ));
-                })()}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="pt-note">まだ取り込まれていません。基準価格表のExcelを取り込んでください。</p>
-        )}
-      </Card>
 
       <Card title={`マスター単価種別（${meta?.priceTypes.length ?? 0}種類）`}>
         <table className="tbl">

@@ -31,24 +31,24 @@ interface BranchAmount {
   r2_agreed_amount: number;
 }
 
-/** A基準とB基準の妥結進捗（マスタ登録の行の集計） */
+/** 出荷金額とA基準の月別合計（マスタ登録の行の集計） */
 interface AbRow {
   name?: string | null;
   deals: number;
   qty: number;
-  a_amt: number;
-  b_rows: number;
-  b_qty: number;
-  b_amt: number;
-  settle_diff: number;
+  base_amt: number;   // 出荷単価×数量の合計
+  a1_amt: number;     // A基準（翌月）×数量の合計
+  a2_amt: number;
+  a3_amt: number;
 }
 
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
   totals: Progress;
   abTotals?: AbRow;
-  abByEquip?: AbRow[];
+  abByBranch?: AbRow[];
   abByCorp?: AbRow[];
+  aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string } | null;
   byBranchAmount: BranchAmount[];
   amountTotals: BranchAmount;
   byOffice: Row[];
@@ -311,52 +311,48 @@ export default function Dashboard() {
       )}
 
       {num(data.abTotals?.deals) > 0 && (
-        <Card title="A基準とB基準の妥結進捗（マスタ登録）">
+        <Card title="出荷金額とA基準の月別合計">
           <p className="pt-note" style={{ marginTop: 0 }}>
-            A基準は3か月後の申請単価、B基準は実際の決定単価です。
-            加重平均売価 = 単価×数量の合計 ÷ 数量の合計。
-            妥結差額は、B基準を入れた行の（B − A）× 数量の合計です。
+            出荷金額 = 出荷単価{data.aggMeta?.basePeriod && `（${data.aggMeta.basePeriod}）`} × 数量の合計。
+            A基準の各月は、数量を固定したまま、その月の申請単価に置き換えた場合の合計です
+            （申請どおりに通ったときの売上の見通し）。
           </p>
           {([
-            { title: '器具区分ごと', rows: data.abByEquip ?? [] },
-            { title: '法人ごと（数量上位20）', rows: data.abByCorp ?? [] },
+            { title: '支店別', rows: data.abByBranch ?? [] },
+            { title: '法人別（出荷金額の上位20）', rows: data.abByCorp ?? [] },
           ] as { title: string; rows: AbRow[] }[]).map((sec) => (
             <div key={sec.title} style={{ marginBottom: 14 }}>
               <div className="section-title">{sec.title}</div>
-              <div className="tbl-scroll" style={{ maxHeight: 320 }}>
+              <div className="tbl-scroll" style={{ maxHeight: 340 }}>
                 <table className="tbl">
                   <thead>
                     <tr>
-                      <th>{sec.title.startsWith('法人') ? '法人' : '器具区分'}</th>
+                      <th>{sec.title.startsWith('法人') ? '法人' : '支店'}</th>
                       <th style={{ textAlign: 'right' }}>件数</th>
                       <th style={{ textAlign: 'right' }}>数量</th>
-                      <th style={{ textAlign: 'right' }}>A加重平均</th>
-                      <th style={{ textAlign: 'right' }}>B加重平均</th>
-                      <th style={{ textAlign: 'right' }}>B入力</th>
-                      <th style={{ textAlign: 'right' }}>妥結差額</th>
+                      <th style={{ textAlign: 'right' }}>出荷金額</th>
+                      <th style={{ textAlign: 'right' }}>A基準 {data.aggMeta?.m1 || '翌月'}</th>
+                      <th style={{ textAlign: 'right' }}>A基準 {data.aggMeta?.m2 || '翌々月'}</th>
+                      <th style={{ textAlign: 'right' }}>A基準 {data.aggMeta?.m3 || '3か月後'}</th>
+                      <th style={{ textAlign: 'right' }} title="A基準（3か月後）の合計と出荷金額の差">増加額</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[...sec.rows, { ...data.abTotals!, name: '合計' }].map((r, i) => {
                       const last = i === sec.rows.length;
-                      const diff = num(r.settle_diff);
+                      const gain = num(r.a3_amt) - num(r.base_amt);
                       return (
                         <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
                           <td>{r.name || '—'}</td>
                           <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.deals).toLocaleString()}</td>
                           <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.qty).toLocaleString()}</td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                            {num(r.qty) > 0 ? `¥${yen(num(r.a_amt) / num(r.qty))}` : '—'}
-                          </td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                            {num(r.b_qty) > 0 ? `¥${yen(num(r.b_amt) / num(r.b_qty))}` : '未入力'}
-                          </td>
-                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                            {pct(num(r.b_rows), num(r.deals))}%
-                          </td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.base_amt))}</td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.a1_amt))}</td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.a2_amt))}</td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(num(r.a3_amt))}</td>
                           <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums',
-                                       color: diff < 0 ? '#c2410c' : diff > 0 ? '#15803d' : undefined }}>
-                            {diff === 0 ? '—' : `${diff > 0 ? '＋' : '−'}¥${yen(Math.abs(diff))}`}
+                                       color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
+                            {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}¥${yen(Math.abs(gain))}`}
                           </td>
                         </tr>
                       );

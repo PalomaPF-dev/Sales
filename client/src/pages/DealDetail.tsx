@@ -151,16 +151,6 @@ export default function DealDetail() {
 
           <div className="section-title">交渉 <RoundStateBadge state={d.r2_state} /></div>
           <dl className="kv">
-            <dt>区分</dt><dd>{d.kubun || '未選択'}</dd>
-            {d.std_name && (
-              <>
-                <dt>基準の器種</dt>
-                <dd>
-                  {d.std_name}
-                  {d.std_kind === 'similar' && <span style={{ color: 'var(--muted)' }}>（類似）</span>}
-                </dd>
-              </>
-            )}
             <dt>目標値上げ単価</dt><dd>¥{yen(d.r2_target_price)}</dd>
             <dt>合意単価</dt><dd>{d.r2_agreed_price == null ? '—' : `¥${yen(d.r2_agreed_price)}`}</dd>
             <dt>値上がり単価</dt>
@@ -169,7 +159,7 @@ export default function DealDetail() {
           </dl>
 
           <p className="pt-note" style={{ marginTop: 12 }}>
-            区分の選択と、合意単価・適用年月・完了の入力は<a href="/deals" onClick={(e) => { e.preventDefault(); navigate('/deals'); }}>案件一覧</a>から行います。
+            合意単価・適用年月・完了の入力は<a href="/deals" onClick={(e) => { e.preventDefault(); navigate('/deals'); }}>案件一覧</a>から行います。
           </p>
         </Card>
       </div>

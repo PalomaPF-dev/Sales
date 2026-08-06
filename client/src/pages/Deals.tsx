@@ -15,13 +15,10 @@ interface DealsRes {
   size: number;
 }
 
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'kubun', 'branch', 'office', 'r2State', 'below'] as const;
+const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office', 'r2State'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
-
-/** 基準価格表の区分（サーバーの KUBUNS と揃える） */
-const KUBUN_LIST = ['大手', '中規模', '小規模'];
 
 /** 「2026-04」形式かどうか。保存前に画面側でも確かめる */
 const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -29,62 +26,6 @@ const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 /** A基準の月の見出し。「2026-09」→「9月」。取込前は仮の名前で出す */
 const ymLabel = (ym: string | undefined, fallback: string) =>
   ym && /^\d{4}-\d{2}$/.test(ym) ? `${Number(ym.slice(5, 7))}月` : fallback;
-
-/**
- * 合意との差の比較元。設定中の目標があればそれと比べる。
- * まだ目標が無い行は、基準価格表の3区分のうち一番安い値上後単価と比べる
- * （最低限ここまで、の当たりを付けるため）。
- */
-function diffBase(d: Deal): { base: number; label: string } | null {
-  if (d.r2_target_price != null) {
-    return { base: Number(d.r2_target_price), label: '設定中の目標' };
-  }
-  const t = d.std_targets;
-  if (t) {
-    const vals = Object.values(t).filter((v) => v != null).map(Number);
-    if (vals.length) return { base: Math.min(...vals), label: '基準価格表の一番安い値上後' };
-  }
-  return null;
-}
-
-/**
- * 合意との差を出す対象か。「実際に合意した行」だけ（状態が未入力でない）。
- * 管理表では未交渉の行にも0が入っている。これを含めると、
- * これから交渉する案件が目標額まるごとの不足として並んでしまう。
- */
-function hasAgreed(d: Deal): boolean {
-  return d.r2_state !== 'open' && d.r2_agreed_price != null && Number(d.r2_agreed_price) > 0;
-}
-
-/** 合意が目標に届いていないか（欄の色付けに使う） */
-function belowTarget(d: Deal): boolean {
-  if (!hasAgreed(d)) return false;
-  const b = diffBase(d);
-  return b != null && Number(d.r2_agreed_price) < b.base;
-}
-
-/**
- * 合意単価と、目標との差の表示。差は金額の横に並べる。
- * 不足は −（赤）、上回りは ＋（緑）。
- *
- * 差の欄は幅を決め打ちにして、差の有無や桁数にかかわらず
- * 合意の金額が同じ位置に並ぶようにする（行ごとに左右へずれないため）。
- */
-function AgreedCell({ deal }: { deal: Deal }) {
-  const agreed = deal.r2_agreed_price;
-  const b = diffBase(deal);
-  const diff = hasAgreed(deal) && b != null ? Number(agreed) - b.base : null;
-  const show = diff != null && diff !== 0;
-  return (
-    <span className="agreed-cell">
-      <span className="amt">{yen(agreed)}</span>
-      <span className={`diff${show ? (diff < 0 ? ' shortfall' : ' surplus') : ''}`}
-            title={show ? `${b!.label} ¥${yen(b!.base)} との差です` : undefined}>
-        {show ? `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}` : ''}
-      </span>
-    </span>
-  );
-}
 
 export default function Deals() {
   const [params, setParams] = useSearchParams();
@@ -96,7 +37,6 @@ export default function Deals() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
-  const isAdmin = me.role === 'admin' || me.role === 'developer';
   const isDev = me.role === 'developer';
   // B基準（実際の決定単価）は同課（営業企画）と管理者が入れる
   const canB = ['planning', 'admin', 'developer'].includes(me.role);
@@ -221,9 +161,7 @@ export default function Deals() {
     setEditing(d.id);
     setMsg(null);
     setDraft({
-      r2_agreed_price: d.r2_agreed_price == null ? '' : String(d.r2_agreed_price),
       r2_applied_ym: d.r2_applied_ym ?? '',
-      r2_target_price: d.r2_target_price == null ? '' : String(d.r2_target_price),
       b_price: d.b_price == null ? '' : String(d.b_price),
       qty: d.qty == null ? '' : String(d.qty),
       // 開発者は取込のズレ（法人名・器種・支店・営業所・出荷単価など）も一覧から直せる
@@ -275,52 +213,31 @@ export default function Deals() {
     }
   };
 
-  /** 弾ごとの保存。合意単価と適用年月をまとめて送る */
-  const saveRound = async (d: Deal, alsoDone: boolean) => {
-    const priceKey = 'r2_agreed_price';
-    const ymKey = 'r2_applied_ym';
-    const price = draft[priceKey]?.trim() ?? '';
-    const ym = draft[ymKey]?.trim() ?? '';
-    if (alsoDone && price === '') {
-      setMsg({ kind: 'error', text: '完了にするには合意単価を入力してください' });
-      return;
-    }
+  /** 適用年月の保存 */
+  const saveRound = async (d: Deal) => {
+    const ym = draft.r2_applied_ym?.trim() ?? '';
     if (ym && !YM_RE.test(ym)) {
       setMsg({ kind: 'error', text: '適用年月は「2026-04」の形式で入力してください' });
       return;
     }
-    const body: Record<string, unknown> = {
-      [priceKey]: price === '' ? null : Number(price),
-      [ymKey]: ym === '' ? null : ym,
-    };
-    if (alsoDone) body.r2_done = true;
-    const ok = await patch(d.id, body);
-    if (ok && alsoDone) setMsg({ kind: 'ok', text: '完了にしました' });
+    const ok = await patch(d.id, { r2_applied_ym: ym === '' ? null : ym });
+    if (ok) setMsg({ kind: 'ok', text: '適用年月を保存しました' });
   };
 
   /**
-   * 区分の選択。基準価格表の値上後単価が目標として入る。
-   * どの区分の得意先かは営業担当者が判断して選ぶ。
+   * 出荷単価とA基準（3か月後の申請単価）との差額。1台あたりの値上げ幅にあたる。
+   * マイナス（申請が出荷単価を下回る）は赤で示す。
    */
-  const saveKubun = async (d: Deal, kubun: string) => {
-    const updated = await patch(d.id, { kubun });
-    if (updated) {
-      setMsg(kubun
-        ? { kind: 'ok', text: `区分を「${kubun}」にしました。基準価格表の値上後単価が目標に入っています` }
-        : { kind: 'ok', text: '区分を外しました（目標も未設定に戻ります）' });
-      // 管理者の目標入力欄も、入った値に追随させる
-      setDraft((prev) => ({
-        ...prev,
-        r2_target_price: updated.r2_target_price == null ? '' : String(updated.r2_target_price),
-      }));
-    }
-  };
-
-  const saveTarget = async (d: Deal) => {
-    const key = 'r2_target_price';
-    const v = draft[key]?.trim() ?? '';
-    const ok = await patch(d.id, { [key]: v === '' ? null : Number(v) });
-    if (ok) setMsg({ kind: 'ok', text: '目標単価を更新しました' });
+  const aDiff = (d: Deal) => {
+    if (d.a_price_m3 == null || d.base_price == null) return '—';
+    const diff = Number(d.a_price_m3) - Number(d.base_price);
+    if (diff === 0) return '0';
+    return (
+      <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : undefined}
+            title={`A基準（${ymLabel(meta?.aggMeta?.m3, '3か月後')}の申請単価）− 出荷単価`}>
+        {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
+      </span>
+    );
   };
 
   /** B基準（決定単価）の保存。欄を離れた時点で、変わっていた場合だけ送る */
@@ -331,22 +248,7 @@ export default function Deals() {
     if (ok) setMsg({ kind: 'ok', text: v === '' ? '決定単価（B基準）を未入力に戻しました' : '決定単価（B基準）を保存しました' });
   };
 
-  /**
-   * 目標の根拠（どの基準に紐づくか・類似か・基準に無いか）。
-   * 一覧には出さず、目標の欄にカーソルを合わせたときだけツールチップで示す。
-   */
-  const stdTitle = (d: Deal) => {
-    if (d.std_name) {
-      return d.std_kind === 'similar'
-        ? `基準価格表の「${d.std_name}」の類似として判別しています`
-        : `基準価格表の「${d.std_name}」に一致しています`;
-    }
-    // null はマスターと照合したうえで該当なし。undefined はマスター未登録
-    if (d.std_name === null) return '基準価格表に該当する器種がありません';
-    return undefined;
-  };
-
-  const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
+    const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
   return (
@@ -355,7 +257,6 @@ export default function Deals() {
       <p className="page-sub">
         値上げ結果の集約表（得意先×納入先×商品）を一元管理します。
         A基準は価格申請した向こう3か月の単価、B基準は実際の決定単価（営業企画・管理者が入力）です。
-        器種名は基準価格表の品名と自動で突き合わせ、目標（基準価格表）の列に区分ごとの値上後単価を表示します。
         {meta?.aggMeta?.basePeriod && ` 出荷単価は ${meta.aggMeta.basePeriod} の出荷実績です。`}
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
@@ -416,21 +317,6 @@ export default function Deals() {
           <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
             <option value="">すべて</option>
             {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          区分
-          <select value={get('kubun')} onChange={(e) => setParam('kubun', e.target.value)}>
-            <option value="">すべて</option>
-            {KUBUN_LIST.map((k) => <option key={k} value={k}>{k}</option>)}
-            <option value="none">未選択</option>
-          </select>
-        </label>
-        <label className="fld">
-          目標との差
-          <select value={get('below')} onChange={(e) => setParam('below', e.target.value)}>
-            <option value="">すべて</option>
-            <option value="r2">目標未達</option>
           </select>
         </label>
       </div>
@@ -518,9 +404,7 @@ export default function Deals() {
               <th className="num grp">数量</th>
               <th colSpan={3} className="grp sep">A基準（申請単価）</th>
               <th className="num grp sep">B基準</th>
-              <th colSpan={3} className="grp sep">目標（基準価格表）</th>
-              <th colSpan={4} className="grp sep">値上げ交渉</th>
-              <th className="grp sep">区分</th>
+              <th colSpan={3} className="grp sep">値上げ交渉</th>
               <th className="grp"></th>
             </tr>
             <tr>
@@ -537,14 +421,9 @@ export default function Deals() {
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="b_price" className="num sep">決定単価</Th>
-              <th className="num sep">大手</th>
-              <th className="num">中規模</th>
-              <th className="num">小規模</th>
-              <Th col="r2_target_price" className="num sep">設定中の目標</Th>
-              <Th col="r2_agreed_price" className="num agreed-h">合意</Th>
+              <th className="num sep" title="A基準（3か月後の申請単価）と出荷単価の差">差額<br /><small>（A基準−出荷）</small></th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
-              <Th col="kubun" className="sep" />
               <th></th>
             </tr>
           </thead>
@@ -605,33 +484,8 @@ export default function Deals() {
                     ) : yen(d.b_price)}
                   </td>
 
-                  {/* 目標（基準価格表）: 大手・中規模・小規模の3列。選択中の区分は色付き */}
-                  {KUBUN_LIST.map((k, i) => {
-                    const v = d.std_targets?.[k];
-                    return (
-                      <td key={k} className={`num${i === 0 ? ' sep' : ''}`} title={stdTitle(d)}>
-                        <span className={d.kubun === k ? 'picked' : undefined}
-                              style={v == null ? { color: 'var(--muted)' } : undefined}>
-                          {v == null ? '—' : yen(v)}
-                        </span>
-                      </td>
-                    );
-                  })}
-
-                  {/* 値上げ交渉（設定中の目標・合意・適用年月・状態） */}
-                  <td className="num sep">
-                    {isEditing && isAdmin ? (
-                      <input type="number" className="cell" value={draft.r2_target_price}
-                        onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })}
-                        onBlur={() => saveTarget(d)} />
-                    ) : yen(d.r2_target_price)}
-                  </td>
-                  <td className={`num${belowTarget(d) ? ' below' : ''}`}>
-                    {isEditing ? (
-                      <input type="number" className="cell" value={draft.r2_agreed_price}
-                        onChange={(e) => setDraft({ ...draft, r2_agreed_price: e.target.value })} />
-                    ) : <AgreedCell deal={d} />}
-                  </td>
+                  {/* 値上げ交渉（差額・適用年月・状態）。差額 = A基準 − 出荷単価 */}
+                  <td className="num sep">{aDiff(d)}</td>
                   <td className="num">
                     {isEditing ? (
                       <input type="month" className="cell" value={draft.r2_applied_ym}
@@ -641,36 +495,11 @@ export default function Deals() {
                   <td>
                     {isEditing ? (
                       <div className="round-actions">
-                        <button className="btn secondary sm" disabled={busy} onClick={() => saveRound(d, false)}>保存</button>
-                        {!d.r2_done && (
-                          <button className="btn sm" disabled={busy} onClick={() => saveRound(d, true)}>完了</button>
-                        )}
-                        {!!d.r2_done && (
-                          <button className="btn secondary sm" disabled={busy}
-                            onClick={() => patch(d.id, { r2_done: false })}>完了を戻す</button>
-                        )}
+                        <button className="btn secondary sm" disabled={busy} onClick={() => saveRound(d)}>保存</button>
                       </div>
                     ) : <RoundStateBadge state={d.r2_state} />}
                   </td>
 
-                  {/* 区分（大手・中規模・小規模）。選ぶと基準価格表の値上後単価が目標❷に入る */}
-                  <td className="sep">
-                    {isEditing ? (
-                      <select
-                        value={d.kubun ?? ''}
-                        disabled={busy}
-                        title="得意先の区分。選ぶと基準価格表の値上後単価が目標に入ります"
-                        onChange={(e) => saveKubun(d, e.target.value)}
-                      >
-                        <option value="">選ぶ</option>
-                        {KUBUN_LIST.map((k) => <option key={k} value={k}>{k}</option>)}
-                      </select>
-                    ) : (
-                      d.kubun
-                        ? <strong>{d.kubun}</strong>
-                        : <span style={{ color: 'var(--muted)' }}>未選択</span>
-                    )}
-                  </td>
                   <td>
                     <button className="btn secondary sm" onClick={() => (isEditing ? setEditing(null) : startEdit(d))}>
                       {isEditing ? '閉じる' : '入力'}
@@ -693,16 +522,16 @@ export default function Deals() {
         <p className="pt-note" style={{ marginTop: 10 }}>
           開発者のため、支店・営業所の列が表示され、「入力」で取込項目
           （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価）と
-          目標単価を直せます。変更は入力欄を離れた時点で保存されます。
+          決定単価（B基準）を直せます。変更は入力欄を離れた時点で保存されます。
           コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
         </p>
-      ) : isAdmin ? (
+      ) : canB ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          管理者のため、目標単価も「入力」から変更できます（変更は入力欄を離れた時点で保存されます）。
+          「入力」から決定単価（B基準）と適用年月を入れられます（変更は入力欄を離れた時点で保存されます）。
         </p>
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          目標単価の手入力は管理者のみ行えます（区分の選択はどなたでもできます）。
+          決定単価（B基準）の入力は営業企画・管理者が行います。
         </p>
       )}
     </div>

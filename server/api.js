@@ -1238,24 +1238,27 @@ api.get('/dashboard', wrap(async (req, res) => {
     db.get(`SELECT ${amounts} FROM deal_calc ${where}`, p),
   ]);
 
-  // A基準とB基準の妥結進捗（マスタ登録の行だけが対象）。
-  // 加重平均売価 = Σ(単価×数量) ÷ Σ数量。Aは3か月後の申請単価を使う。
+  // 出荷金額とA基準の月別合計（マスタ登録の行だけが対象）。
+  // 出荷金額 = 出荷単価×数量の合計。A基準の各月は、数量を固定したまま
+  // その月の申請単価に置き換えた場合の合計（申請どおり通ったときの売上の見通し）。
   const ab = `
     COUNT(*) AS deals,
     SUM(qty) AS qty,
-    SUM(a_price_m3 * qty) AS a_amt,
-    SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows,
-    SUM(CASE WHEN b_price IS NOT NULL THEN qty ELSE 0 END) AS b_qty,
-    SUM(CASE WHEN b_price IS NOT NULL THEN b_price * qty ELSE 0 END) AS b_amt,
-    SUM(CASE WHEN b_price IS NOT NULL THEN (b_price - a_price_m3) * qty ELSE 0 END) AS settle_diff`;
+    SUM(base_price * qty) AS base_amt,
+    SUM(a_price_m1 * qty) AS a1_amt,
+    SUM(a_price_m2 * qty) AS a2_amt,
+    SUM(a_price_m3 * qty) AS a3_amt`;
   const abCond = 'agg_key IS NOT NULL AND qty > 0';
-  const [abTotals, abByEquip, abByCorp] = await Promise.all([
+  const [abTotals, abByBranch, abByCorp, aggMetaRow] = await Promise.all([
     db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
-    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
-             GROUP BY equip_name ORDER BY SUM(qty) DESC`, p),
+    db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
+             GROUP BY branch`, p),
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM(qty) DESC LIMIT 20`, p),
+             GROUP BY corp_name ORDER BY SUM(base_price * qty) DESC LIMIT 20`, p),
+    db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
+  // 支店は都道府県順（選択肢と同じ並び）
+  abByBranch.sort((a, b) => comparePref(a.name, b.name));
 
   // 支店は都道府県順（選択肢と同じ並び）
   byBranchAmount.sort((a, b) => comparePref(a.branch, b.branch));
@@ -1264,8 +1267,9 @@ api.get('/dashboard', wrap(async (req, res) => {
     scope: scopeInfo(req.user),
     totals,
     abTotals,
-    abByEquip,
+    abByBranch,
     abByCorp,
+    aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
     byBranchAmount,
     amountTotals,
     byOffice,
