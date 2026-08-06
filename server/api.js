@@ -1108,11 +1108,13 @@ api.get('/meta', wrap(async (req, res) => {
 
   // マスタ登録（集約表）の取込情報。A基準の月の見出しなどに使う
   const aggMetaRow = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
+  const histMetaRow = await db.get("SELECT value FROM settings WHERE key = 'hist_meta'");
 
   res.json({
     priceTypes, equips, persons, customers, branches, offices,
     corps,
     aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
+    histMeta: histMetaRow ? JSON.parse(histMetaRow.value) : null,
     // 画面に「いま何が見えているか」を出すための情報
     scope: scopeInfo(req.user),
     exportMaxRows: EXPORT_MAX_ROWS,
@@ -1295,6 +1297,8 @@ const SORTABLE = new Map([
   ['sales_person', 'sales_person'],
   ['base_price', 'base_price'],
   ['qty', 'qty'],
+  ['hist_avg_price', 'hist_avg_price'],
+  ['hist_qty', 'hist_qty'],
   ['a_price_m1', 'a_price_m1'],
   ['a_price_m2', 'a_price_m2'],
   ['a_price_m3', 'a_price_m3'],
@@ -2143,6 +2147,89 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     try { await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [Number(c), batchId]); } catch { /* 記録用 */ }
   }
   res.json({ removed, total: Number(c) });
+}));
+
+// ---- 出荷実績（月別履歴）の取込 ----
+//
+// 法人グループ×商品の単位で、期間全体の平均単価と数量合計を参照用に付ける。
+// マスタ登録（案件）の法人・器種がベース。実績側の法人名を正規化して
+// 案件の法人名（先頭一致）で対応づけ、商品コードで品目を突き合わせる。
+// 出荷単価・数量は毎日のマスタ登録取込で上書きされるため、別の列に持つ。
+
+/** 法人名の照合用の正規化（会社種別・空白・記号を除く） */
+function normCorpName(s) {
+  return String(s ?? '')
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/株式会社|有限会社|合同会社|（株）|\(株\)|㈱|（有）|\(有\)|㈲|（合）|\(合\)/g, '')
+    .replace(/[\s　・．.,、。_\-ー―－〜~]/g, '')
+    .toUpperCase();
+}
+
+api.post('/hist-import/start', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const corps = Array.isArray(req.body?.corps) ? req.body.corps : [];
+  if (!corps.length) return res.status(400).json({ error: '法人の一覧がありません' });
+
+  // 実績側: 正規化した法人名 → 法人グループコード。長い名前を優先して照合する
+  const byNorm = new Map();
+  for (const [cd, name] of corps) {
+    const n = normCorpName(name);
+    if (n) byNorm.set(n, String(cd));
+  }
+  const norms = [...byNorm.keys()].sort((a, b) => b.length - a.length);
+
+  const dealCorps = await db.all(
+    'SELECT DISTINCT corp_name FROM deals WHERE agg_key IS NOT NULL AND corp_name IS NOT NULL');
+  const statements = [
+    // 前回の対応づけと実績を一度消してから付け直す（実績に無くなった法人を残さない）
+    { sql: 'UPDATE deals SET hist_ent_cd = NULL, hist_avg_price = NULL, hist_qty = NULL', params: [] },
+  ];
+  let matched = 0;
+  for (const { corp_name } of dealCorps) {
+    const n = normCorpName(corp_name);
+    let cd = byNorm.get(n) ?? null;
+    if (!cd) {
+      for (const cn of norms) {
+        if (cn.length >= 3 && n.startsWith(cn)) { cd = byNorm.get(cn); break; }
+      }
+    }
+    if (cd) {
+      matched += 1;
+      statements.push({ sql: 'UPDATE deals SET hist_ent_cd = ? WHERE corp_name = ?', params: [cd, corp_name] });
+    }
+  }
+  await db.batch(statements);
+
+  const period = String(req.body?.period ?? '');
+  await db.run(
+    `INSERT INTO settings (key, value) VALUES ('hist_meta', ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [JSON.stringify({ filename: String(req.body?.filename ?? ''), period,
+      updatedAt: new Date().toISOString() })]
+  );
+  res.json({ corpsInFile: corps.length, dealCorps: dealCorps.length, matched });
+}));
+
+api.post('/hist-import/chunk', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
+  if (rows.length > 1000) return res.status(400).json({ error: '一度に送れるのは1000行までです' });
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  await db.batch(rows.map(([cd, product, avg, qty]) => ({
+    sql: 'UPDATE deals SET hist_avg_price = ?, hist_qty = ? WHERE hist_ent_cd = ? AND model_code = ?',
+    params: [num(avg), num(qty), String(cd), String(product)],
+  })));
+  res.json({ ok: true });
+}));
+
+api.post('/hist-import/finish', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const { covered } = await db.get(
+    'SELECT COUNT(*) AS covered FROM deals WHERE hist_avg_price IS NOT NULL');
+  const { total } = await db.get(
+    'SELECT COUNT(*) AS total FROM deals WHERE agg_key IS NOT NULL');
+  res.json({ covered: Number(covered), total: Number(total) });
 }));
 
 api.get('/import/fields', wrap(async (req, res) => {

@@ -497,6 +497,10 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN a_price_m2 REAL',
     'ALTER TABLE deals ADD COLUMN a_price_m3 REAL',
     'ALTER TABLE deals ADD COLUMN b_price REAL',
+    // 出荷実績（月別履歴）。法人×品目の平均単価と数量合計を参照用に持つ
+    'ALTER TABLE deals ADD COLUMN hist_ent_cd TEXT',
+    'ALTER TABLE deals ADD COLUMN hist_avg_price REAL',
+    'ALTER TABLE deals ADD COLUMN hist_qty REAL',
     // 適用年月と完了（案件一覧から営業担当者が入れる）
     'ALTER TABLE deals ADD COLUMN r2_applied_ym TEXT',
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
@@ -513,7 +517,7 @@ async function beforeSchema() {
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
   try {
-    await db.get('SELECT agg_key FROM deal_calc LIMIT 1');
+    await db.get('SELECT hist_qty FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

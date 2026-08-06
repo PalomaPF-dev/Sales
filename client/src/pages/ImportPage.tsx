@@ -4,6 +4,7 @@ import { api } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
 import AggImportCard from '../components/AggImportCard';
+import HistImportCard from '../components/HistImportCard';
 
 interface Batch {
   id: number;
@@ -76,7 +77,10 @@ export default function ImportPage() {
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       {canCheck ? (
-        <AggImportCard onDone={load} />
+        <>
+          <AggImportCard onDone={load} />
+          <HistImportCard />
+        </>
       ) : (
         <Card title="マスタ登録の取込">
           <p className="pt-note" style={{ marginTop: 0 }}>

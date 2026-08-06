@@ -46,6 +46,8 @@ export interface Deal {
   a_price_m2?: number | null;       // A基準: 翌々月の申請単価
   a_price_m3?: number | null;       // A基準: 3か月後の申請単価
   b_price?: number | null;          // B基準: 実際の決定単価
+  hist_avg_price?: number | null;   // 出荷実績（月別履歴）の平均単価（法人×品目）
+  hist_qty?: number | null;         // 出荷実績の数量合計（法人×品目）
   /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */
   std_name?: string | null;
   /** 判別の方法。code=器種ガスコード一致 / name=品名一致 / similar=類似（先頭一致） */
@@ -119,6 +121,8 @@ export interface Meta {
   corpStatuses: { code: string; name: string }[];
   /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
   aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
+  /** 出荷実績（月別履歴）の取込情報 */
+  histMeta?: { period: string; filename?: string } | null;
 }
 
 export const ROUND_STATE_NAMES: Record<string, string> = {

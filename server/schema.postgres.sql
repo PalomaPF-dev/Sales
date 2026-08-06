@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS deals (
   a_price_m2      REAL,   -- A基準: 翌々月の申請単価
   a_price_m3      REAL,   -- A基準: 3か月後の申請単価
   b_price         REAL,   -- B基準: 実際の決定単価（アプリで入力。取込では上書きしない）
+  hist_ent_cd     TEXT,   -- 出荷実績（月別履歴）の法人グループコード（名前照合で対応づけ）
+  hist_avg_price  REAL,   -- 実績の平均単価（法人×品目・期間全体）
+  hist_qty        REAL,   -- 実績の数量合計（法人×品目・期間全体）
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率
@@ -200,6 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
 --   ❹ r2_raise_unit = ❸合意単価 - ❶出荷単価
 --   r2_state … 交渉の進み具合（未入力 / 合意済 / 完了）
 --   列名の r2_ は旧・第2弾の名残（第1弾は廃止済み）
+CREATE INDEX IF NOT EXISTS idx_deals_hist ON deals(hist_ent_cd, model_code);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_deals_agg ON deals(agg_key) WHERE agg_key IS NOT NULL;
 
 CREATE OR REPLACE VIEW deal_calc AS

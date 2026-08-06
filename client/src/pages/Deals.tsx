@@ -402,6 +402,10 @@ export default function Deals() {
                 出荷単価{meta?.aggMeta?.basePeriod && <><br /><small>（{meta.aggMeta.basePeriod}）</small></>}
               </th>
               <th className="num grp">数量</th>
+              <th colSpan={2} className="grp sep">出荷実績{'\u00A0'}
+                {'' /* 期間はメタから */}
+                <small>{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}</small>
+              </th>
               <th colSpan={3} className="grp sep">A基準（申請単価）</th>
               <th className="num grp sep">B基準</th>
               <th colSpan={3} className="grp sep">値上げ交渉</th>
@@ -417,6 +421,8 @@ export default function Deals() {
               <Th col="sales_person">担当者</Th>
               <Th col="base_price" className="num sep" />
               <Th col="qty" className="num" />
+              <Th col="hist_avg_price" className="num sep">平均単価</Th>
+              <Th col="hist_qty" className="num">数量計</Th>
               <Th col="a_price_m1" className="num sep">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
@@ -468,6 +474,14 @@ export default function Deals() {
                   </td>
                   <td className="num">
                     {isEditing && isDev ? baseCell(d, 'qty', true) : yen(d.qty)}
+                  </td>
+
+                  {/* 出荷実績（月別履歴）: 法人×品目の平均単価と数量合計（参照） */}
+                  <td className="num sep" title="出荷実績の平均単価（法人×品目・期間全体）">
+                    {yen(d.hist_avg_price)}
+                  </td>
+                  <td className="num" title="出荷実績の数量合計（法人×品目・期間全体。同じ法人×品目の行には同じ値が入ります）">
+                    {yen(d.hist_qty)}
                   </td>
 
                   {/* A基準（マスタ登録の申請単価: 翌月・翌々月・3か月後） */}
