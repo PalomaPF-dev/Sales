@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS deals (
   gas_code        TEXT,   -- V  ガスコード
   model_name      TEXT,   -- W  器種名
   gas_type        TEXT,   -- X  ガス種
-  qty             REAL,   -- Y  出荷数
+  qty             REAL,   -- 出荷数量（マスタ登録の売上数）
   list_price      REAL,   -- Z  定価
   rate            REAL,   -- AA 掛け率
   base_price      REAL,   -- AB 出荷単価（❶ 値上げ前単価）
@@ -107,7 +107,6 @@ CREATE TABLE IF NOT EXISTS deals (
   new_list_price  REAL,   -- BQ 新定価
   kubun           TEXT,   -- 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶ
   agg_key         TEXT,   -- 集約表（マスタ登録）のキー: 得意先|納入先|商品コード。取込の突き合わせ用
-  qty             REAL,   -- 出荷数量（マスタ単価売上数）
   cost_price      REAL,   -- 実績原価（管理者・開発者のみ表示。他の役割には返さない）
   a_price_m1      REAL,   -- A基準: 翌月の申請単価（マスタ単価）
   a_price_m2      REAL,   -- A基準: 翌々月の申請単価
@@ -137,6 +136,9 @@ CREATE INDEX IF NOT EXISTS idx_deals_customer ON deals(customer_code);
 CREATE INDEX IF NOT EXISTS idx_deals_equip    ON deals(equip_name);
 CREATE INDEX IF NOT EXISTS idx_deals_person   ON deals(sales_person);
 CREATE INDEX IF NOT EXISTS idx_deals_corp     ON deals(corp_code);
+CREATE INDEX IF NOT EXISTS idx_deals_branch   ON deals(branch);
+CREATE INDEX IF NOT EXISTS idx_deals_office   ON deals(branch, office);
+CREATE INDEX IF NOT EXISTS idx_deals_default_order ON deals(corp_name, customer_name, equip_name, model_name, id);
 
 -- 各種設定
 CREATE TABLE IF NOT EXISTS settings (
