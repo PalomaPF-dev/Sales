@@ -2051,16 +2051,31 @@ api.post('/agg-import/start', wrap(async (req, res) => {
   // 旧形式の行を残したまま追加すると上限に達して取込が失敗するため。
   let removed = 0;
   if (req.body?.removeOld === true) {
-    for (const sql of [
-      'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
-      'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
-    ]) {
-      try { await db.run(sql); } catch { /* テーブルや列が無ければ何もしない */ }
+    // DELETEでは領域がすぐに戻らず、DB（Neon）の容量上限に達したままになる。
+    // 画面で入れた決定単価（B基準）が無ければ、テーブルを丸ごと空にして
+    // 領域を即時回収する（TRUNCATEはファイルごと解放される）。
+    const { c } = await db.get('SELECT COUNT(*) AS c FROM deals');
+    const { b } = await db.get('SELECT COUNT(*) AS b FROM deals WHERE b_price IS NOT NULL');
+    if (Number(b) === 0) {
+      try {
+        await db.run('TRUNCATE TABLE deals RESTART IDENTITY CASCADE');
+        removed = Number(c);
+      } catch {
+        const r = await db.run('DELETE FROM deals');
+        removed = Number(r?.changes ?? 0);
+      }
+    } else {
+      // B基準の入力がある場合は消さず、旧形式の行だけ削除する
+      for (const sql of [
+        'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
+        'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE agg_key IS NULL)',
+      ]) {
+        try { await db.run(sql); } catch { /* テーブルや列が無ければ何もしない */ }
+      }
+      const r = await db.run('DELETE FROM deals WHERE agg_key IS NULL');
+      removed = Number(r?.changes ?? 0);
     }
-    const r = await db.run('DELETE FROM deals WHERE agg_key IS NULL');
-    removed = Number(r?.changes ?? 0);
-    // 空いた領域をすぐ再利用できるようにする（失敗しても取込は続ける）
-    try { await db.run('VACUUM deals'); } catch { try { await db.run('VACUUM'); } catch { /* 権限が無ければ自動VACUUMに任せる */ } }
+    try { await db.run('VACUUM deals'); } catch { /* 実行できない環境では自動VACUUMに任せる */ }
   }
 
   const batchId = await createBatch(filename, req.user.id, null, null);
