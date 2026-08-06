@@ -20,6 +20,10 @@ import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings, IconUser
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  // 待ち時間が長いときだけ理由を添える。
+  // データベースは使っていない間は止まっており、最初の1回だけ起動を待つ。
+  // 何も出ないと固まったように見えるため、数秒たったら状況を知らせる。
+  const [slow, setSlow] = useState(false);
   const [setupCandidates, setSetupCandidates] = useState<{ login_id: string; name: string; role: string }[] | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -27,6 +31,7 @@ export default function App() {
   // Cookieのセッションから復元する。
   // 未ログインなら、初期セットアップが必要な状態か（＝誰もパスワードを持たない）を確認する。
   useEffect(() => {
+    const timer = setTimeout(() => setSlow(true), 3000);
     fetchMe()
       .then((u) => { setUser(u); setLoading(false); })
       .catch(async () => {
@@ -41,7 +46,9 @@ export default function App() {
           setServerError((e as Error).message);
         }
         setLoading(false);
-      });
+      })
+      .finally(() => clearTimeout(timer));
+    return () => clearTimeout(timer);
   }, []);
 
   const signOut = async () => {
@@ -51,7 +58,19 @@ export default function App() {
   };
 
   if (loading) {
-    return <div className="login-wrap"><p style={{ color: 'var(--ink-2)' }}>読み込み中...</p></div>;
+    return (
+      <div className="login-wrap">
+        <div style={{ textAlign: 'center' }}>
+          <p style={{ color: 'var(--ink-2)' }}>読み込み中...</p>
+          {slow && (
+            <p style={{ color: 'var(--muted)', fontSize: 12.5, maxWidth: 320 }}>
+              しばらく使っていなかったため、データベースを起動しています。<br />
+              初回は30秒ほどかかることがあります。そのままお待ちください。
+            </p>
+          )}
+        </div>
+      </div>
+    );
   }
 
   if (!user) {
