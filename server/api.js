@@ -2193,6 +2193,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   if (batchId) {
     try { await db.run('UPDATE import_batches SET row_count = ? WHERE id = ?', [Number(c), batchId]); } catch { /* 記録用 */ }
   }
+  // 書き換えで残った古い行を掃除し、次の取込で領域を再利用できるようにする
+  try { await db.run('VACUUM deals'); } catch { /* 実行できない環境では自動VACUUMに任せる */ }
   res.json({ removed, total: Number(c) });
 }));
 
@@ -2227,10 +2229,9 @@ api.post('/hist-import/start', wrap(async (req, res) => {
 
   const dealCorps = await db.all(
     'SELECT DISTINCT corp_name FROM deals WHERE agg_key IS NOT NULL AND corp_name IS NOT NULL');
-  const statements = [
-    // 前回の対応づけと実績を一度消してから付け直す（実績に無くなった法人を残さない）
-    { sql: 'UPDATE deals SET hist_ent_cd = NULL, hist_avg_price = NULL, hist_qty = NULL', params: [] },
-  ];
+  // 対応づけは「変わる行だけ」書き換える。全行を消してから付け直すと、
+  // 毎回テーブルを丸ごと書き直すことになりDBの容量が跳ね上がるため。
+  const statements = [];
   let matched = 0;
   for (const { corp_name } of dealCorps) {
     const n = normCorpName(corp_name);
@@ -2242,7 +2243,18 @@ api.post('/hist-import/start', wrap(async (req, res) => {
     }
     if (cd) {
       matched += 1;
-      statements.push({ sql: 'UPDATE deals SET hist_ent_cd = ? WHERE corp_name = ?', params: [cd, corp_name] });
+      statements.push({
+        sql: `UPDATE deals SET hist_ent_cd = ?
+               WHERE corp_name = ? AND hist_ent_cd IS DISTINCT FROM ?`,
+        params: [cd, corp_name, cd],
+      });
+    } else {
+      // 実績側に無くなった法人は、付いていた実績を落とす（付いている行だけ）
+      statements.push({
+        sql: `UPDATE deals SET hist_ent_cd = NULL, hist_avg_price = NULL, hist_qty = NULL
+               WHERE corp_name = ? AND hist_ent_cd IS NOT NULL`,
+        params: [corp_name],
+      });
     }
   }
   await db.batch(statements);
@@ -2279,6 +2291,7 @@ api.post('/hist-import/finish', wrap(async (req, res) => {
     'SELECT COUNT(*) AS covered FROM deals WHERE hist_avg_price IS NOT NULL');
   const { total } = await db.get(
     'SELECT COUNT(*) AS total FROM deals WHERE agg_key IS NOT NULL');
+  try { await db.run('VACUUM deals'); } catch { /* 実行できない環境では自動VACUUMに任せる */ }
   res.json({ covered: Number(covered), total: Number(total) });
 }));
 
