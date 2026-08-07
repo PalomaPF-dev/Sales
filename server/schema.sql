@@ -108,9 +108,15 @@ CREATE TABLE IF NOT EXISTS deals (
   kubun           TEXT,   -- 基準価格表の区分（大手 / 中規模 / 小規模）。担当者が選ぶ
   agg_key         TEXT,   -- 集約表（マスタ登録）のキー: 得意先|納入先|商品コード。取込の突き合わせ用
   cost_price      REAL,   -- 実績原価（管理者・開発者のみ表示。他の役割には返さない）
+  a_price_m0      REAL,   -- A基準: 当月の申請単価（マスタ単価）
   a_price_m1      REAL,   -- A基準: 翌月の申請単価（マスタ単価）
   a_price_m2      REAL,   -- A基準: 翌々月の申請単価
   a_price_m3      REAL,   -- A基準: 3か月後の申請単価
+  -- A基準それぞれの承認日（マスタ登録の「登録日」）。集約後は法人×品目の中で最新の日
+  a_date_m0       TEXT,
+  a_date_m1       TEXT,
+  a_date_m2       TEXT,
+  a_date_m3       TEXT,
   b_price         REAL,   -- B基準: 実際の決定単価（アプリで入力。取込では上書きしない）
   hist_ent_cd     TEXT,   -- 出荷実績（月別履歴）の法人グループコード（名前照合で対応づけ）
   hist_avg_price  REAL,   -- 実績の平均単価（法人×品目・期間全体）
@@ -158,10 +164,16 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   model_code TEXT NOT NULL,
   qty        REAL NOT NULL DEFAULT 0,
   base_amt   REAL NOT NULL DEFAULT 0,
+  a0_amt     REAL NOT NULL DEFAULT 0,
   a1_amt     REAL NOT NULL DEFAULT 0,
   a2_amt     REAL NOT NULL DEFAULT 0,
   a3_amt     REAL NOT NULL DEFAULT 0,
   cost_amt   REAL NOT NULL DEFAULT 0,
+  -- 承認日（登録日）は足し合わせず、まとまりの中で一番新しい日を残す
+  d0_max     TEXT,
+  d1_max     TEXT,
+  d2_max     TEXT,
+  d3_max     TEXT,
   PRIMARY KEY (ent_cd, model_code)
 );
 

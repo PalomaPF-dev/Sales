@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-06-hist-base';
+const SCHEMA_VERSION = '2026-08-07-a-dates';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -519,10 +519,22 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN agg_key TEXT',
     'ALTER TABLE deals ADD COLUMN qty REAL',
     'ALTER TABLE deals ADD COLUMN cost_price REAL',
+    'ALTER TABLE deals ADD COLUMN a_price_m0 REAL',
     'ALTER TABLE deals ADD COLUMN a_price_m1 REAL',
     'ALTER TABLE deals ADD COLUMN a_price_m2 REAL',
     'ALTER TABLE deals ADD COLUMN a_price_m3 REAL',
+    // A基準それぞれの承認日（マスタ登録の「登録日」）
+    'ALTER TABLE deals ADD COLUMN a_date_m0 TEXT',
+    'ALTER TABLE deals ADD COLUMN a_date_m1 TEXT',
+    'ALTER TABLE deals ADD COLUMN a_date_m2 TEXT',
+    'ALTER TABLE deals ADD COLUMN a_date_m3 TEXT',
     'ALTER TABLE deals ADD COLUMN b_price REAL',
+    // 集約の作業表にも当月分と承認日を足す
+    'ALTER TABLE agg_staging ADD COLUMN a0_amt REAL NOT NULL DEFAULT 0',
+    'ALTER TABLE agg_staging ADD COLUMN d0_max TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN d1_max TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN d2_max TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN d3_max TEXT',
     // 出荷実績（月別履歴）。法人×品目の平均単価と数量合計を参照用に持つ
     'ALTER TABLE deals ADD COLUMN hist_ent_cd TEXT',
     'ALTER TABLE deals ADD COLUMN hist_avg_price REAL',
@@ -546,7 +558,7 @@ async function beforeSchema() {
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
   try {
-    await db.get('SELECT master_qty FROM deal_calc LIMIT 1');
+    await db.get('SELECT a_date_m3 FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

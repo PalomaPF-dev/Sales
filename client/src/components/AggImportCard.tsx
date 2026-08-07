@@ -76,6 +76,8 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
         <strong>A基準（向こう3か月の申請単価）</strong>を取り込みます。
         マスタ登録は 得意先×納入先×商品 の細かい単位なので、
         <strong>法人×品目へ集約（数量で加重平均）して</strong>、出荷実績の案件に重ねます。
+        「登録日」のあるファイルなら、A基準それぞれの<strong>承認日</strong>も一緒に入ります
+        （まとまりの中で一番新しい日）。
         先に「出荷実績」を取り込んでおいてください。決定単価（B基準）など画面で入れた値は残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -84,7 +86,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
           <>
             <span style={{ fontSize: 13 }}>
               {parsed.p.rows.length.toLocaleString()}行
-              （{parsed.p.meta.m1}・{parsed.p.meta.m2}・{parsed.p.meta.m3} ／ 出荷単価 {parsed.p.meta.basePeriod}）
+              （{[parsed.p.meta.m0, parsed.p.meta.m1, parsed.p.meta.m2, parsed.p.meta.m3]
+                .filter(Boolean).join('・')} ／ 出荷単価 {parsed.p.meta.basePeriod}）
+              {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>

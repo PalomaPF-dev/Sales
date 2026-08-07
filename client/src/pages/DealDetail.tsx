@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import { Card, CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
@@ -133,12 +133,23 @@ export default function DealDetail() {
 
           <div className="section-title">A基準（申請単価）とB基準</div>
           <dl className="kv">
-            <dt>A基準 {meta?.aggMeta?.m1 || '翌月'}</dt>
-            <dd>{d.a_price_m1 == null ? '—' : `¥${yen(d.a_price_m1)}`}</dd>
-            <dt>A基準 {meta?.aggMeta?.m2 || '翌々月'}</dt>
-            <dd>{d.a_price_m2 == null ? '—' : `¥${yen(d.a_price_m2)}`}</dd>
-            <dt>A基準 {meta?.aggMeta?.m3 || '3か月後'}</dt>
-            <dd>{d.a_price_m3 == null ? '—' : `¥${yen(d.a_price_m3)}`}</dd>
+            {([
+              [meta?.aggMeta?.m0 || '当月', d.a_price_m0, d.a_date_m0],
+              [meta?.aggMeta?.m1 || '翌月', d.a_price_m1, d.a_date_m1],
+              [meta?.aggMeta?.m2 || '翌々月', d.a_price_m2, d.a_date_m2],
+              [meta?.aggMeta?.m3 || '3か月後', d.a_price_m3, d.a_date_m3],
+            ] as [string, number | null | undefined, string | null | undefined][])
+              // 当月はファイルに無いこともある。値も承認日も無い月は出さない
+              .filter(([, price, date], i) => i > 0 || price != null || date != null)
+              .map(([label, price, date]) => (
+                <Fragment key={label}>
+                  <dt>A基準 {label}</dt>
+                  <dd>
+                    {price == null ? '—' : `¥${yen(price)}`}
+                    {date && <small style={{ color: 'var(--muted)' }}>（承認日 {date}）</small>}
+                  </dd>
+                </Fragment>
+              ))}
             <dt>決定単価（B基準）</dt>
             <dd>{d.b_price == null ? '未入力' : `¥${yen(d.b_price)}`}</dd>
             {(me.role === 'admin' || me.role === 'developer') && d.cost_price != null && (

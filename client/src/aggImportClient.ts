@@ -15,25 +15,52 @@ export interface AggRow {
   qty: unknown;
   base_price: unknown;
   cost_price: unknown;
+  a_price_m0: unknown;
   a_price_m1: unknown;
   a_price_m2: unknown;
   a_price_m3: unknown;
+  // A基準それぞれの承認日（マスタ登録の「登録日」）。YYYY-MM-DD
+  a_date_m0: string | null;
+  a_date_m1: string | null;
+  a_date_m2: string | null;
+  a_date_m3: string | null;
 }
 
 export interface AggParsed {
   rows: AggRow[];
   skippedRows: number;
-  meta: { m1: string; m2: string; m3: string; basePeriod: string };
+  hasM0: boolean;      // 「当月」の列があるファイルか
+  hasDates: boolean;   // 「登録日（〜）」の列があるファイルか
+  meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string };
 }
 
-/** Excelの日付シリアルを「YYYY-MM」へ。日付でなければそのまま文字列にする */
-function serialToYm(v: unknown): string {
+/**
+ * Excelの日付を「YYYY-MM-DD」へ。
+ * 日付シリアル（46266）と文字列（2026/06/05）のどちらでも来る。
+ */
+function toYmd(v: unknown): string | null {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
   const n = Number(v);
   if (Number.isFinite(n) && n > 20000 && n < 80000) {
-    const dt = new Date(Date.UTC(1899, 11, 30) + n * 86400000);
-    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+    return new Date(Date.UTC(1899, 11, 30) + n * 86400000).toISOString().slice(0, 10);
   }
-  return String(v ?? '').trim();
+  const m = String(v).trim().match(/^(\d{4})[/年-](\d{1,2})[/月-](\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : null;
+}
+
+/** 月の見出しの値を「YYYY-MM」へ。日付として読めなければそのまま文字列にする */
+function serialToYm(v: unknown): string {
+  const ymd = toYmd(v);
+  return ymd ? ymd.slice(0, 7) : String(v ?? '').trim();
+}
+
+/** 見出しの表記ゆれを吸収する（全角数字・全角かっこ） */
+function normHead(h: unknown): string {
+  return String(h ?? '')
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/（/g, '(').replace(/）/g, ')')
+    .trim();
 }
 
 /** 集約表を読み取り、送る行に変換する */
@@ -44,9 +71,23 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const grid: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
   if (!grid.length) throw new Error('シートが空です');
 
-  const headers = (grid[0] ?? []).map((h) => String(h ?? '').trim());
+  const headers = (grid[0] ?? []).map((h) => normHead(h));
   const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
+
+  /**
+   * 月のまとまりを読む。見出しは「当月・マスタ単価・登録日(当月)」の並びで、
+   * 単価は月の右隣、承認日はその右隣にある（登録日の無い古い形式もある）。
+   */
+  const monthCols = (label: string) => {
+    const at = find(label);
+    if (at < 0) return null;
+    return {
+      at,
+      price: at + 1,
+      date: headers[at + 2]?.includes('登録日') ? at + 2 : -1,
+    };
+  };
 
   const col = {
     customer_code: find('得意先コード'),
@@ -65,9 +106,6 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     base_price: findLike('出荷単価'),
     qty: findLike('売上数'),
     cost_price: find('実績原価'),
-    m1: findLike('翌月'),
-    m2: findLike('翌々月'),
-    m3: headers.findIndex((h) => h.replace(/[３3]/, '3').includes('3か月後') || h.includes('３か月後')),
   };
   const missing = Object.entries(col)
     .filter(([k, i]) => i < 0 && k !== 'cost_price')
@@ -76,13 +114,21 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     throw new Error(`集約表の見出しが見つかりません: ${missing.join(', ')}。`
       + '「得意先コード」「商品コード」「翌月」などの見出しがあるシートが必要です');
   }
-  // 「翌々月」は「翌月」を含むため、翌月の列は翌々月と別であることを確かめる
-  if (col.m1 === col.m2) {
-    col.m1 = headers.findIndex((h, i) => h === '翌月' && i !== col.m2);
-    if (col.m1 < 0) throw new Error('「翌月」の列が見つかりません');
+
+  // 当月は無いファイルもある（8月6日版まで）。翌月・翌々月・3か月後は必須
+  const m0 = monthCols('当月');
+  const m1 = monthCols('翌月');
+  const m2 = monthCols('翌々月');
+  const m3 = monthCols('3か月後');
+  const noMonth = [['翌月', m1], ['翌々月', m2], ['3か月後', m3]]
+    .filter(([, v]) => !v).map(([k]) => k);
+  if (noMonth.length) {
+    throw new Error(`集約表に「${noMonth.join('」「')}」の見出しがありません。`
+      + '価格申請（向こう3か月の単価）のあるシートが必要です');
   }
 
   const txt = (r: unknown[], i: number) => String(r[i] ?? '').trim();
+  const at = (r: unknown[], i: number) => (i >= 0 ? r[i] : null);
   const rows: AggRow[] = [];
   let skippedRows = 0;
   for (let i = 1; i < grid.length; i++) {
@@ -96,21 +142,31 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       qty: r[col.qty],
       base_price: r[col.base_price],
       cost_price: col.cost_price >= 0 ? r[col.cost_price] : null,
-      a_price_m1: r[col.m1 + 1],   // 「翌月」の右隣がその月のマスタ単価
-      a_price_m2: r[col.m2 + 1],
-      a_price_m3: r[col.m3 + 1],
+      a_price_m0: at(r, m0 ? m0.price : -1),
+      a_price_m1: r[m1!.price],
+      a_price_m2: r[m2!.price],
+      a_price_m3: r[m3!.price],
+      a_date_m0: toYmd(at(r, m0 ? m0.date : -1)),
+      a_date_m1: toYmd(at(r, m1!.date)),
+      a_date_m2: toYmd(at(r, m2!.date)),
+      a_date_m3: toYmd(at(r, m3!.date)),
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');
 
   const first = grid[1] ?? [];
   const meta = {
-    m1: serialToYm(first[col.m1]),
-    m2: serialToYm(first[col.m2]),
-    m3: serialToYm(first[col.m3]),
+    m0: m0 ? serialToYm(first[m0.at]) : '',
+    m1: serialToYm(first[m1!.at]),
+    m2: serialToYm(first[m2!.at]),
+    m3: serialToYm(first[m3!.at]),
     basePeriod: headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price],
   };
-  return { rows, skippedRows, meta };
+  return {
+    rows, skippedRows, meta,
+    hasM0: Boolean(m0),
+    hasDates: m3!.date >= 0,
+  };
 }
 
 const CHUNK = 500;

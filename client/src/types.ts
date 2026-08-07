@@ -42,9 +42,15 @@ export interface Deal {
   agg_key?: string | null;
   qty?: number | null;              // 出荷数量
   cost_price?: number | null;       // 実績原価（管理者・開発者にだけ返る）
+  a_price_m0?: number | null;       // A基準: 当月の申請単価
   a_price_m1?: number | null;       // A基準: 翌月の申請単価
   a_price_m2?: number | null;       // A基準: 翌々月の申請単価
   a_price_m3?: number | null;       // A基準: 3か月後の申請単価
+  // A基準それぞれの承認日（マスタ登録の「登録日」）。法人×品目の中で最新の日
+  a_date_m0?: string | null;
+  a_date_m1?: string | null;
+  a_date_m2?: string | null;
+  a_date_m3?: string | null;
   b_price?: number | null;          // B基準: 実際の決定単価
   hist_avg_price?: number | null;   // 出荷実績（月別履歴）の平均単価（法人×品目）
   hist_qty?: number | null;         // 出荷実績の数量合計（法人×品目）
@@ -120,7 +126,7 @@ export interface Meta {
   states: { code: RoundState; name: string }[];
   corpStatuses: { code: string; name: string }[];
   /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
-  aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
+  aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
   /** 出荷実績（月別履歴）の取込情報 */
   histMeta?: { period: string; filename?: string } | null;
 }

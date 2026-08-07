@@ -1334,6 +1334,7 @@ const SORTABLE = new Map([
   ['qty', 'qty'],
   ['hist_avg_price', 'hist_avg_price'],
   ['hist_qty', 'hist_qty'],
+  ['a_price_m0', 'a_price_m0'],
   ['a_price_m1', 'a_price_m1'],
   ['a_price_m2', 'a_price_m2'],
   ['a_price_m3', 'a_price_m3'],
@@ -2095,6 +2096,7 @@ api.post('/agg-import/start', wrap(async (req, res) => {
       `INSERT INTO settings (key, value) VALUES ('agg_meta', ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       [JSON.stringify({
+        m0: String(meta.m0 ?? ''),
         m1: String(meta.m1 ?? ''), m2: String(meta.m2 ?? ''), m3: String(meta.m3 ?? ''),
         basePeriod: String(meta.basePeriod ?? ''), filename,
         updatedAt: new Date().toISOString(),
@@ -2127,6 +2129,10 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     return null;
   };
 
+  // 承認日（登録日）は「YYYY-MM-DD」。足し合わせず、まとまりの中で一番新しい日を残す
+  const ymd = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
+  const newer = (a, b) => (b && (!a || b > a) ? b : a);
+
   // 法人×品目ごとに、数量と「単価×数量」を足し込む（加重平均のため）
   const acc = new Map();
   let matched = 0;
@@ -2137,28 +2143,46 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     matched += 1;
     const key = `${ent}|${String(r.model_code).trim()}`;
     const qty = num(r.qty);
-    const a = acc.get(key) ?? { ent, model: String(r.model_code).trim(), qty: 0, base: 0, a1: 0, a2: 0, a3: 0, cost: 0 };
+    const a = acc.get(key) ?? {
+      ent, model: String(r.model_code).trim(), qty: 0, base: 0,
+      a0: 0, a1: 0, a2: 0, a3: 0, cost: 0,
+      d0: null, d1: null, d2: null, d3: null,
+    };
     a.qty += qty;
     a.base += num(r.base_price) * qty;
+    a.a0 += num(r.a_price_m0) * qty;
     a.a1 += num(r.a_price_m1) * qty;
     a.a2 += num(r.a_price_m2) * qty;
     a.a3 += num(r.a_price_m3) * qty;
     a.cost += num(r.cost_price) * qty;
+    a.d0 = newer(a.d0, ymd(r.a_date_m0));
+    a.d1 = newer(a.d1, ymd(r.a_date_m1));
+    a.d2 = newer(a.d2, ymd(r.a_date_m2));
+    a.d3 = newer(a.d3, ymd(r.a_date_m3));
     acc.set(key, a);
   }
 
-  const vals = [...acc.values()].map((a) => [a.ent, a.model, a.qty, a.base, a.a1, a.a2, a.a3, a.cost]);
+  // 送りが分かれても最新の日が残るように、日付は加算ではなく大きい方を採る
+  const keepNewer = (c) =>
+    `${c} = CASE WHEN agg_staging.${c} IS NULL OR excluded.${c} > agg_staging.${c}`
+    + ` THEN excluded.${c} ELSE agg_staging.${c} END`;
+  const vals = [...acc.values()].map((a) =>
+    [a.ent, a.model, a.qty, a.base, a.a0, a.a1, a.a2, a.a3, a.cost, a.d0, a.d1, a.d2, a.d3]);
   if (vals.length) {
     await db.run(
-      `INSERT INTO agg_staging (ent_cd, model_code, qty, base_amt, a1_amt, a2_amt, a3_amt, cost_amt)
-       VALUES ${vals.map(() => '(?,?,?,?,?,?,?,?)').join(',')}
+      `INSERT INTO agg_staging
+         (ent_cd, model_code, qty, base_amt, a0_amt, a1_amt, a2_amt, a3_amt, cost_amt,
+          d0_max, d1_max, d2_max, d3_max)
+       VALUES ${vals.map(() => `(${'?,'.repeat(12)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          qty = agg_staging.qty + excluded.qty,
          base_amt = agg_staging.base_amt + excluded.base_amt,
+         a0_amt = agg_staging.a0_amt + excluded.a0_amt,
          a1_amt = agg_staging.a1_amt + excluded.a1_amt,
          a2_amt = agg_staging.a2_amt + excluded.a2_amt,
          a3_amt = agg_staging.a3_amt + excluded.a3_amt,
-         cost_amt = agg_staging.cost_amt + excluded.cost_amt`,
+         cost_amt = agg_staging.cost_amt + excluded.cost_amt,
+         ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')}`,
       vals.flat()
     );
   }
@@ -2174,9 +2198,14 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     UPDATE deals SET
       master_qty = s.qty,
       master_avg_price = CASE WHEN s.qty > 0 THEN s.base_amt / s.qty END,
+      a_price_m0 = CASE WHEN s.qty > 0 THEN s.a0_amt / s.qty END,
       a_price_m1 = CASE WHEN s.qty > 0 THEN s.a1_amt / s.qty END,
       a_price_m2 = CASE WHEN s.qty > 0 THEN s.a2_amt / s.qty END,
       a_price_m3 = CASE WHEN s.qty > 0 THEN s.a3_amt / s.qty END,
+      a_date_m0 = s.d0_max,
+      a_date_m1 = s.d1_max,
+      a_date_m2 = s.d2_max,
+      a_date_m3 = s.d3_max,
       cost_price = CASE WHEN s.qty > 0 THEN s.cost_amt / s.qty END,
       updated_at = ?
     FROM agg_staging s

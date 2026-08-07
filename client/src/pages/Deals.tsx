@@ -27,6 +27,12 @@ const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const ymLabel = (ym: string | undefined, fallback: string) =>
   ym && /^\d{4}-\d{2}$/.test(ym) ? `${Number(ym.slice(5, 7))}月` : fallback;
 
+/** 承認日（登録日）の表示。「2026-06-05」→「26/6/5」 */
+const dateLabel = (d: string | null | undefined) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d ?? ''));
+  return m ? `${m[1].slice(2)}/${Number(m[2])}/${Number(m[3])}` : null;
+};
+
 export default function Deals() {
   const [params, setParams] = useSearchParams();
   const me = useUser();
@@ -225,6 +231,20 @@ export default function Deals() {
   };
 
   /**
+   * A基準の1マス。申請単価と、その単価の承認日（マスタ登録の登録日）を重ねて出す。
+   * 法人×品目にまとめているため、承認日はそのまとまりで一番新しい日になる。
+   */
+  const aCell = (price: number | null | undefined, date: string | null | undefined) => {
+    const day = dateLabel(date);
+    return (
+      <>
+        {yen(price)}
+        {day && <div className="sub" title={`承認日（マスタ登録の登録日）: ${date}`}>{day}</div>}
+      </>
+    );
+  };
+
+  /**
    * 出荷単価とA基準（3か月後の申請単価）との差額。1台あたりの値上げ幅にあたる。
    * マイナス（申請が出荷単価を下回る）は赤で示す。
    */
@@ -259,8 +279,9 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>出荷実績の法人×品目</strong>を土台に、価格を比較します。
-        実績は期間全体の平均出荷単価と数量、A基準は価格申請した向こう3か月の単価（法人×品目へ数量加重平均で集約）、
+        実績は期間全体の平均出荷単価と数量、A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
         B基準は実際の決定単価（営業企画・管理者が入力）です。
+        A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）です。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -412,7 +433,7 @@ export default function Deals() {
               <th colSpan={2} className="grp sep">
                 出荷実績<small>{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}</small>
               </th>
-              <th colSpan={3} className="grp sep">A基準（申請単価・数量加重平均）</th>
+              <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
               <th className="num grp sep">B基準</th>
               <th colSpan={3} className="grp sep">値上げ交渉</th>
               <th className="grp"></th>
@@ -427,7 +448,8 @@ export default function Deals() {
               <Th col="sales_person">担当者</Th>
               <Th col="hist_avg_price" className="num sep">平均単価</Th>
               <Th col="hist_qty" className="num">数量</Th>
-              <Th col="a_price_m1" className="num sep">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
+              <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
+              <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="b_price" className="num sep">決定単価</Th>
@@ -477,10 +499,11 @@ export default function Deals() {
                   <td className="num sep">{yen(d.hist_avg_price)}</td>
                   <td className="num">{yen(d.hist_qty)}</td>
 
-                  {/* A基準（マスタ登録の申請単価: 翌月・翌々月・3か月後） */}
-                  <td className="num sep">{yen(d.a_price_m1)}</td>
-                  <td className="num">{yen(d.a_price_m2)}</td>
-                  <td className="num">{yen(d.a_price_m3)}</td>
+                  {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日 */}
+                  <td className="num sep">{aCell(d.a_price_m0, d.a_date_m0)}</td>
+                  <td className="num">{aCell(d.a_price_m1, d.a_date_m1)}</td>
+                  <td className="num">{aCell(d.a_price_m2, d.a_date_m2)}</td>
+                  <td className="num">{aCell(d.a_price_m3, d.a_date_m3)}</td>
 
                   {/* B基準: 実際の決定単価。同課（営業企画）と管理者が入れる */}
                   <td className="num sep">
