@@ -71,6 +71,7 @@ export default function HistImportCard() {
         <strong>案件一覧の土台</strong>です。法人×品目ごとの月別実績から、期間全体の
         <strong>平均出荷単価と数量合計</strong>を集計して案件を作ります。
         取り込むたびに、今回の実績にある法人×品目だけが残ります（マスタ登録のA基準はあとから重ねます）。
+        法人名が空の行は取り込まず、すでに入っている空白の行も取込時に削除します。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />
@@ -79,6 +80,7 @@ export default function HistImportCard() {
             <span style={{ fontSize: 13 }}>
               {parsed.p.rows.length.toLocaleString()}行 ・ {parsed.p.corps.length.toLocaleString()}法人
               {parsed.p.period && `（${parsed.p.period}）`}
+              {parsed.p.skippedBlank > 0 && ` ・ 法人名が空の行 ${parsed.p.skippedBlank.toLocaleString()}件は除外`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>
           </>

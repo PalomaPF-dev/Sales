@@ -2231,9 +2231,12 @@ api.post('/hist-import/chunk', wrap(async (req, res) => {
     'hist_batch', 'r2_done', 'updated_at'];
   const seen = new Set();
   const values = [];
+  let skipped = 0;
   for (const r of rows) {
     const key = `${String(r.ent_cd).trim()}|${String(r.model_code).trim()}`;
     if (seen.has(key)) continue;
+    // 法人名が空の行は取り込まない（一覧で行き先の分からない行になるため）
+    if (!txt(r.corp_name)) { skipped += 1; continue; }
     seen.add(key);
     values.push([
       key, String(r.ent_cd).trim(), String(r.ent_cd).trim(), txt(r.corp_name), txt(r.corp_name),
@@ -2254,7 +2257,7 @@ api.post('/hist-import/chunk', wrap(async (req, res) => {
       values.flat()
     );
   }
-  res.json({ rows: values.length });
+  res.json({ rows: values.length, skipped });
 }));
 
 api.post('/hist-import/finish', wrap(async (req, res) => {
@@ -2272,6 +2275,10 @@ api.post('/hist-import/finish', wrap(async (req, res) => {
     const r = await db.run('DELETE FROM deals WHERE hist_batch IS DISTINCT FROM ?', [batch]);
     removed = Number(r?.changes ?? 0);
   }
+  // 法人名が空の行は残さない（過去の取込で入り込んだものも含めて掃除する）
+  const blank = await db.run(
+    "DELETE FROM deals WHERE corp_name IS NULL OR TRIM(corp_name) = ''");
+  removed += Number(blank?.changes ?? 0);
   const { total } = await db.get('SELECT COUNT(*) AS total FROM deals');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
   res.json({ removed, total: Number(total) });

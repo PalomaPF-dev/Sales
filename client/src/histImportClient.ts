@@ -22,6 +22,7 @@ export interface HistParsed {
   corps: [string, string][];   // [法人グループコード, 法人名]
   rows: HistRow[];
   period: string;              // 例: 2025/07〜2026/06
+  skippedBlank: number;        // 法人名が空で取り込まなかった行
 }
 
 export async function parseHistFile(file: File): Promise<HistParsed> {
@@ -48,12 +49,15 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
   const corps = new Map<string, string>();
   const rows: HistRow[] = [];
   const seen = new Set<string>();
+  let skippedBlank = 0;
   for (let i = 2; i < grid.length; i++) {
     const r = grid[i] ?? [];
     const code = String(r[cd] ?? '').trim();
     const product = String(r[prod] ?? '').trim();
     if (!code || !product) continue;
     const corpName = String(r[nameCol] ?? '').trim();
+    // 法人名が空の行は取り込まない（一覧で行き先の分からない行になるため）
+    if (!corpName) { skippedBlank += 1; continue; }
     if (!corps.has(code)) corps.set(code, corpName);
     const key = `${code}|${product}`;
     if (seen.has(key)) continue;   // 同じ法人×品目が重複していたら最初の行を使う
@@ -70,7 +74,7 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
   }
   if (!rows.length) throw new Error('取り込める行がありません');
   const period = months.length ? `${months[0]}〜${months[months.length - 1]}` : '';
-  return { corps: [...corps.entries()], rows, period };
+  return { corps: [...corps.entries()], rows, period, skippedBlank };
 }
 
 const CHUNK = 500;
