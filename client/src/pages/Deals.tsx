@@ -229,13 +229,16 @@ export default function Deals() {
    * マイナス（申請が出荷単価を下回る）は赤で示す。
    */
   const aDiff = (d: Deal) => {
-    if (d.a_price_m3 == null || d.base_price == null) return '—';
-    const diff = Number(d.a_price_m3) - Number(d.base_price);
+    if (d.a_price_m3 == null || d.hist_avg_price == null) return '—';
+    const base = Number(d.hist_avg_price);
+    const diff = Number(d.a_price_m3) - base;
     if (diff === 0) return '0';
+    const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
     return (
       <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : undefined}
-            title={`A基準（${ymLabel(meta?.aggMeta?.m3, '3か月後')}の申請単価）− 出荷単価`}>
+            title={`A基準（${ymLabel(meta?.aggMeta?.m3, '3か月後')}の申請単価）− 実績の平均出荷単価`}>
         {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
+        {rate != null && <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>}
       </span>
     );
   };
@@ -255,9 +258,9 @@ export default function Deals() {
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
-        値上げ結果の集約表（得意先×納入先×商品）を一元管理します。
-        A基準は価格申請した向こう3か月の単価、B基準は実際の決定単価（営業企画・管理者が入力）です。
-        {meta?.aggMeta?.basePeriod && ` 出荷単価は ${meta.aggMeta.basePeriod} の出荷実績です。`}
+        <strong>出荷実績の法人×品目</strong>を土台に、価格を比較します。
+        実績は期間全体の平均出荷単価と数量、A基準は価格申請した向こう3か月の単価（法人×品目へ数量加重平均で集約）、
+        B基準は実際の決定単価（営業企画・管理者が入力）です。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -398,15 +401,10 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={isDev ? 7 : 5} className="grp">基本情報</th>
-              <th className="num grp sep">
-                出荷単価{meta?.aggMeta?.basePeriod && <><br /><small>（{meta.aggMeta.basePeriod}）</small></>}
+              <th colSpan={2} className="grp sep">
+                出荷実績<small>{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}</small>
               </th>
-              <th className="num grp">数量</th>
-              <th colSpan={2} className="grp sep">出荷実績{'\u00A0'}
-                {'' /* 期間はメタから */}
-                <small>{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}</small>
-              </th>
-              <th colSpan={3} className="grp sep">A基準（申請単価）</th>
+              <th colSpan={3} className="grp sep">A基準（申請単価・数量加重平均）</th>
               <th className="num grp sep">B基準</th>
               <th colSpan={3} className="grp sep">値上げ交渉</th>
               <th className="grp"></th>
@@ -419,15 +417,13 @@ export default function Deals() {
               {isDev && <Th col="branch">支店</Th>}
               {isDev && <Th col="office">営業所</Th>}
               <Th col="sales_person">担当者</Th>
-              <Th col="base_price" className="num sep" />
-              <Th col="qty" className="num" />
               <Th col="hist_avg_price" className="num sep">平均単価</Th>
-              <Th col="hist_qty" className="num">数量計</Th>
+              <Th col="hist_qty" className="num">数量</Th>
               <Th col="a_price_m1" className="num sep">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="b_price" className="num sep">決定単価</Th>
-              <th className="num sep" title="A基準（3か月後の申請単価）と出荷単価の差">差額<br /><small>（A基準−出荷）</small></th>
+              <th className="num sep" title="A基準（3か月後の申請単価）と実績の平均出荷単価の差">値上げ幅<br /><small>（A基準−実績）</small></th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
               <th></th>
@@ -469,38 +465,9 @@ export default function Deals() {
                   {isDev && <td>{isEditing ? baseCell(d, 'office') : d.office}</td>}
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : d.sales_person}</td>
 
-                  <td className="num sep">
-                    {isEditing && isDev ? baseCell(d, 'base_price', true) : yen(d.base_price)}
-                  </td>
-                  <td className="num">
-                    {isEditing && isDev ? baseCell(d, 'qty', true) : yen(d.qty)}
-                  </td>
-
-                  {/* 出荷実績（月別履歴）: 法人×品目の平均単価と数量合計（参照）。
-                      実績が無い行は、マスタ登録の出荷単価・数量（1-3月）を代わりに出し、
-                      それと分かるように薄い色と（期間）の注記を付ける */}
-                  <td className="num sep"
-                      title={d.hist_avg_price != null
-                        ? '出荷実績の平均単価（法人×品目・期間全体）'
-                        : `出荷実績が無いため、マスタ登録の出荷単価（${meta?.aggMeta?.basePeriod || '1-3月'}）を表示しています`}>
-                    {d.hist_avg_price != null ? yen(d.hist_avg_price) : d.base_price != null ? (
-                      <>
-                        <span style={{ color: 'var(--muted)' }}>{yen(d.base_price)}</span>
-                        <div className="sub">マスタ{meta?.aggMeta?.basePeriod || '1-3月'}</div>
-                      </>
-                    ) : '—'}
-                  </td>
-                  <td className="num"
-                      title={d.hist_qty != null
-                        ? '出荷実績の数量合計（法人×品目・期間全体。同じ法人×品目の行には同じ値が入ります）'
-                        : `出荷実績が無いため、マスタ登録の数量（${meta?.aggMeta?.basePeriod || '1-3月'}）を表示しています`}>
-                    {d.hist_qty != null ? yen(d.hist_qty) : d.qty != null ? (
-                      <>
-                        <span style={{ color: 'var(--muted)' }}>{yen(d.qty)}</span>
-                        <div className="sub">マスタ{meta?.aggMeta?.basePeriod || '1-3月'}</div>
-                      </>
-                    ) : '—'}
-                  </td>
+                  {/* 出荷実績（法人×品目）。案件の土台 */}
+                  <td className="num sep">{yen(d.hist_avg_price)}</td>
+                  <td className="num">{yen(d.hist_qty)}</td>
 
                   {/* A基準（マスタ登録の申請単価: 翌月・翌々月・3か月後） */}
                   <td className="num sep">{yen(d.a_price_m1)}</td>

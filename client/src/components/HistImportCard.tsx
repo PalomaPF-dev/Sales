@@ -62,14 +62,15 @@ export default function HistImportCard() {
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
-          反映しました: 法人の照合 {result.matched.toLocaleString()} / {result.dealCorps.toLocaleString()}法人 ・
-          実績が入った案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}行
+          取り込みました: 新規 {result.inserted.toLocaleString()}件 ・ 更新 {result.updated.toLocaleString()}件
+          {result.removed > 0 && ` ・ 今回の実績に無い行を ${result.removed.toLocaleString()}件削除`}
+          （案件 {result.total.toLocaleString()}件）
         </div>
       )}
       <p className="pt-note" style={{ marginTop: 0 }}>
-        法人×品目ごとの月別実績から、期間全体の<strong>平均単価と数量合計</strong>を
-        案件一覧の「出荷実績」の列に入れます。法人は名前の照合でマスタ登録の法人へ対応づけ、
-        品目は商品コードで一致させます（マスタ登録がベース。実績側に無い法人には入りません）。
+        <strong>案件一覧の土台</strong>です。法人×品目ごとの月別実績から、期間全体の
+        <strong>平均出荷単価と数量合計</strong>を集計して案件を作ります。
+        取り込むたびに、今回の実績にある法人×品目だけが残ります（マスタ登録のA基準はあとから重ねます）。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />
@@ -79,7 +80,7 @@ export default function HistImportCard() {
               {parsed.p.rows.length.toLocaleString()}行 ・ {parsed.p.corps.length.toLocaleString()}法人
               {parsed.p.period && `（${parsed.p.period}）`}
             </span>
-            <button className="btn" onClick={run} disabled={busy}>反映する</button>
+            <button className="btn" onClick={run} disabled={busy}>取り込む</button>
           </>
         )}
       </div>

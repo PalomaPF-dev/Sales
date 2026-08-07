@@ -39,16 +39,17 @@ export default function ImportPage() {
     <div>
       <h1 className="page-title">Excel取込</h1>
       <p className="page-sub">
-        マスタ登録（値上げ結果の集約表）を取り込みます。
-        A基準単価が更新されるため、<strong>毎日の取り込み直し</strong>を前提にしています。
-        同じ得意先×納入先×商品の行は上書きされ、決定単価（B基準）など画面で入れた値は残ります。
+        <strong>①出荷実績</strong>（法人×品目の平均出荷単価と数量）で案件の土台を作り、
+        <strong>②マスタ登録</strong>のA基準単価を法人×品目へ集約して重ねます。
+        A基準は毎日更新されるため、②は毎日の取り込み直しを前提にしています。
+        決定単価（B基準）など画面で入れた値は残ります。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       {canCheck ? (
         <>
-          <AggImportCard onDone={load} />
           <HistImportCard />
+          <AggImportCard onDone={load} />
         </>
       ) : (
         <Card title="マスタ登録の取込">

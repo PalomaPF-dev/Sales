@@ -121,6 +121,9 @@ CREATE TABLE IF NOT EXISTS deals (
   hist_ent_cd     TEXT,   -- 出荷実績（月別履歴）の法人グループコード（名前照合で対応づけ）
   hist_avg_price  REAL,   -- 実績の平均単価（法人×品目・期間全体）
   hist_qty        REAL,   -- 実績の数量合計（法人×品目・期間全体）
+  master_qty      REAL,   -- マスタ登録側の数量合計（法人×品目に集約したもの）
+  master_avg_price REAL,  -- マスタ登録側の出荷単価の加重平均（整合確認用）
+  hist_batch      TEXT,   -- 出荷実績の取込回。今回に含まれない行を消すための印
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率
@@ -145,6 +148,28 @@ CREATE INDEX IF NOT EXISTS idx_deals_corp     ON deals(corp_code);
 CREATE INDEX IF NOT EXISTS idx_deals_branch   ON deals(branch);
 CREATE INDEX IF NOT EXISTS idx_deals_office   ON deals(branch, office);
 CREATE INDEX IF NOT EXISTS idx_deals_default_order ON deals(corp_name, customer_name, equip_name, model_name, id);
+
+
+-- 実績の法人グループと、マスタ登録側の得意先名を対応づける表。
+-- 出荷実績の取込時に作り、マスタ登録を法人×品目へ集約するときに使う。
+CREATE TABLE IF NOT EXISTS corp_map (
+  name_key  TEXT PRIMARY KEY,   -- 正規化した法人名
+  ent_cd    TEXT NOT NULL,      -- 法人グループコード
+  corp_name TEXT                -- 元の表記
+);
+
+-- マスタ登録を法人×品目へ集約するための一時置き場（取込のたびに入れ替える）
+CREATE TABLE IF NOT EXISTS agg_staging (
+  ent_cd     TEXT NOT NULL,
+  model_code TEXT NOT NULL,
+  qty        REAL NOT NULL DEFAULT 0,
+  base_amt   REAL NOT NULL DEFAULT 0,
+  a1_amt     REAL NOT NULL DEFAULT 0,
+  a2_amt     REAL NOT NULL DEFAULT 0,
+  a3_amt     REAL NOT NULL DEFAULT 0,
+  cost_amt   REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (ent_cd, model_code)
+);
 
 -- 各種設定
 CREATE TABLE IF NOT EXISTS settings (

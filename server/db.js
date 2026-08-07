@@ -161,6 +161,7 @@ function toPgPlaceholders(sql) {
 // 主キーがidでないテーブルを足すときは、ここにも必ず追加すること。
 const TABLES_WITHOUT_ID = new Set([
   'settings', 'price_types', 'corp_negotiations', 'sso_used_tokens',
+  'corp_map', 'agg_staging',
 ]);
 
 /** SQLiteの方言をPostgreSQLへ寄せる */
@@ -387,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-06-agg-hist';
+const SCHEMA_VERSION = '2026-08-06-hist-base';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -526,6 +527,9 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN hist_ent_cd TEXT',
     'ALTER TABLE deals ADD COLUMN hist_avg_price REAL',
     'ALTER TABLE deals ADD COLUMN hist_qty REAL',
+    'ALTER TABLE deals ADD COLUMN master_qty REAL',
+    'ALTER TABLE deals ADD COLUMN master_avg_price REAL',
+    'ALTER TABLE deals ADD COLUMN hist_batch TEXT',
     // 適用年月と完了（案件一覧から営業担当者が入れる）
     'ALTER TABLE deals ADD COLUMN r2_applied_ym TEXT',
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
@@ -542,7 +546,7 @@ async function beforeSchema() {
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
   try {
-    await db.get('SELECT hist_qty FROM deal_calc LIMIT 1');
+    await db.get('SELECT master_qty FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

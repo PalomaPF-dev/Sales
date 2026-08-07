@@ -14,7 +14,6 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [parsed, setParsed] = useState<{ p: AggParsed; name: string } | null>(null);
-  const [removeOld, setRemoveOld] = useState(true);
   const [result, setResult] = useState<AggResult | null>(null);
   const [err, setErr] = useState('');
 
@@ -47,7 +46,6 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
     setResult(null);
     try {
       const r = await sendAggImport(parsed.p, parsed.name, {
-        removeOld,
         onProgress: (done, total) =>
           setProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行を取込中...`),
       });
@@ -69,15 +67,16 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
-          取り込みました: 新規 {result.inserted.toLocaleString()}件 ・ 更新 {result.updated.toLocaleString()}件
-          ・ 変更なし {result.unchanged.toLocaleString()}件
-          {result.removed > 0 && ` ・ 旧形式の行を ${result.removed.toLocaleString()}件削除`}
-          （現在 {result.total.toLocaleString()}件）
+          A基準を重ねました: 案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}件にA基準が入りました
+          （法人を照合できた行 {result.matched.toLocaleString()}
+          {result.unmatched > 0 && ` ・ 実績に無い法人の行 ${result.unmatched.toLocaleString()}`}）
         </div>
       )}
       <p className="pt-note" style={{ marginTop: 0 }}>
-        得意先×納入先×商品の単位で、出荷単価・出荷数量・<strong>A基準（向こう3か月の申請単価）</strong>を取り込みます。
-        2回目からは同じ単位の行を上書きし、<strong>区分・合意・決定単価（B基準）など画面で入れた値は残ります</strong>。
+        <strong>A基準（向こう3か月の申請単価）</strong>を取り込みます。
+        マスタ登録は 得意先×納入先×商品 の細かい単位なので、
+        <strong>法人×品目へ集約（数量で加重平均）して</strong>、出荷実績の案件に重ねます。
+        先に「出荷実績」を取り込んでおいてください。決定単価（B基準）など画面で入れた値は残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />
@@ -88,10 +87,6 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
               （{parsed.p.meta.m1}・{parsed.p.meta.m2}・{parsed.p.meta.m3} ／ 出荷単価 {parsed.p.meta.basePeriod}）
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
-            <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center' }}>
-              <input type="checkbox" checked={removeOld} onChange={(e) => setRemoveOld(e.target.checked)} />
-              旧形式（伝票単位）の行を削除して置き換える
-            </label>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>
           </>
         )}

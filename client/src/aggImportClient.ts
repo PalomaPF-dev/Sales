@@ -10,21 +10,10 @@ import { api } from './api';
  */
 
 export interface AggRow {
-  agg_key: string;
-  customer_code: string;
-  customer_name: string;
-  delivery_name: string;
+  customer_name: string;   // 法人の照合に使う（得意先名 → 法人グループ）
   model_code: string;
-  model_name: string;
-  gas_type: string;
-  equip_name: string;
-  category_name: string;
-  list_price: unknown;
-  sales_person: string;
-  office: string;
-  branch: string;
-  base_price: unknown;
   qty: unknown;
+  base_price: unknown;
   cost_price: unknown;
   a_price_m1: unknown;
   a_price_m2: unknown;
@@ -101,23 +90,11 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     const cust = txt(r, col.customer_code);
     const model = txt(r, col.model_code);
     if (!cust || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
-    const deli = txt(r, col.delivery_code);
     rows.push({
-      agg_key: `${cust}|${deli}|${model}`,
-      customer_code: cust,
       customer_name: txt(r, col.customer_name),
-      delivery_name: txt(r, col.delivery_name),
       model_code: model,
-      model_name: txt(r, col.model_name),
-      gas_type: txt(r, col.gas_type),
-      equip_name: txt(r, col.equip_name),
-      category_name: txt(r, col.category_name),
-      list_price: r[col.list_price],
-      sales_person: txt(r, col.sales_person),
-      office: txt(r, col.office),
-      branch: txt(r, col.branch),
-      base_price: r[col.base_price],
       qty: r[col.qty],
+      base_price: r[col.base_price],
       cost_price: col.cost_price >= 0 ? r[col.cost_price] : null,
       a_price_m1: r[col.m1 + 1],   // 「翌月」の右隣がその月のマスタ単価
       a_price_m2: r[col.m2 + 1],
@@ -139,39 +116,38 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
 const CHUNK = 500;
 
 export interface AggResult {
-  inserted: number;
-  updated: number;
-  unchanged: number;
-  removed: number;
-  total: number;
+  matched: number;      // 法人を照合できた行
+  unmatched: number;    // 実績側に無い法人の行（重ねられない）
+  covered: number;      // A基準が入った案件の数
+  total: number;        // 案件の総数（実績の法人×品目）
 }
 
-/** 小分けにして送り、最後に置き換え（旧形式の行の削除）まで行う */
+/**
+ * 小分けにして送る。サーバー側で法人×品目へ集約し、
+ * 最後に実績ベースの案件へA基準（数量加重平均）を重ねる。
+ */
 export async function sendAggImport(
   parsed: AggParsed,
   filename: string,
-  opts: { removeOld: boolean; onProgress?: (done: number, total: number) => void }
+  opts: { onProgress?: (done: number, total: number) => void }
 ): Promise<AggResult> {
-  const { batchId, removed } = await api<{ batchId: number; removed: number }>('/agg-import/start', {
+  await api('/agg-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, meta: parsed.meta, removeOld: opts.removeOld }),
+    body: JSON.stringify({ filename, meta: parsed.meta }),
   });
-  let inserted = 0;
-  let updated = 0;
-  let unchanged = 0;
+  let matched = 0;
+  let unmatched = 0;
   for (let i = 0; i < parsed.rows.length; i += CHUNK) {
-    const r = await api<{ inserted: number; updated: number; unchanged: number }>('/agg-import/chunk', {
+    const r = await api<{ matched: number; unmatched: number }>('/agg-import/chunk', {
       method: 'POST',
-      body: JSON.stringify({ batchId, rows: parsed.rows.slice(i, i + CHUNK) }),
+      body: JSON.stringify({ rows: parsed.rows.slice(i, i + CHUNK) }),
     });
-    inserted += r.inserted;
-    updated += r.updated;
-    unchanged += r.unchanged ?? 0;
+    matched += r.matched;
+    unmatched += r.unmatched;
     opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
   }
-  const fin = await api<{ removed: number; total: number }>('/agg-import/finish', {
-    method: 'POST',
-    body: JSON.stringify({ batchId }),
+  const fin = await api<{ covered: number; total: number }>('/agg-import/finish', {
+    method: 'POST', body: JSON.stringify({}),
   });
-  return { inserted, updated, unchanged, removed: removed + fin.removed, total: fin.total };
+  return { matched, unmatched, covered: fin.covered, total: fin.total };
 }
