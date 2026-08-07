@@ -25,6 +25,15 @@ export interface HistParsed {
   skippedBlank: number;        // 法人名が空で取り込まなかった行
 }
 
+/**
+ * 法人名が実質「空」かどうか。
+ *
+ * 実績ファイルは集計ソフトの出力で、法人グループが付いていない行は
+ * コードも名前も「(空白)」という文字で入ってくる。空文字と同じ扱いにする。
+ */
+const BLANK_CORP = /^[（(]?\s*(空白|blank)\s*[)）]?$|^[-－―ー\s]+$/i;
+export const isBlankCorp = (s: string): boolean => !s.trim() || BLANK_CORP.test(s.trim());
+
 export async function parseHistFile(file: File): Promise<HistParsed> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array' });
@@ -56,8 +65,8 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
     const product = String(r[prod] ?? '').trim();
     if (!code || !product) continue;
     const corpName = String(r[nameCol] ?? '').trim();
-    // 法人名が空の行は取り込まない（一覧で行き先の分からない行になるため）
-    if (!corpName) { skippedBlank += 1; continue; }
+    // 法人名が空・「(空白)」の行は取り込まない（一覧で行き先の分からない行になるため）
+    if (isBlankCorp(corpName) || isBlankCorp(code)) { skippedBlank += 1; continue; }
     if (!corps.has(code)) corps.set(code, corpName);
     const key = `${code}|${product}`;
     if (seen.has(key)) continue;   // 同じ法人×品目が重複していたら最初の行を使う

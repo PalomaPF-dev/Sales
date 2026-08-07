@@ -21,6 +21,8 @@ interface Finding { column: string; label: string; param: string; value: string;
 export default function ImportPage() {
   const me = useUser();
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [blankCorp, setBlankCorp] = useState(0);
+  const [cleaning, setCleaning] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
   const canCheck = me.role === 'admin' || me.role === 'developer';
   const navigate = useNavigate();
@@ -28,12 +30,28 @@ export default function ImportPage() {
   const load = () => {
     // 取込のたびに点検し直す（列ズレの値が入ったらすぐ気づけるように）
     if (canCheck) {
-      api<{ findings: Finding[] }>('/admin/data-check')
-        .then((r) => setFindings(r.findings))
+      api<{ findings: Finding[]; blankCorp: number }>('/admin/data-check')
+        .then((r) => { setFindings(r.findings); setBlankCorp(r.blankCorp ?? 0); })
         .catch(() => {});
     }
   };
   useEffect(load, []);
+
+  const cleanBlank = async () => {
+    if (!window.confirm(`法人名が空の案件 ${blankCorp.toLocaleString()}件を削除します。よろしいですか？`)) return;
+    setCleaning(true);
+    setMsg(null);
+    try {
+      const r = await api<{ removed: number; total: number }>(
+        '/admin/cleanup-blank-corp', { method: 'POST' });
+      setMsg({ kind: 'ok', text: `法人名が空の案件を ${r.removed.toLocaleString()}件削除しました（案件 ${r.total.toLocaleString()}件）` });
+      load();
+    } catch (e) {
+      setMsg({ kind: 'error', text: (e as Error).message });
+    } finally {
+      setCleaning(false);
+    }
+  };
 
   return (
     <div>
@@ -56,6 +74,30 @@ export default function ImportPage() {
           <p className="pt-note" style={{ marginTop: 0 }}>
             マスタ登録の取込は管理者が行います。最新の取込は下の履歴で確認できます。
           </p>
+        </Card>
+      )}
+
+      {canCheck && blankCorp > 0 && (
+        <Card title="法人名が空の案件">
+          <div className="alert error" style={{ marginTop: 0 }}>
+            法人名が入っていない案件が <strong>{blankCorp.toLocaleString()}件</strong> あります。
+            案件一覧の絞り込みに「(空白)」として出てしまい、どの法人の案件か分かりません。
+          </div>
+          <p className="pt-note" style={{ marginTop: 0 }}>
+            過去の取込で入り込んだ行です。今の取込では法人名が空の行は入りません。
+            下のボタンで今すぐ消せます（出荷実績の取り込み直しでも消えます）。
+          </p>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn danger" onClick={cleanBlank} disabled={cleaning}>
+              {cleaning ? '削除中...' : `法人名が空の案件を削除（${blankCorp.toLocaleString()}件）`}
+            </button>
+            <button
+              className="btn secondary sm"
+              onClick={() => navigate('/deals?corp=%28%E7%A9%BA%E7%99%BD%29')}
+            >
+              該当の案件を見る
+            </button>
+          </div>
         </Card>
       )}
 

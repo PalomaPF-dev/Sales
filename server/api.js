@@ -713,7 +713,42 @@ api.get('/admin/data-check', wrap(async (req, res) => {
     }
   }
   findings.sort((a, b) => b.deals - a.deals);
-  res.json({ findings });
+
+  // 法人名が空の案件。過去の取込で入り込むと一覧の絞り込みに「(空白)」として出て、
+  // どの法人の案件なのか分からない行になる。件数を出して消せるようにする。
+  const blank = await db.get(BLANK_CORP_COUNT_SQL);
+  res.json({ findings, blankCorp: Number(blank?.n ?? 0) });
+}));
+
+/**
+ * 法人名が実質「空」の案件を選ぶ条件。
+ *
+ * 実績ファイルは集計ソフトの出力で、法人グループの付いていない行は
+ * コードも名前も「(空白)」という文字で入ってくる。空文字と同じに扱う。
+ */
+const BLANK_CORP_WHERE = `corp_name IS NULL OR TRIM(corp_name) = ''
+  OR REPLACE(REPLACE(TRIM(corp_name), '（', '('), '）', ')')
+     IN ('(空白)', '(blank)', '(Blank)', '(BLANK)', '空白', '-', '－', '―', 'ー')`;
+const BLANK_CORP_COUNT_SQL = `SELECT COUNT(*) AS n FROM deals WHERE ${BLANK_CORP_WHERE}`;
+
+/**
+ * 法人名が空の案件をまとめて消す。
+ *
+ * 案件一覧は出荷実績（法人×品目）が土台なので、法人名の無い行は行き先が無い。
+ * 取込時にも掃除しているが、過去の取込で入り込んだ分をその場で消せるようにする。
+ */
+api.post('/admin/cleanup-blank-corp', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  for (const sql of [
+    `DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE ${BLANK_CORP_WHERE})`,
+    `DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE ${BLANK_CORP_WHERE})`,
+  ]) {
+    try { await db.run(sql); } catch { /* 無ければ何もしない */ }
+  }
+  const r = await db.run(`DELETE FROM deals WHERE ${BLANK_CORP_WHERE}`);
+  const { total } = await db.get('SELECT COUNT(*) AS total FROM deals');
+  try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
+  res.json({ removed: Number(r?.changes ?? 0), total: Number(total) });
 }));
 
 // ---- 全国基準価格表（マスター） ----
@@ -2172,6 +2207,18 @@ function normCorpName(s) {
     .toUpperCase();
 }
 
+/**
+ * 法人名（またはコード）が実質「空」かどうか。
+ *
+ * 実績ファイルは集計ソフトの出力で、法人グループの付いていない行は
+ * コードも名前も「(空白)」という文字で入ってくる。空文字と同じに扱う。
+ */
+const BLANK_CORP_RE = /^[（(]?\s*(空白|blank)\s*[)）]?$|^[-－―ー\s　]+$/i;
+function isBlankCorp(s) {
+  const t = String(s ?? '').trim();
+  return !t || BLANK_CORP_RE.test(t);
+}
+
 api.post('/hist-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const corps = Array.isArray(req.body?.corps) ? req.body.corps : [];
@@ -2184,6 +2231,7 @@ api.post('/hist-import/start', wrap(async (req, res) => {
   // 1行1文だとDBとの往復が法人数だけ発生し、遠隔のDBでは時間切れになる。
   // まとめて1文（複数行VALUES）で入れる。
   const entries = corps
+    .filter(([cd, name]) => !isBlankCorp(name) && !isBlankCorp(cd))
     .map(([cd, name]) => [normCorpName(name), String(cd), String(name ?? '')])
     .filter(([k]) => k);
   const seenKey = new Set();
@@ -2226,6 +2274,7 @@ api.post('/hist-import/chunk', wrap(async (req, res) => {
   };
 
   const stamp = now();
+
   const cols = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_name', 'model_code',
     'model_name', 'equip_name', 'hist_avg_price', 'hist_qty', 'base_price', 'qty',
     'hist_batch', 'r2_done', 'updated_at'];
@@ -2235,8 +2284,11 @@ api.post('/hist-import/chunk', wrap(async (req, res) => {
   for (const r of rows) {
     const key = `${String(r.ent_cd).trim()}|${String(r.model_code).trim()}`;
     if (seen.has(key)) continue;
-    // 法人名が空の行は取り込まない（一覧で行き先の分からない行になるため）
-    if (!txt(r.corp_name)) { skipped += 1; continue; }
+    // 法人名が空・「(空白)」の行は取り込まない（一覧で行き先の分からない行になるため）
+    if (!txt(r.corp_name) || isBlankCorp(r.corp_name) || isBlankCorp(r.ent_cd)) {
+      skipped += 1;
+      continue;
+    }
     seen.add(key);
     values.push([
       key, String(r.ent_cd).trim(), String(r.ent_cd).trim(), txt(r.corp_name), txt(r.corp_name),
@@ -2276,8 +2328,13 @@ api.post('/hist-import/finish', wrap(async (req, res) => {
     removed = Number(r?.changes ?? 0);
   }
   // 法人名が空の行は残さない（過去の取込で入り込んだものも含めて掃除する）
-  const blank = await db.run(
-    "DELETE FROM deals WHERE corp_name IS NULL OR TRIM(corp_name) = ''");
+  for (const sql of [
+    `DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE ${BLANK_CORP_WHERE})`,
+    `DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE ${BLANK_CORP_WHERE})`,
+  ]) {
+    try { await db.run(sql); } catch { /* 無ければ何もしない */ }
+  }
+  const blank = await db.run(`DELETE FROM deals WHERE ${BLANK_CORP_WHERE}`);
   removed += Number(blank?.changes ?? 0);
   const { total } = await db.get('SELECT COUNT(*) AS total FROM deals');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
