@@ -2112,18 +2112,21 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     acc.set(key, a);
   }
 
-  await db.batch([...acc.values()].map((a) => ({
-    sql: `INSERT INTO agg_staging (ent_cd, model_code, qty, base_amt, a1_amt, a2_amt, a3_amt, cost_amt)
-          VALUES (?,?,?,?,?,?,?,?)
-          ON CONFLICT (ent_cd, model_code) DO UPDATE SET
-            qty = agg_staging.qty + excluded.qty,
-            base_amt = agg_staging.base_amt + excluded.base_amt,
-            a1_amt = agg_staging.a1_amt + excluded.a1_amt,
-            a2_amt = agg_staging.a2_amt + excluded.a2_amt,
-            a3_amt = agg_staging.a3_amt + excluded.a3_amt,
-            cost_amt = agg_staging.cost_amt + excluded.cost_amt`,
-    params: [a.ent, a.model, a.qty, a.base, a.a1, a.a2, a.a3, a.cost],
-  })));
+  const vals = [...acc.values()].map((a) => [a.ent, a.model, a.qty, a.base, a.a1, a.a2, a.a3, a.cost]);
+  if (vals.length) {
+    await db.run(
+      `INSERT INTO agg_staging (ent_cd, model_code, qty, base_amt, a1_amt, a2_amt, a3_amt, cost_amt)
+       VALUES ${vals.map(() => '(?,?,?,?,?,?,?,?)').join(',')}
+       ON CONFLICT (ent_cd, model_code) DO UPDATE SET
+         qty = agg_staging.qty + excluded.qty,
+         base_amt = agg_staging.base_amt + excluded.base_amt,
+         a1_amt = agg_staging.a1_amt + excluded.a1_amt,
+         a2_amt = agg_staging.a2_amt + excluded.a2_amt,
+         a3_amt = agg_staging.a3_amt + excluded.a3_amt,
+         cost_amt = agg_staging.cost_amt + excluded.cost_amt`,
+      vals.flat()
+    );
+  }
   res.json({ matched, unmatched, groups: acc.size });
 }));
 
@@ -2178,11 +2181,22 @@ api.post('/hist-import/start', wrap(async (req, res) => {
   // マスタ登録を法人×品目へ集約するときに、得意先名からこの表を引く。
   await db.run('DELETE FROM corp_map');
   const stamp = new Date().toISOString();
-  await db.batch(corps.map(([cd, name]) => ({
-    sql: `INSERT INTO corp_map (name_key, ent_cd, corp_name) VALUES (?,?,?)
-            ON CONFLICT (name_key) DO UPDATE SET ent_cd = excluded.ent_cd, corp_name = excluded.corp_name`,
-    params: [normCorpName(name), String(cd), String(name ?? '')],
-  })).filter((st) => st.params[0]));
+  // 1行1文だとDBとの往復が法人数だけ発生し、遠隔のDBでは時間切れになる。
+  // まとめて1文（複数行VALUES）で入れる。
+  const entries = corps
+    .map(([cd, name]) => [normCorpName(name), String(cd), String(name ?? '')])
+    .filter(([k]) => k);
+  const seenKey = new Set();
+  const uniq = entries.filter(([k]) => (seenKey.has(k) ? false : (seenKey.add(k), true)));
+  for (let i = 0; i < uniq.length; i += 300) {
+    const part = uniq.slice(i, i + 300);
+    await db.run(
+      `INSERT INTO corp_map (name_key, ent_cd, corp_name)
+       VALUES ${part.map(() => '(?,?,?)').join(',')}
+       ON CONFLICT (name_key) DO UPDATE SET ent_cd = excluded.ent_cd, corp_name = excluded.corp_name`,
+      part.flat()
+    );
+  }
 
   const batch = `hist-${Date.now()}`;
   await db.run(
@@ -2211,54 +2225,36 @@ api.post('/hist-import/chunk', wrap(async (req, res) => {
     return s && s !== '－' && s !== '-' ? s : null;
   };
 
-  const keys = rows.map((r) => `${String(r.ent_cd).trim()}|${String(r.model_code).trim()}`);
-  const existing = await db.all(
-    `SELECT id, agg_key FROM deals WHERE agg_key IN (${keys.map(() => '?').join(',')})`, keys);
-  const byKey = new Map(existing.map((r) => [r.agg_key, r.id]));
-
   const stamp = now();
-  const statements = [];
+  const cols = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_name', 'model_code',
+    'model_name', 'equip_name', 'hist_avg_price', 'hist_qty', 'base_price', 'qty',
+    'hist_batch', 'r2_done', 'updated_at'];
   const seen = new Set();
-  let inserted = 0;
-  let updated = 0;
+  const values = [];
   for (const r of rows) {
     const key = `${String(r.ent_cd).trim()}|${String(r.model_code).trim()}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    // 実績の平均単価と数量を、案件の出荷単価・数量として持つ（集計の土台）
-    const vals = {
-      hist_ent_cd: String(r.ent_cd).trim(),
-      corp_code: String(r.ent_cd).trim(),
-      corp_name: txt(r.corp_name),
-      customer_name: txt(r.corp_name),
-      model_code: String(r.model_code).trim(),
-      model_name: txt(r.model_name),
-      equip_name: txt(r.equip_name),
-      hist_avg_price: num(r.avg_price),
-      hist_qty: num(r.qty),
-      base_price: num(r.avg_price),
-      qty: num(r.qty),
-      hist_batch: batch,
-    };
-    const id = byKey.get(key);
-    if (id) {
-      updated += 1;
-      statements.push({
-        sql: `UPDATE deals SET ${Object.keys(vals).map((k) => `${k} = ?`).join(', ')}, updated_at = ?
-               WHERE id = ?`,
-        params: [...Object.values(vals), stamp, id],
-      });
-    } else {
-      inserted += 1;
-      const cols = ['agg_key', ...Object.keys(vals), 'r2_done', 'updated_at'];
-      statements.push({
-        sql: `INSERT INTO deals (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
-        params: [key, ...Object.values(vals), 0, stamp],
-      });
-    }
+    values.push([
+      key, String(r.ent_cd).trim(), String(r.ent_cd).trim(), txt(r.corp_name), txt(r.corp_name),
+      String(r.model_code).trim(), txt(r.model_name), txt(r.equip_name),
+      num(r.avg_price), num(r.qty), num(r.avg_price), num(r.qty),
+      batch, 0, stamp,
+    ]);
   }
-  if (statements.length) await db.batch(statements);
-  res.json({ inserted, updated });
+  // まとめて1文で入れ替える（1行1文だと数百回の往復になり、遠隔のDBでは時間切れになる）。
+  // 決定単価（B基準）など画面で入れた値は列に触れないので残る。
+  const upd = cols.filter((c) => c !== 'agg_key' && c !== 'r2_done')
+    .map((c) => `${c} = excluded.${c}`).join(', ');
+  if (values.length) {
+    await db.run(
+      `INSERT INTO deals (${cols.join(',')})
+       VALUES ${values.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
+       ON CONFLICT (agg_key) WHERE agg_key IS NOT NULL DO UPDATE SET ${upd}`,
+      values.flat()
+    );
+  }
+  res.json({ rows: values.length });
 }));
 
 api.post('/hist-import/finish', wrap(async (req, res) => {

@@ -62,7 +62,7 @@ export default function HistImportCard() {
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
-          取り込みました: 新規 {result.inserted.toLocaleString()}件 ・ 更新 {result.updated.toLocaleString()}件
+          取り込みました: {result.rows.toLocaleString()}件
           {result.removed > 0 && ` ・ 今回の実績に無い行を ${result.removed.toLocaleString()}件削除`}
           （案件 {result.total.toLocaleString()}件）
         </div>

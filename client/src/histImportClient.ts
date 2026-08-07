@@ -76,10 +76,9 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
 const CHUNK = 500;
 
 export interface HistResult {
-  inserted: number;
-  updated: number;
-  removed: number;
-  total: number;
+  rows: number;      // 送って取り込んだ行
+  removed: number;   // 今回の実績に無くなって消えた行
+  total: number;     // 案件の総数
 }
 
 export async function sendHistImport(
@@ -91,19 +90,17 @@ export async function sendHistImport(
     method: 'POST',
     body: JSON.stringify({ filename, period: parsed.period, corps: parsed.corps }),
   });
-  let inserted = 0;
-  let updated = 0;
+  let sent = 0;
   for (let i = 0; i < parsed.rows.length; i += CHUNK) {
-    const r = await api<{ inserted: number; updated: number }>('/hist-import/chunk', {
+    const r = await api<{ rows: number }>('/hist-import/chunk', {
       method: 'POST',
       body: JSON.stringify({ batch, rows: parsed.rows.slice(i, i + CHUNK) }),
     });
-    inserted += r.inserted;
-    updated += r.updated;
+    sent += r.rows;
     onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
   }
   const fin = await api<{ removed: number; total: number }>('/hist-import/finish', {
     method: 'POST', body: JSON.stringify({ batch }),
   });
-  return { inserted, updated, removed: fin.removed, total: fin.total };
+  return { rows: sent, removed: fin.removed, total: fin.total };
 }
