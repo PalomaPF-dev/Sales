@@ -1352,9 +1352,9 @@ function dealFilters(q, user) {
   for (const [key, col] of [['r2State', 'r2_state']]) {
     if (['open', 'agreed', 'done'].includes(q[key])) { where.push(`${col} = ?`); params.push(q[key]); }
   }
-  // 区分（大手・中規模・小規模）。none は「まだ区分を選んでいない行」
-  if (q.kubun === 'none') where.push('kubun IS NULL');
-  else if (KUBUNS.includes(q.kubun)) { where.push('kubun = ?'); params.push(q.kubun); }
+  // A基準の有無。マスタ登録は値上げ対象の一部のため、無い行も多い
+  if (q.aState === 'has') where.push('a_price_m3 IS NOT NULL');
+  else if (q.aState === 'none') where.push('a_price_m3 IS NULL');
 
   // 合意単価が目標に届かなかったもの。
   //

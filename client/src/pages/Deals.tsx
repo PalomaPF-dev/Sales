@@ -15,7 +15,7 @@ interface DealsRes {
   size: number;
 }
 
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office', 'r2State'] as const;
+const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office', 'r2State', 'aState'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -313,6 +313,14 @@ export default function Deals() {
           <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
             <option value="">すべて</option>
             {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          A基準
+          <select value={get('aState')} onChange={(e) => setParam('aState', e.target.value)}>
+            <option value="">すべて</option>
+            <option value="has">あり（値上げ対象）</option>
+            <option value="none">なし</option>
           </select>
         </label>
         <label className="fld">
