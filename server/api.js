@@ -1255,7 +1255,20 @@ api.get('/dashboard', wrap(async (req, res) => {
     SUM(${aCol(3)}) AS a3_amt`;
   const abCond = 'a_price_m3 IS NOT NULL AND hist_avg_price IS NOT NULL AND hist_qty > 0';
   const months = await histMonths();
-  const [abTotals, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
+
+  // 月別のマスタ登録（A基準）。当月〜3か月後それぞれで、
+  // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
+  // 承認日などの絞り込み（dealFilters）はここにも効く。
+  const monthAgg = [0, 1, 2, 3].map((n) => `
+    SUM(CASE WHEN a_price_m${n} > 0 THEN 1 ELSE 0 END) AS cnt_m${n},
+    SUM(CASE WHEN a_price_m${n} > 0 AND hist_avg_price IS NOT NULL
+         THEN (${f(`a_price_m${n}`)} - ${f('hist_avg_price')}) * COALESCE(hist_qty, 0) END) AS raise_m${n}`)
+    .join(',');
+
+  const [histTotals, aMonths, abTotals, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
+    // 出荷実績の全体（A基準の有無を問わない土台の件数と数量）
+    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty FROM deal_calc ${where}`, p),
+    db.get(`SELECT ${monthAgg} FROM deal_calc ${where}`, p),
     db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
              GROUP BY branch`, p),
@@ -1271,6 +1284,8 @@ api.get('/dashboard', wrap(async (req, res) => {
 
   res.json({
     scope: scopeInfo(req.user),
+    histTotals,
+    aMonths,
     abTotals,
     abByBranch,
     abByOffice,

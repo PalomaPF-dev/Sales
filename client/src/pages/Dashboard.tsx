@@ -5,7 +5,7 @@ import { Card } from '../components/ui';
 import type { Meta } from '../types';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
-const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office'] as const;
+const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office', 'aDateYm', 'aDateOp'] as const;
 
 /**
  * 支店別・法人別の値上げ額の集計。
@@ -26,12 +26,19 @@ interface AbRow {
 
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
+  /** 出荷実績の全体（A基準の有無を問わない土台） */
+  histTotals?: { deals: number; qty: number };
+  /** 月別のマスタ登録（A基準）。申請の入った件数と値上げ額の合計 */
+  aMonths?: {
+    cnt_m0: number; cnt_m1: number; cnt_m2: number; cnt_m3: number;
+    raise_m0: number | null; raise_m1: number | null; raise_m2: number | null; raise_m3: number | null;
+  };
   abTotals?: AbRow;
   abByBranch?: AbRow[];
   abByOffice?: AbRow[];
   abByCorp?: AbRow[];
   months?: number;
-  aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string } | null;
+  aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string } | null;
 }
 
 const num = (n: unknown) => Number(n ?? 0);
@@ -76,7 +83,7 @@ export default function Dashboard() {
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
 
   const t = data.abTotals;
-  const totalGain = num(t?.a3_amt) - num(t?.base_amt);
+  const m0 = data.aggMeta?.m0 || '当月';
   const m1 = data.aggMeta?.m1 || '翌月';
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
@@ -149,11 +156,12 @@ export default function Dashboard() {
     <div>
       <h1 className="page-title">ダッシュボード</h1>
       <p className="page-sub">
-        支店別・営業所別・法人別の値上げ額です。<strong>目標額</strong>は実績の平均出荷単価 × 数量の合計、
-        <strong>実績</strong>はマスタ登録単価（A基準）前提で数量を固定した月別合計、
-        その差が<strong>値上げ額</strong>です。金額は期間全体（{data.aggMeta?.basePeriod ? '' : ''}
-        {meta?.histMeta?.period ?? ''}）の合計で、月あたりは÷{months}か月です。
-        対象は<strong>A基準の入っている案件</strong>だけ（マスタ登録に無い品目は値上げの対象外のため）。
+        出荷実績（{meta?.histMeta?.period ?? '期間全体'}）を土台に、A基準の月ごとの
+        <strong>マスタ登録件数</strong>と<strong>値上げ額</strong>（(A基準−実績の平均出荷単価)×数量）を出します。
+        <strong>承認日</strong>で絞ると、その条件でのマスタ登録件数・値上げ額に変わります
+        （例: 2026-08以降＝それより前に登録された古い単価を除く）。
+        下の表の<strong>目標額</strong>は実績の平均出荷単価×数量、<strong>実績</strong>はA基準前提で
+        数量を固定した月別合計、その差が値上げ額です。金額は期間全体の合計、月あたりは÷{months}か月。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
 
@@ -193,17 +201,50 @@ export default function Dashboard() {
             {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           </select>
         </label>
+        {/* 承認日での絞り込み（案件一覧と同じ。3か月後のA基準の承認日が基準） */}
+        <label className="fld" title={`${m3}のA基準の承認日で絞り込みます`}>
+          承認日
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              type="month"
+              value={get('aDateYm')}
+              onChange={(e) => setParam('aDateYm', e.target.value)}
+              style={{ flex: '1 1 auto', minWidth: 0 }}
+            />
+            <select
+              value={get('aDateOp') || 'from'}
+              onChange={(e) => setParam('aDateOp', e.target.value === 'from' ? '' : e.target.value)}
+              style={{ flex: '0 0 auto' }}
+            >
+              <option value="from">以降</option>
+              <option value="before">より前</option>
+            </select>
+          </div>
+        </label>
       </div>
 
+      {/*
+        出荷実績（土台）に対して、A基準の月ごとのマスタ登録件数と値上げ額を並べる。
+        承認日の絞り込みを変えると、ここもその条件で数え直される。
+      */}
       <div className="tiles">
-        <Kpi label="対象（A基準あり）" value={`${num(t?.deals).toLocaleString()}件`}
-             sub={`数量 ${num(t?.qty).toLocaleString()}（月${Math.round(num(t?.qty) / months).toLocaleString()}）`} />
-        <Kpi label="目標額（出荷単価前提）" value={yen(num(t?.base_amt))} />
-        <Kpi label={`実績（${m3}・A基準前提）`} value={yen(num(t?.a3_amt))} />
-        <Kpi label="値上げ額の合計" value={`${totalGain >= 0 ? '＋' : '−'}${yen(Math.abs(totalGain))}`}
-             sub={`月あたり ${totalGain >= 0 ? '＋' : '−'}${yen(Math.abs(totalGain) / months)}`
-               + (num(t?.base_amt) > 0
-                 ? ` ・ 目標額比 ${(Math.round((totalGain / num(t?.base_amt)) * 1000) / 10).toLocaleString()}%` : '')} />
+        <Kpi label={`出荷実績${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}`}
+             value={`${num(data.histTotals?.deals).toLocaleString()}件`}
+             sub={`数量 ${num(data.histTotals?.qty).toLocaleString()}（月${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}）`} />
+        {([
+          [m0, data.aMonths?.cnt_m0, data.aMonths?.raise_m0],
+          [m1, data.aMonths?.cnt_m1, data.aMonths?.raise_m1],
+          [m2, data.aMonths?.cnt_m2, data.aMonths?.raise_m2],
+          [m3, data.aMonths?.cnt_m3, data.aMonths?.raise_m3],
+        ] as [string, number | undefined, number | null | undefined][]).map(([label, cnt, raise]) => {
+          const r = num(raise);
+          return (
+            <Kpi key={label}
+                 label={`マスタ登録 ${label}`}
+                 value={`${num(cnt).toLocaleString()}件`}
+                 sub={`値上げ ${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}（月 ${r >= 0 ? '＋' : '−'}${yen(Math.abs(r) / months)}）`} />
+          );
+        })}
       </div>
 
       <Card title="支店別の値上げ額">
