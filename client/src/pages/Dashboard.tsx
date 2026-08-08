@@ -9,9 +9,9 @@ const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office', 'aDateYm', '
 
 /**
  * 支店別・法人別の値上げ額の集計。
- *   目標額 = 現状の出荷単価 × 数量の合計
- *   実績   = マスタ登録単価（A基準）前提で、数量を固定したままの月別合計
- *   値上げ額 = 実績（3か月後） − 目標額
+ *   現状額 = 現状の出荷単価 × 数量の合計（値上げしなかった場合）
+ *   A基準額 = マスタ登録単価（A基準）前提で、数量を固定したままの月別合計
+ *   値上げ額 = A基準額（3か月後） − 現状額
  */
 interface AbRow {
   name?: string | null;
@@ -99,7 +99,7 @@ export default function Dashboard() {
 
   const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
 
-  /** 月のマス。実績（A基準前提の売上）と、その下に値上げ額（実績−目標額）を出す */
+  /** 月のマス。A基準前提の売上と、その下に値上げ額（A基準額−現状額）を出す */
   const MonthCell = ({ amt, base }: { amt: number; base: number }) => {
     const gain = amt - base;
     return (
@@ -126,12 +126,12 @@ export default function Dashboard() {
             <th style={nums} title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
               数量<br /><small>合計 / 月平均</small>
             </th>
-            <th style={nums} title="実績の平均出荷単価 × 数量の合計">目標額<br /><small>（出荷単価前提）</small></th>
-            <th style={nums}>{m1}<br /><small>実績 / 値上げ額</small></th>
-            <th style={nums}>{m2}<br /><small>実績 / 値上げ額</small></th>
-            <th style={nums}>{m3}<br /><small>実績 / 値上げ額</small></th>
+            <th style={nums} title="現状の出荷単価（実績の平均）× 数量の合計。値上げしなかった場合の金額">現状額<br /><small>（出荷単価前提）</small></th>
+            <th style={nums}>{m1}<br /><small>A基準額 / 値上げ額</small></th>
+            <th style={nums}>{m2}<br /><small>A基準額 / 値上げ額</small></th>
+            <th style={nums}>{m3}<br /><small>A基準額 / 値上げ額</small></th>
             <th style={nums} title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価">
-              想定B基準<br /><small>実績 / 値上げ額</small>
+              想定B基準<br /><small>想定額 / 値上げ額</small>
             </th>
             <th style={nums} title="想定B基準 − A基準（3か月後）。マイナスは値引きして妥結する見込みの分">
               A基準との差
@@ -183,8 +183,8 @@ export default function Dashboard() {
         マスタ登録（A基準）の件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績の平均出荷単価)×数量）を出します。
         <strong>承認日</strong>で絞ると、マスタ登録件数と値上げ額がその条件に変わります
         （出荷実績の母数は変わりません）。
-        下の表の<strong>目標額</strong>は実績の平均出荷単価×数量、<strong>実績</strong>はA基準前提で
-        数量を固定した月別合計、その差が値上げ額です。金額は期間全体の合計、月あたりは÷{months}か月。
+        下の表の<strong>現状額</strong>は現状の出荷単価（実績の平均）×数量で、値上げしなかった場合の金額です。
+        各月の<strong>A基準額</strong>はA基準前提で数量を固定した月別合計で、その差が値上げ額です。金額は期間全体の合計、月あたりは÷{months}か月。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
 
@@ -299,7 +299,7 @@ export default function Dashboard() {
         <AbTable head="営業所" rows={data.abByOffice ?? []} withBranch />
       </Card>
 
-      <Card title="法人別の値上げ額（目標額の上位30）">
+      <Card title="法人別の値上げ額（現状額の上位30）">
         <AbTable head="法人" rows={data.abByCorp ?? []} />
       </Card>
     </div>
