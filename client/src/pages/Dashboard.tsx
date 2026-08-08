@@ -91,7 +91,6 @@ export default function Dashboard() {
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
 
   const t = data.abTotals;
-  const m0 = data.aggMeta?.m0 || '当月';
   const m1 = data.aggMeta?.m1 || '翌月';
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
@@ -261,8 +260,8 @@ export default function Dashboard() {
              sub={num(data.histTotals?.deals) > 0
                ? `品目ベースの ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
+        {/* 当月は値上げ前の単価が多く比較にならないため、翌月（9月）から出す */}
         {([
-          [m0, data.aMonths?.raise_m0],
           [m1, data.aMonths?.raise_m1],
           [m2, data.aMonths?.raise_m2],
           [m3, data.aMonths?.raise_m3],
