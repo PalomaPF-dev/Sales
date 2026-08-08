@@ -169,6 +169,20 @@ CREATE TABLE IF NOT EXISTS corp_map (
   corp_name TEXT                -- 元の表記
 );
 
+-- 法人ごとの妥結の見通し（想定B基準）。
+-- A基準の単価に対する割合（%）で持つ。95 なら「A基準の95%で妥結する見込み」。
+-- equip_name が空文字なら法人全体、器具区分名が入っていればその器具だけに効く
+-- （法人の中では器具ごとに単価が決まるため）。
+-- 決定単価（b_price）が入っている案件はそちらが優先で、これは未入力の案件の想定。
+CREATE TABLE IF NOT EXISTS corp_plans (
+  corp_code  TEXT NOT NULL,
+  equip_name TEXT NOT NULL DEFAULT '',
+  b_rate     REAL NOT NULL,
+  updated_at TEXT,
+  updated_by INTEGER REFERENCES users(id),
+  PRIMARY KEY (corp_code, equip_name)
+);
+
 -- マスタ登録を法人×品目へ集約するための一時置き場（取込のたびに入れ替える）
 CREATE TABLE IF NOT EXISTS agg_staging (
   ent_cd     TEXT NOT NULL,

@@ -22,6 +22,9 @@ interface AbRow {
   a1_amt: number;
   a2_amt: number;
   a3_amt: number;
+  /** 想定B基準（法人ごとの妥結見通し）にした場合の売上。決定済みはB基準そのもの */
+  bsim_amt: number;
+  b_rows: number;
 }
 
 interface DashboardRes {
@@ -33,6 +36,9 @@ interface DashboardRes {
     covered: number;
     cnt_m0: number; cnt_m1: number; cnt_m2: number; cnt_m3: number;
     raise_m0: number | null; raise_m1: number | null; raise_m2: number | null; raise_m3: number | null;
+    /** 想定B基準にした場合の値上げ額（3か月後のA基準と同じ土俵で比べる） */
+    raise_bsim: number | null;
+    b_rows: number;
   };
   abTotals?: AbRow;
   abByEquip?: AbRow[];
@@ -125,6 +131,12 @@ export default function Dashboard() {
             <th style={nums}>{m1}<br /><small>実績 / 値上げ額</small></th>
             <th style={nums}>{m2}<br /><small>実績 / 値上げ額</small></th>
             <th style={nums}>{m3}<br /><small>実績 / 値上げ額</small></th>
+            <th style={nums} title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価">
+              想定B基準<br /><small>実績 / 値上げ額</small>
+            </th>
+            <th style={nums} title="想定B基準 − A基準（3か月後）。マイナスは値引きして妥結する見込みの分">
+              A基準との差
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -146,6 +158,16 @@ export default function Dashboard() {
                 <MonthCell amt={num(r.a1_amt)} base={base} />
                 <MonthCell amt={num(r.a2_amt)} base={base} />
                 <MonthCell amt={num(r.a3_amt)} base={base} />
+                <MonthCell amt={num(r.bsim_amt)} base={base} />
+                {(() => {
+                  const gap = num(r.bsim_amt) - num(r.a3_amt);
+                  return (
+                    <td style={{ ...nums, fontWeight: 600,
+                                 color: gap < 0 ? '#c2410c' : gap > 0 ? '#15803d' : 'var(--muted)' }}>
+                      {gap === 0 ? '—' : `${gap > 0 ? '＋' : '−'}${yen(Math.abs(gap))}`}
+                    </td>
+                  );
+                })()}
               </tr>
             );
           })}
@@ -253,6 +275,17 @@ export default function Dashboard() {
                  sub={`期間合計 ${num(raise) >= 0 ? '＋' : '−'}${yen(Math.abs(num(raise)))}`} />
           );
         })}
+        {/* 法人ごとの妥結見通し（想定B基準）で試算した場合。A基準との差も出す */}
+        {(() => {
+          const bs = num(data.aMonths?.raise_bsim) / months;
+          const gap = (num(data.aMonths?.raise_bsim) - num(data.aMonths?.raise_m3)) / months;
+          return (
+            <Kpi label={`想定B基準（月あたり） ${m3}`}
+                 value={`${bs >= 0 ? '＋' : '−'}${yen(Math.abs(bs))}`}
+                 sub={`A基準との差 ${gap >= 0 ? '＋' : '−'}${yen(Math.abs(gap))}`
+                   + `（決定済み ${num(data.aMonths?.b_rows).toLocaleString()}件）`} />
+          );
+        })()}
       </div>
 
       <Card title="器具区分別の値上げ額">

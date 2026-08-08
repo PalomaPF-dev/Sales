@@ -1246,13 +1246,29 @@ api.get('/dashboard', wrap(async (req, res) => {
   const f = (c) => `CAST(${c} AS FLOAT)`;
   const aCol = (n) =>
     `CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${f('hist_avg_price')} END * hist_qty`;
+
+  // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
+  // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
+  // JOINにすると列名がぶつかるため、値の引き当ては小さな副問い合わせで行う。
+  const planRate = `COALESCE(
+    (SELECT p.b_rate FROM corp_plans p
+      WHERE p.corp_code = deal_calc.corp_code AND p.equip_name = COALESCE(deal_calc.equip_name, '')),
+    (SELECT p.b_rate FROM corp_plans p
+      WHERE p.corp_code = deal_calc.corp_code AND p.equip_name = ''),
+    100)`;
+  const bsimUnit = `CASE WHEN b_price IS NOT NULL THEN ${f('b_price')}
+                         WHEN a_price_m3 > 0 THEN ${f('a_price_m3')} * ${planRate} / 100
+                         ELSE ${f('hist_avg_price')} END`;
+
   const ab = `
     COUNT(*) AS deals,
     SUM(${f('hist_qty')}) AS qty,
     SUM(${f('hist_avg_price')} * hist_qty) AS base_amt,
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
-    SUM(${aCol(3)}) AS a3_amt`;
+    SUM(${aCol(3)}) AS a3_amt,
+    SUM((${bsimUnit}) * hist_qty) AS bsim_amt,
+    SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
   const abCond = 'a_price_m3 IS NOT NULL AND hist_avg_price IS NOT NULL AND hist_qty > 0';
   const months = await histMonths();
 
@@ -1263,7 +1279,12 @@ api.get('/dashboard', wrap(async (req, res) => {
     SUM(CASE WHEN a_price_m${n} > 0 THEN 1 ELSE 0 END) AS cnt_m${n},
     SUM(CASE WHEN a_price_m${n} > 0 AND hist_avg_price IS NOT NULL
          THEN (${f(`a_price_m${n}`)} - ${f('hist_avg_price')}) * COALESCE(hist_qty, 0) END) AS raise_m${n}`)
-    .join(',');
+    .join(',')
+    // 想定B基準（法人ごとの妥結見通し）にした場合の値上げ額。A基準との比較に使う
+    + `,
+    SUM(CASE WHEN a_price_m3 > 0 AND hist_avg_price IS NOT NULL
+         THEN ((${bsimUnit}) - ${f('hist_avg_price')}) * COALESCE(hist_qty, 0) END) AS raise_bsim,
+    SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
   // （承認日・A基準の有無）は掛けない。マスタ登録件数の母数もこれを使う。
@@ -1310,6 +1331,67 @@ api.get('/dashboard', wrap(async (req, res) => {
 }));
 
 /**
+ * 想定B基準の割合を案件に当てるためのJOIN。
+ *
+ * 法人×器具区分の設定があればそれを、無ければ法人全体の設定を、
+ * どちらも無ければ既定（画面から渡す既定%）を使う。
+ */
+const PLAN_JOIN = `
+  LEFT JOIN corp_plans pe ON pe.corp_code = d.corp_code
+                         AND pe.equip_name = COALESCE(d.equip_name, '')
+  LEFT JOIN corp_plans pc ON pc.corp_code = d.corp_code AND pc.equip_name = ''`;
+const PLAN_RATE = 'COALESCE(pe.b_rate, pc.b_rate, ?)';
+
+/** 法人ごとの想定B基準（A基準に対する%）の一覧 */
+api.get('/corp-plans', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const rows = await db.all(`
+    SELECT corp_code, equip_name, b_rate, updated_at FROM corp_plans ORDER BY corp_code, equip_name`);
+  res.json({ rows });
+}));
+
+/**
+ * 想定B基準の割合を入れる・消す。
+ * 法人全体は equip_name を空で、器具区分ごとは器具区分名を入れて指定する。
+ * b_rate が null なら設定を消す（既定に戻す）。
+ */
+api.put('/corp-plans', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['planning'])) return;
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!items.length) return res.status(400).json({ error: '保存する内容がありません' });
+  if (items.length > 500) return res.status(400).json({ error: '一度に保存できるのは500件までです' });
+
+  const stamp = now();
+  let saved = 0;
+  let removed = 0;
+  for (const it of items) {
+    const corp = String(it?.corp_code ?? '').trim();
+    if (!corp) continue;
+    const equip = String(it?.equip_name ?? '').trim();
+    const raw = it?.b_rate;
+    if (raw === null || raw === undefined || String(raw).trim() === '') {
+      const r = await db.run(
+        'DELETE FROM corp_plans WHERE corp_code = ? AND equip_name = ?', [corp, equip]);
+      removed += Number(r?.changes ?? 0);
+      continue;
+    }
+    const rate = Number(raw);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 500) {
+      return res.status(400).json({ error: '想定は0〜500の範囲で入力してください' });
+    }
+    await db.run(
+      `INSERT INTO corp_plans (corp_code, equip_name, b_rate, updated_at, updated_by)
+       VALUES (?,?,?,?,?)
+       ON CONFLICT (corp_code, equip_name) DO UPDATE SET
+         b_rate = excluded.b_rate, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+      [corp, equip, rate, stamp, req.user.id]
+    );
+    saved += 1;
+  }
+  res.json({ saved, removed });
+}));
+
+/**
  * A基準とB基準のシミュレーション用の集計。
  *
  * グループごとに Σ数量・ΣA売上・ΣB売上（入力分）・B未入力分のA売上を返し、
@@ -1322,23 +1404,37 @@ api.get('/simulation', wrap(async (req, res) => {
   // 法人×器具区分は、法人の中で器具ごとに単価が決まるため、
   // 販売計画の増減もその粒度で設定できるようにする
   const group = String(req.query.group ?? 'equip');
+  const corp = String(req.query.corp ?? '').trim();
   let nameSel;
   let groupBy;
+  // 保存してある想定B基準（A基準に対する%）も一緒に返す。
+  // 法人を選んでいるときは法人×器具区分の設定、法人ごとの表では法人全体の設定。
+  let planSel = 'NULL AS plan_rate';
+  const planParams = [];
   if (group === 'corp_equip') {
     nameSel = "corp_name || '｜' || COALESCE(equip_name, '—') AS name";
     groupBy = 'corp_name, equip_name';
+  } else if (group === 'corp') {
+    nameSel = 'corp_name AS name, corp_code AS corp_code';
+    groupBy = 'corp_code, corp_name';
+    planSel = `(SELECT p.b_rate FROM corp_plans p
+                 WHERE p.corp_code = deal_calc.corp_code AND p.equip_name = '') AS plan_rate`;
   } else {
-    const colMap = { equip: 'equip_name', corp: 'corp_name', branch: 'branch' };
+    const colMap = { equip: 'equip_name', branch: 'branch' };
     const col = colMap[group] ?? 'equip_name';
     nameSel = `${col} AS name`;
     groupBy = col;
+    if (corp && col === 'equip_name') {
+      planSel = `(SELECT p.b_rate FROM corp_plans p
+                   WHERE p.corp_code = ? AND p.equip_name = COALESCE(deal_calc.equip_name, '')) AS plan_rate`;
+      planParams.push(corp);
+    }
   }
   const scope = scopeConditions(req.user);
   const conds = ['agg_key IS NOT NULL', 'qty > 0', ...scope.where];
-  const params = [...scope.params];
+  const params = [...planParams, ...scope.params];
   // 法人を選ぶと、その法人の中だけを集計する
-  // （法人ごとに器具区分単位で増減%を設定できるようにするため）
-  const corp = String(req.query.corp ?? '').trim();
+  // （法人ごとに器具区分単位で増減%・想定B基準を設定できるようにするため）
   if (corp) {
     conds.push('corp_code = ?');
     params.push(corp);
@@ -1350,7 +1446,7 @@ api.get('/simulation', wrap(async (req, res) => {
         SUM(CASE WHEN cost_price IS NOT NULL THEN qty ELSE 0 END) AS cost_qty`
     : '';
   const rows = await db.all(`
-    SELECT ${nameSel}, COUNT(*) AS deals, SUM(qty) AS qty,
+    SELECT ${nameSel}, ${planSel}, COUNT(*) AS deals, SUM(qty) AS qty,
            SUM(base_price * qty) AS base_amt,
            SUM(a_price_m1 * qty) AS a1_amt,
            SUM(a_price_m2 * qty) AS a2_amt,

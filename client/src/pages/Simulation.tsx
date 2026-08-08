@@ -7,6 +7,8 @@ import type { Meta } from '../types';
 /** サーバーが返すグループごとの集計（単価×数量の合計） */
 interface SimRow {
   name: string | null;
+  corp_code?: string | null;   // 法人ごとの表のとき
+  plan_rate?: number | null;   // 保存してある想定B基準（A基準に対する%）
   deals: number;
   qty: number;
   base_amt: number;      // 過去実績（出荷単価×数量）
@@ -54,6 +56,9 @@ export default function Simulation() {
   // 表示の絞り込み（法人×器具区分は数万グループになるため）。合計は全グループ分のまま
   const [q, setQ] = useState('');
   const [msg, setMsg] = useState('');
+  // 想定B基準（A基準に対する%）。保存するとダッシュボードの試算にも反映される
+  const [planDraft, setPlanDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api<Meta>('/meta').then(setMeta).catch(() => {});
@@ -62,9 +67,40 @@ export default function Simulation() {
     const qs = new URLSearchParams({ group: corp ? 'equip' : group });
     if (corp) qs.set('corp', corp);
     api<{ rows: SimRow[]; withCost: boolean }>(`/simulation?${qs}`)
-      .then((r) => { setRows(r.rows); setWithCost(r.withCost); setRowAdj({}); setQ(''); })
+      .then((r) => {
+        setRows(r.rows); setWithCost(r.withCost); setRowAdj({}); setQ('');
+        // 保存済みの想定B基準を入力欄の初期値にする
+        const d: Record<string, string> = {};
+        for (const x of r.rows) if (x.plan_rate != null) d[x.name ?? ''] = String(x.plan_rate);
+        setPlanDraft(d);
+      })
       .catch((e) => setMsg(e.message));
   }, [group, corp]);
+
+  // 想定B基準を入れられるのは、法人の中の器具区分ごと（法人を選択中）か、法人ごとの表
+  const canPlan = Boolean(corp) || group === 'corp';
+
+  /** 想定B基準を保存する。ダッシュボードの試算にもそのまま効く */
+  const savePlans = async () => {
+    setSaving(true);
+    setMsg('');
+    try {
+      const items = rows.map((r) => ({
+        corp_code: corp || r.corp_code || '',
+        equip_name: corp ? (r.name ?? '') : '',
+        b_rate: (planDraft[r.name ?? ''] ?? '').trim(),
+      })).filter((x) => x.corp_code);
+      const res = await api<{ saved: number; removed: number }>('/corp-plans', {
+        method: 'PUT', body: JSON.stringify({ items }),
+      });
+      setMsg(`想定B基準を保存しました（設定 ${res.saved}件${res.removed ? ` ・ 解除 ${res.removed}件` : ''}）。`
+        + 'ダッシュボードの「想定B基準」に反映されます');
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const assumeRate = (Number(assume) || 0) / 100;
 
@@ -72,11 +108,15 @@ export default function Simulation() {
     // 増減%は、そのグループに個別の値があればそれを、無ければ全体の値を使う
     const own = (rowAdj[r.name ?? ''] ?? '').trim();
     const adjRate = 1 + (Number(own === '' ? adj : own) || 0) / 100;
+    // 想定B基準も、そのグループに入っていればそれを、無ければ全体の想定%を使う
+    const plan = (planDraft[r.name ?? ''] ?? '').trim();
+    const bRate = plan === '' ? assumeRate : (Number(plan) || 0) / 100;
     const aSales = num(r.a3_amt) * adjRate;
-    const bSales = (num(r.b_amt) + num(r.a3_amt_nob) * assumeRate) * adjRate;
+    const bSales = (num(r.b_amt) + num(r.a3_amt_nob) * bRate) * adjRate;
     return {
       name: r.name || '—',
       ownAdj: own,
+      ownPlan: plan,
       deals: num(r.deals),
       qty: num(r.qty) * adjRate,
       baseSales: num(r.base_amt) * adjRate,
@@ -88,9 +128,9 @@ export default function Simulation() {
       bRate: num(r.deals) > 0 ? Math.round((num(r.b_rows) / num(r.deals)) * 1000) / 10 : 0,
       grossA: withCost && r.cost_amt != null ? (num(r.a3_amt) - num(r.cost_amt)) * adjRate : null,
       grossB: withCost && r.cost_amt != null
-        ? (num(r.b_amt) + num(r.a3_amt_nob) * assumeRate - num(r.cost_amt)) * adjRate : null,
+        ? (num(r.b_amt) + num(r.a3_amt_nob) * bRate - num(r.cost_amt)) * adjRate : null,
     };
-  }), [rows, adj, rowAdj, assumeRate, withCost]);
+  }), [rows, adj, rowAdj, planDraft, assumeRate, withCost]);
 
   const total = useMemo(() => calc.reduce((t, r) => ({
     deals: t.deals + r.deals, qty: t.qty + r.qty, baseSales: t.baseSales + r.baseSales,
@@ -120,7 +160,10 @@ export default function Simulation() {
         <strong>法人を選ぶと、その法人の中を器具区分ごとに</strong>販売計画の増減を設定して試算できます
         （法人の中では器具ごとに単価が決まるため）。
       </p>
-      {msg && <div className="alert error" onClick={() => setMsg('')}>{msg}</div>}
+      {msg && (
+        <div className={`alert ${msg.includes('保存しました') ? 'ok' : 'error'}`}
+             onClick={() => setMsg('')}>{msg}</div>
+      )}
 
       <div className="filters">
         <label className="fld" title="法人を選ぶと、その法人の中を器具区分ごとに出します">
@@ -160,6 +203,13 @@ export default function Simulation() {
           売上 = 単価 × 数量の合計 ×（1 + 増減%）。
           <strong>増減%の欄に入れると、その{rowLabel}だけ販売計画を変えて試算できます</strong>（空欄は上の全体の%に従います）。
           {corp && ' 法人を選んでいるので、増減%はこの法人の器具区分ごとの販売計画になります。'}
+          {canPlan && (
+            <>
+              {' '}
+              <strong>想定B%</strong>は「A基準の何%で妥結する見込みか」です。保存すると
+              ダッシュボードの「想定B基準」の列・タイルに反映され、A基準どおりの場合との差が見られます。
+            </>
+          )}
           B想定売上は、決定済みの行はB基準、未入力の行は「A基準 × 想定%」で計算しています。
           {withCost && ' 粗利は実績原価を引いた概算です（管理者のみ表示）。'}
           {calc.length > shown.length && ` 表示は数量上位${DISPLAY_MAX}グループまで（合計は全グループ分）。`}
@@ -170,6 +220,12 @@ export default function Simulation() {
               <tr>
                 <th>{rowLabel}</th>
                 <th style={{ textAlign: 'right' }} title="このグループだけの増減%。空欄は上の全体の%に従います">増減%</th>
+                {canPlan && (
+                  <th style={{ textAlign: 'right' }}
+                      title="A基準の何%で妥結する見込みか。保存するとダッシュボードの「想定B基準」に反映されます">
+                    想定B%<br /><small>（保存）</small>
+                  </th>
+                )}
                 <th style={{ textAlign: 'right' }}>数量</th>
                 <th style={{ textAlign: 'right' }}>過去実績売上</th>
                 <th style={{ textAlign: 'right' }}>A基準売上</th>
@@ -194,6 +250,16 @@ export default function Simulation() {
                       style={{ width: 64, textAlign: 'right' }}
                     />
                   </td>
+                  {canPlan && (
+                    <td style={{ textAlign: 'right' }}>
+                      <input
+                        type="number" className="cell" placeholder={assume || '100'}
+                        value={r.ownPlan}
+                        onChange={(e) => setPlanDraft((prev) => ({ ...prev, [r.name]: e.target.value }))}
+                        style={{ width: 64, textAlign: 'right' }}
+                      />
+                    </td>
+                  )}
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{Math.round(r.qty).toLocaleString()}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(r.baseSales)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(r.aSales)}</td>
@@ -213,6 +279,7 @@ export default function Simulation() {
                 <tr style={{ fontWeight: 700, borderTop: '2px solid var(--grid)' }}>
                   <td>合計{calc.length > shown.length && <small style={{ fontWeight: 400 }}>（全{calc.length.toLocaleString()}グループ分）</small>}</td>
                   <td />
+                  {canPlan && <td />}
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{Math.round(total.qty).toLocaleString()}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(total.baseSales)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{yen(total.aSales)}</td>
@@ -227,6 +294,16 @@ export default function Simulation() {
             </tbody>
           </table>
         </div>
+        {canPlan && (
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+            <button className="btn" onClick={savePlans} disabled={saving}>
+              {saving ? '保存中...' : '想定B基準を保存（ダッシュボードに反映）'}
+            </button>
+            <span className="pt-note" style={{ margin: 0 }}>
+              空欄にして保存すると、その{rowLabel}の想定は解除されます（A基準どおりに戻ります）。
+            </span>
+          </div>
+        )}
         {me.role === 'sales' || me.role === 'branch_manager' ? (
           <p className="pt-note">このページは営業企画・管理者向けです。</p>
         ) : null}
