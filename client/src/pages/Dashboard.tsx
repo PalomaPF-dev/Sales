@@ -26,8 +26,8 @@ interface AbRow {
 
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
-  /** 出荷実績の全体（A基準の有無を問わない土台） */
-  histTotals?: { deals: number; qty: number };
+  /** 出荷実績の全体（A基準の有無を問わない土台）と、マスタ登録の入った件数 */
+  histTotals?: { deals: number; qty: number; covered: number };
   /** 月別のマスタ登録（A基準）。申請の入った件数と値上げ額の合計 */
   aMonths?: {
     cnt_m0: number; cnt_m1: number; cnt_m2: number; cnt_m3: number;
@@ -224,25 +224,31 @@ export default function Dashboard() {
       </div>
 
       {/*
-        出荷実績（土台）に対して、A基準の月ごとのマスタ登録件数と値上げ額を並べる。
+        出荷実績（土台）→ マスタ登録の件数（品目ベースの件数が母数）→
+        月ごとの値上げ額（月あたり）の並び。
         承認日の絞り込みを変えると、ここもその条件で数え直される。
       */}
       <div className="tiles">
         <Kpi label={`出荷実績${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}`}
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 ${num(data.histTotals?.qty).toLocaleString()}（月${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}）`} />
+        <Kpi label="マスタ登録（A基準あり）"
+             value={`${num(data.histTotals?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
+             sub={num(data.histTotals?.deals) > 0
+               ? `品目ベースの ${(Math.round((num(data.histTotals?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
+               : undefined} />
         {([
           [m0, data.aMonths?.raise_m0],
           [m1, data.aMonths?.raise_m1],
           [m2, data.aMonths?.raise_m2],
           [m3, data.aMonths?.raise_m3],
         ] as [string, number | null | undefined][]).map(([label, raise]) => {
-          const r = num(raise);
+          const r = num(raise) / months;
           return (
             <Kpi key={label}
-                 label={`マスタ登録 ${label} の値上げ額`}
+                 label={`値上げ額（月あたり） ${label}`}
                  value={`${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}`}
-                 sub={`月あたり ${r >= 0 ? '＋' : '−'}${yen(Math.abs(r) / months)}`} />
+                 sub={`期間合計 ${num(raise) >= 0 ? '＋' : '−'}${yen(Math.abs(num(raise)))}`} />
           );
         })}
       </div>

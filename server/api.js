@@ -1266,8 +1266,11 @@ api.get('/dashboard', wrap(async (req, res) => {
     .join(',');
 
   const [histTotals, aMonths, abTotals, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
-    // 出荷実績の全体（A基準の有無を問わない土台の件数と数量）
-    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty FROM deal_calc ${where}`, p),
+    // 出荷実績の全体（A基準の有無を問わない土台の件数と数量）と、
+    // そのうちマスタ登録（A基準）の入った件数（品目ベースのカバー率用）
+    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty,
+              SUM(CASE WHEN a_price_m3 IS NOT NULL THEN 1 ELSE 0 END) AS covered
+            FROM deal_calc ${where}`, p),
     db.get(`SELECT ${monthAgg} FROM deal_calc ${where}`, p),
     db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
