@@ -128,7 +128,7 @@ export interface Meta {
   /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
   /** 出荷実績（月別履歴）の取込情報 */
-  histMeta?: { period: string; filename?: string } | null;
+  histMeta?: { period: string; months?: number | null; filename?: string } | null;
 }
 
 export const ROUND_STATE_NAMES: Record<string, string> = {

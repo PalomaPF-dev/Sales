@@ -10,12 +10,14 @@ import { useUser } from '../user';
 
 interface DealsRes {
   rows: Deal[];
-  totals: { count: number; r2_done: number };
+  totals: { count: number; r2_done: number; raise_amount: number | null };
   page: number;
   size: number;
+  months: number;   // 出荷実績の対象月数（数量の月平均に使う）
 }
 
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office', 'r2State', 'aState'] as const;
+const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
+  'r2State', 'aState', 'aDateYm', 'aDateOp'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -127,13 +129,14 @@ export default function Deals() {
   };
 
   /** 並び替えできる見出し。現在の向きを矢印で示す */
-  const Th = ({ col, children, className }: { col: string; children?: React.ReactNode; className?: string }) => {
+  const Th = ({ col, children, className, title }:
+    { col: string; children?: React.ReactNode; className?: string; title?: string }) => {
     const on = get('sort') === col;
     const mark = on ? (get('dir') === 'desc' ? '▼' : '▲') : '';
     return (
       <th className={`${className ?? ''} sortable${on ? ' sorted' : ''}`}
           onClick={() => toggleSort(col)}
-          title="押すと並び替えます（昇順→降順→解除）">
+          title={title ? `${title}（押すと並び替えます）` : '押すと並び替えます（昇順→降順→解除）'}>
         {children}<span className="sort-mark">{mark}</span>
       </th>
     );
@@ -230,6 +233,18 @@ export default function Deals() {
     if (ok) setMsg({ kind: 'ok', text: '適用年月を保存しました' });
   };
 
+  // 出荷実績の対象月数。数量は期間全体の合計なので、割って月平均を出す
+  const months = data?.months || 12;
+  /** 月平均の数量（期間の合計 ÷ 月数） */
+  const monthlyQty = (d: Deal) =>
+    (d.hist_qty == null ? null : Number(d.hist_qty) / months);
+  /** 値上げ額（1か月あたり）＝ 値上げ幅 × 月平均の数量 */
+  const raiseAmount = (d: Deal) => {
+    const q = monthlyQty(d);
+    if (q == null || d.a_price_m3 == null || d.hist_avg_price == null) return null;
+    return (Number(d.a_price_m3) - Number(d.hist_avg_price)) * q;
+  };
+
   /**
    * A基準の1マス。申請単価と、その単価の承認日（マスタ登録の登録日）を重ねて出す。
    * 法人×品目にまとめているため、承認日はそのまとまりで一番新しい日になる。
@@ -279,9 +294,10 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>出荷実績の法人×品目</strong>を土台に、価格を比較します。
-        実績は期間全体の平均出荷単価と数量、A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
+        実績は期間全体の平均出荷単価と数量（合計と月平均）、A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
         B基準は実際の決定単価（営業企画・管理者が入力）です。
-        A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）です。
+        A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
+        <strong>値上げ額</strong>は値上げ幅×月平均の数量で、絞り込んだ全件の合計を上に出します。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -344,6 +360,29 @@ export default function Deals() {
             <option value="none">なし</option>
           </select>
         </label>
+        {/*
+          承認日での絞り込み。「2026-08以降だけ見る（それより前は値上げ前の単価）」
+          という使い方をする。基準は値上げ後の単価にあたる3か月後のA基準の承認日。
+        */}
+        <label className="fld" title={`${ymLabel(meta?.aggMeta?.m3, '3か月後')}のA基準の承認日で絞り込みます`}>
+          承認日
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              type="month"
+              value={get('aDateYm')}
+              onChange={(e) => setParam('aDateYm', e.target.value)}
+              style={{ flex: '1 1 auto', minWidth: 0 }}
+            />
+            <select
+              value={get('aDateOp') || 'from'}
+              onChange={(e) => setParam('aDateOp', e.target.value === 'from' ? '' : e.target.value)}
+              style={{ flex: '0 0 auto' }}
+            >
+              <option value="from">以降</option>
+              <option value="before">より前</option>
+            </select>
+          </div>
+        </label>
         <label className="fld">
           状態
           <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
@@ -358,6 +397,14 @@ export default function Deals() {
           <span className="count">
             <b>{data.totals.count.toLocaleString()}</b>件
             {' ・ '}完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
+            {data.totals.raise_amount != null && (
+              <span title="値上げ幅（A基準−実績の平均単価）× 月平均の数量 を、絞り込んだ全件で合計した金額">
+                {' ・ '}値上げ額（月）合計{' '}
+                <b className={Number(data.totals.raise_amount) < 0 ? 'shortfall' : 'surplus'}>
+                  ¥{yen(Math.round(Number(data.totals.raise_amount)))}
+                </b>
+              </span>
+            )}
           </span>
           <div className="grow" />
           <button className="btn secondary sm" onClick={() => { setBulkOpen((v) => !v); setBulk(null); }}>
@@ -435,7 +482,7 @@ export default function Deals() {
               </th>
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
               <th className="num grp sep">B基準</th>
-              <th colSpan={3} className="grp sep">値上げ交渉</th>
+              <th colSpan={4} className="grp sep">値上げ交渉</th>
               <th className="grp"></th>
             </tr>
             <tr>
@@ -447,13 +494,16 @@ export default function Deals() {
               {isDev && <Th col="office">営業所</Th>}
               <Th col="sales_person">担当者</Th>
               <Th col="hist_avg_price" className="num sep">平均単価</Th>
-              <Th col="hist_qty" className="num">数量</Th>
+              <Th col="hist_qty" className="num" title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
+                数量<br /><small>合計 / 月平均</small>
+              </Th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
               <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="b_price" className="num sep">決定単価</Th>
               <th className="num sep" title="A基準（3か月後の申請単価）と実績の平均出荷単価の差">値上げ幅<br /><small>（A基準−実績）</small></th>
+              <th className="num" title={`値上げ幅 × 月平均の数量（数量合計÷${months}か月）`}>値上げ額<br /><small>（幅×月平均数量）</small></th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
               <th></th>
@@ -497,7 +547,14 @@ export default function Deals() {
 
                   {/* 出荷実績（法人×品目）。案件の土台 */}
                   <td className="num sep">{yen(d.hist_avg_price)}</td>
-                  <td className="num">{yen(d.hist_qty)}</td>
+                  <td className="num">
+                    {yen(d.hist_qty)}
+                    {monthlyQty(d) != null && (
+                      <div className="sub" title={`1か月あたり（÷${months}か月）`}>
+                        月{Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                      </div>
+                    )}
+                  </td>
 
                   {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日 */}
                   <td className="num sep">{aCell(d.a_price_m0, d.a_date_m0)}</td>
@@ -514,8 +571,19 @@ export default function Deals() {
                     ) : yen(d.b_price)}
                   </td>
 
-                  {/* 値上げ交渉（差額・適用年月・状態）。差額 = A基準 − 出荷単価 */}
+                  {/* 値上げ交渉（差額・金額・適用年月・状態）。差額 = A基準 − 出荷単価 */}
                   <td className="num sep">{aDiff(d)}</td>
+                  <td className="num">
+                    {(() => {
+                      const amt = raiseAmount(d);
+                      if (amt == null) return '—';
+                      return (
+                        <span className={amt < 0 ? 'shortfall' : undefined}>
+                          {amt < 0 ? '−' : '＋'}{yen(Math.round(Math.abs(amt)))}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="num">
                     {isEditing ? (
                       <input type="month" className="cell" value={draft.r2_applied_ym}

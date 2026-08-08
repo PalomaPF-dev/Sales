@@ -22,6 +22,7 @@ export interface HistParsed {
   corps: [string, string][];   // [法人グループコード, 法人名]
   rows: HistRow[];
   period: string;              // 例: 2025/07〜2026/06
+  months: number;              // 対象の月数（数量の月平均を出すのに使う）
   skippedBlank: number;        // 法人名が空で取り込まなかった行
 }
 
@@ -83,7 +84,7 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
   }
   if (!rows.length) throw new Error('取り込める行がありません');
   const period = months.length ? `${months[0]}〜${months[months.length - 1]}` : '';
-  return { corps: [...corps.entries()], rows, period, skippedBlank };
+  return { corps: [...corps.entries()], rows, period, months: months.length, skippedBlank };
 }
 
 const CHUNK = 500;
@@ -101,7 +102,9 @@ export async function sendHistImport(
 ): Promise<HistResult> {
   const { batch } = await api<{ batch: string }>('/hist-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, period: parsed.period, corps: parsed.corps }),
+    body: JSON.stringify({
+      filename, period: parsed.period, months: parsed.months, corps: parsed.corps,
+    }),
   });
   let sent = 0;
   for (let i = 0; i < parsed.rows.length; i += CHUNK) {

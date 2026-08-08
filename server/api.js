@@ -1392,6 +1392,14 @@ function dealFilters(q, user) {
   if (q.aState === 'has') where.push('a_price_m3 IS NOT NULL');
   else if (q.aState === 'none') where.push('a_price_m3 IS NULL');
 
+  // 承認日での絞り込み。「2026-08以降だけ見る（それより前は値上げ前の単価）」
+  // といった使い方をする。承認日の無い行は、どちらの向きでも対象外になる。
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(String(q.aDateYm ?? ''))) {
+    const first = `${q.aDateYm}-01`;
+    where.push(q.aDateOp === 'before' ? 'a_date_m3 < ?' : 'a_date_m3 >= ?');
+    params.push(first);
+  }
+
   // 合意単価が目標に届かなかったもの。
   //
   // 対象は「実際に合意した行」だけ（r2_state が open でない）。
@@ -1430,15 +1438,40 @@ function attachStandardMatch(rows, index) {
   return rows;
 }
 
+/**
+ * 出荷実績の対象月数。「2025/07〜2026/06」なら12。
+ *
+ * 数量は期間全体の合計で持っているので、月平均を出すのに使う。
+ * 取込時に数えた月数を settings に入れてあり、無ければ期間の文字から数える。
+ */
+async function histMonths() {
+  const row = await db.get("SELECT value FROM settings WHERE key = 'hist_meta'");
+  let meta = null;
+  try { meta = row ? JSON.parse(row.value) : null; } catch { /* 壊れていたら既定値 */ }
+  const n = Number(meta?.months);
+  if (Number.isFinite(n) && n > 0) return n;
+  const m = /^(\d{4})\/(\d{2}).*?(\d{4})\/(\d{2})$/.exec(String(meta?.period ?? ''));
+  if (m) {
+    const span = (Number(m[3]) - Number(m[1])) * 12 + (Number(m[4]) - Number(m[2])) + 1;
+    if (span > 0) return span;
+  }
+  return 12;
+}
+
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
+  const months = await histMonths();
   const [totals, rows] = await Promise.all([
-    // 単価だけの管理表のため件数のみ。完了件数が分かれば運用上は足りる
+    // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も返す。
+    // 値上げ幅（A基準−実績の平均単価）× 月平均の数量（数量合計÷月数）。
     db.get(`
       SELECT COUNT(*) AS count,
-             SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done
+             SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
+             SUM(CASE WHEN a_price_m3 IS NOT NULL AND hist_avg_price IS NOT NULL
+                       THEN (a_price_m3 - hist_avg_price) * COALESCE(hist_qty, 0) / ${months}
+                  END) AS raise_amount
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
     // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
@@ -1455,7 +1488,7 @@ api.get('/deals', wrap(async (req, res) => {
   ]);
   attachStandardMatch(rows, await loadStandardIndex());
   hideCost(rows, req.user);
-  res.json({ rows, totals, page, size });
+  res.json({ rows, totals, page, size, months });
 }));
 
 /**
@@ -2280,7 +2313,10 @@ api.post('/hist-import/start', wrap(async (req, res) => {
     `INSERT INTO settings (key, value) VALUES ('hist_meta', ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [JSON.stringify({ filename: String(req.body?.filename ?? ''),
-      period: String(req.body?.period ?? ''), batch, updatedAt: stamp })]
+      period: String(req.body?.period ?? ''),
+      // 数量は期間全体の合計。月平均を出すため、対象の月数も控えておく
+      months: Number(req.body?.months) > 0 ? Number(req.body.months) : null,
+      batch, updatedAt: stamp })]
   );
   res.json({ batch, corps: corps.length });
 }));
