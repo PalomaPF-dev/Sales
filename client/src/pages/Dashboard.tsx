@@ -232,17 +232,17 @@ export default function Dashboard() {
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 ${num(data.histTotals?.qty).toLocaleString()}（月${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}）`} />
         {([
-          [m0, data.aMonths?.cnt_m0, data.aMonths?.raise_m0],
-          [m1, data.aMonths?.cnt_m1, data.aMonths?.raise_m1],
-          [m2, data.aMonths?.cnt_m2, data.aMonths?.raise_m2],
-          [m3, data.aMonths?.cnt_m3, data.aMonths?.raise_m3],
-        ] as [string, number | undefined, number | null | undefined][]).map(([label, cnt, raise]) => {
+          [m0, data.aMonths?.raise_m0],
+          [m1, data.aMonths?.raise_m1],
+          [m2, data.aMonths?.raise_m2],
+          [m3, data.aMonths?.raise_m3],
+        ] as [string, number | null | undefined][]).map(([label, raise]) => {
           const r = num(raise);
           return (
             <Kpi key={label}
-                 label={`マスタ登録 ${label}`}
-                 value={`${num(cnt).toLocaleString()}件`}
-                 sub={`値上げ ${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}（月 ${r >= 0 ? '＋' : '−'}${yen(Math.abs(r) / months)}）`} />
+                 label={`マスタ登録 ${label} の値上げ額`}
+                 value={`${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}`}
+                 sub={`月あたり ${r >= 0 ? '＋' : '−'}${yen(Math.abs(r) / months)}`} />
           );
         })}
       </div>
