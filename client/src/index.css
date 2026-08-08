@@ -23,12 +23,12 @@
   --accent-soft: #eff6ff;
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
   /*
-    Noto Sans JP を本文フォントにする（読み込みは client/index.html）。
-    以降は、Webフォントが読み込めなかったときの受け皿。
-    Windows は Yu Gothic UI、Mac は Hiragino Sans が当たる。
+    フォントはOS標準（他のアプリと同じ見た目にする）。
+    Windows は 游ゴシック（Yu Gothic UI）→ メイリオ、Mac は Hiragino Sans が当たる。
+    Webフォントは使わない（社内ネットワークでの読み込み待ちを無くすため）。
   */
-  font-family: 'Noto Sans JP', system-ui, -apple-system, 'Segoe UI',
-    'Yu Gothic UI', 'Hiragino Sans', 'Meiryo', sans-serif;
+  font-family: system-ui, -apple-system, 'Segoe UI',
+    'Yu Gothic UI', 'Meiryo UI', 'Meiryo', 'Hiragino Sans', sans-serif;
 }
 
 * { box-sizing: border-box; }
