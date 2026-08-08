@@ -26,14 +26,16 @@ interface AbRow {
 
 interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
-  /** 出荷実績の全体（A基準の有無を問わない土台）と、マスタ登録の入った件数 */
-  histTotals?: { deals: number; qty: number; covered: number };
-  /** 月別のマスタ登録（A基準）。申請の入った件数と値上げ額の合計 */
+  /** 出荷実績の全体（マスタ登録の絞り込みを受けない、純粋な品目件数と数量） */
+  histTotals?: { deals: number; qty: number };
+  /** 月別のマスタ登録（A基準）。申請の入った件数と値上げ額の合計（絞り込みが効く） */
   aMonths?: {
+    covered: number;
     cnt_m0: number; cnt_m1: number; cnt_m2: number; cnt_m3: number;
     raise_m0: number | null; raise_m1: number | null; raise_m2: number | null; raise_m3: number | null;
   };
   abTotals?: AbRow;
+  abByEquip?: AbRow[];
   abByBranch?: AbRow[];
   abByOffice?: AbRow[];
   abByCorp?: AbRow[];
@@ -156,10 +158,10 @@ export default function Dashboard() {
     <div>
       <h1 className="page-title">ダッシュボード</h1>
       <p className="page-sub">
-        出荷実績（{meta?.histMeta?.period ?? '期間全体'}）を土台に、A基準の月ごとの
-        <strong>マスタ登録件数</strong>と<strong>値上げ額</strong>（(A基準−実績の平均出荷単価)×数量）を出します。
-        <strong>承認日</strong>で絞ると、その条件でのマスタ登録件数・値上げ額に変わります
-        （例: 2026-08以降＝それより前に登録された古い単価を除く）。
+        出荷実績（{meta?.histMeta?.period ?? '期間全体'}）の<strong>純粋な品目件数</strong>を母数に、
+        マスタ登録（A基準）の件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績の平均出荷単価)×数量）を出します。
+        <strong>承認日</strong>で絞ると、マスタ登録件数と値上げ額がその条件に変わります
+        （出荷実績の母数は変わりません）。
         下の表の<strong>目標額</strong>は実績の平均出荷単価×数量、<strong>実績</strong>はA基準前提で
         数量を固定した月別合計、その差が値上げ額です。金額は期間全体の合計、月あたりは÷{months}か月。
         表示範囲: <strong>{data.scope.label}</strong>
@@ -233,9 +235,9 @@ export default function Dashboard() {
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 ${num(data.histTotals?.qty).toLocaleString()}（月${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}）`} />
         <Kpi label="マスタ登録（A基準あり）"
-             value={`${num(data.histTotals?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
+             value={`${num(data.aMonths?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={num(data.histTotals?.deals) > 0
-               ? `品目ベースの ${(Math.round((num(data.histTotals?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
+               ? `品目ベースの ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
         {([
           [m0, data.aMonths?.raise_m0],
@@ -252,6 +254,10 @@ export default function Dashboard() {
           );
         })}
       </div>
+
+      <Card title="器具区分別の値上げ額">
+        <AbTable head="器具区分" rows={data.abByEquip ?? []} />
+      </Card>
 
       <Card title="支店別の値上げ額">
         <AbTable head="支店" rows={data.abByBranch ?? []} />

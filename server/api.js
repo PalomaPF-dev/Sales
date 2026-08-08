@@ -1265,14 +1265,24 @@ api.get('/dashboard', wrap(async (req, res) => {
          THEN (${f(`a_price_m${n}`)} - ${f('hist_avg_price')}) * COALESCE(hist_qty, 0) END) AS raise_m${n}`)
     .join(',');
 
-  const [histTotals, aMonths, abTotals, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
-    // 出荷実績の全体（A基準の有無を問わない土台の件数と数量）と、
-    // そのうちマスタ登録（A基準）の入った件数（品目ベースのカバー率用）
-    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty,
+  // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
+  // （承認日・A基準の有無）は掛けない。マスタ登録件数の母数もこれを使う。
+  const pureQuery = { ...req.query };
+  delete pureQuery.aDateYm;
+  delete pureQuery.aDateOp;
+  delete pureQuery.aState;
+  const pure = dealFilters(pureQuery, req.user);
+
+  const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
+    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty
+            FROM deal_calc ${pure.where}`, pure.params),
+    // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
+    db.get(`SELECT ${monthAgg},
               SUM(CASE WHEN a_price_m3 IS NOT NULL THEN 1 ELSE 0 END) AS covered
             FROM deal_calc ${where}`, p),
-    db.get(`SELECT ${monthAgg} FROM deal_calc ${where}`, p),
     db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
+    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
+             GROUP BY equip_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
              GROUP BY branch`, p),
     db.all(`SELECT office AS name, branch, ${ab} FROM deal_calc ${andWhere(abCond)}
@@ -1290,6 +1300,7 @@ api.get('/dashboard', wrap(async (req, res) => {
     histTotals,
     aMonths,
     abTotals,
+    abByEquip,
     abByBranch,
     abByOffice,
     abByCorp,
