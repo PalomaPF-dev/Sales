@@ -1,6 +1,10 @@
 import { useRef, useState } from 'react';
 import { Card } from './ui';
-import { parseAggFile, sendAggImport, type AggParsed, type AggResult } from '../aggImportClient';
+import type { AggParsed, AggResult } from '../aggImportClient';
+
+// Excelの読み書きの部品は大きい（数百KB）。最初の画面表示に含めると
+// ログインまで遅くなるため、ファイルを選んだ時にだけ読み込む。
+const aggClient = () => import('../aggImportClient');
 
 /**
  * マスタ登録（値上げ結果の集約表）の取込カード。管理者・開発者だけに出す。
@@ -28,7 +32,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
     try {
       // 描画を止めないよう、読み取り前に一呼吸置く
       await new Promise((r) => setTimeout(r, 50));
-      const p = await parseAggFile(file);
+      const p = await (await aggClient()).parseAggFile(file);
       setParsed({ p, name: file.name });
       setProgress('');
     } catch (e) {
@@ -45,7 +49,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
     setErr('');
     setResult(null);
     try {
-      const r = await sendAggImport(parsed.p, parsed.name, {
+      const r = await (await aggClient()).sendAggImport(parsed.p, parsed.name, {
         onProgress: (done, total) =>
           setProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行を取込中...`),
       });

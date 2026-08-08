@@ -1249,13 +1249,17 @@ api.get('/dashboard', wrap(async (req, res) => {
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
-  // JOINにすると列名がぶつかるため、値の引き当ては小さな副問い合わせで行う。
-  const planRate = `COALESCE(
-    (SELECT p.b_rate FROM corp_plans p
-      WHERE p.corp_code = deal_calc.corp_code AND p.equip_name = COALESCE(deal_calc.equip_name, '')),
-    (SELECT p.b_rate FROM corp_plans p
-      WHERE p.corp_code = deal_calc.corp_code AND p.equip_name = ''),
-    100)`;
+  //
+  // 案件1件ごとに副問い合わせを回すと10万件で数百msかかる。設定は数件〜数百件と
+  // 小さいので、列名を付け替えた表として1回だけ結合する（列名のぶつかりも避けられる）。
+  const planJoin = `
+    LEFT JOIN (SELECT corp_code AS pe_corp, equip_name AS pe_equip, b_rate AS pe_rate
+                 FROM corp_plans WHERE equip_name <> '') pe
+           ON pe.pe_corp = deal_calc.corp_code AND pe.pe_equip = COALESCE(deal_calc.equip_name, '')
+    LEFT JOIN (SELECT corp_code AS pc_corp, b_rate AS pc_rate
+                 FROM corp_plans WHERE equip_name = '') pc
+           ON pc.pc_corp = deal_calc.corp_code`;
+  const planRate = 'COALESCE(pe.pe_rate, pc.pc_rate, 100)';
   const bsimUnit = `CASE WHEN b_price IS NOT NULL THEN ${f('b_price')}
                          WHEN a_price_m3 > 0 THEN ${f('a_price_m3')} * ${planRate} / 100
                          ELSE ${f('hist_avg_price')} END`;
@@ -1300,16 +1304,16 @@ api.get('/dashboard', wrap(async (req, res) => {
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
     db.get(`SELECT ${monthAgg},
               SUM(CASE WHEN a_price_m3 IS NOT NULL THEN 1 ELSE 0 END) AS covered
-            FROM deal_calc ${where}`, p),
-    db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
-    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
+            FROM deal_calc ${planJoin} ${where}`, p),
+    db.get(`SELECT ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}`, p),
+    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY equip_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC`, p),
-    db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
+    db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch`, p),
-    db.all(`SELECT office AS name, branch, ${ab} FROM deal_calc ${andWhere(abCond)}
+    db.all(`SELECT office AS name, branch, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch, office`, p),
-    db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM(hist_avg_price * hist_qty) DESC LIMIT 30`, p),
+    db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
+             GROUP BY corp_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC LIMIT 30`, p),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
   // 支店・営業所は都道府県順（選択肢と同じ並び）

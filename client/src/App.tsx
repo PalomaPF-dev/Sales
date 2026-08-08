@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { NavLink, Route, Routes, useNavigate } from 'react-router-dom';
 import { api, fetchMe, logout } from './api';
 import type { User } from './types';
@@ -8,14 +8,17 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import Deals from './pages/Deals';
-import DealDetail from './pages/DealDetail';
-import CorpDetail from './pages/CorpDetail';
-import Settings from './pages/Settings';
-import Users from './pages/Users';
-import ImportPage from './pages/ImportPage';
-import Simulation from './pages/Simulation';
 import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings, IconUsers } from './components/icons';
+
+// 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
+// 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
+const Deals = lazy(() => import('./pages/Deals'));
+const DealDetail = lazy(() => import('./pages/DealDetail'));
+const CorpDetail = lazy(() => import('./pages/CorpDetail'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Users = lazy(() => import('./pages/Users'));
+const ImportPage = lazy(() => import('./pages/ImportPage'));
+const Simulation = lazy(() => import('./pages/Simulation'));
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -153,18 +156,20 @@ export default function App() {
           </div>
         </aside>
         <main className="main">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/deals" element={<Deals />} />
-            <Route path="/deals/:id" element={<DealDetail />} />
-            <Route path="/corps/:code" element={<CorpDetail />} />
-            <Route path="/import" element={<ImportPage />} />
-            <Route path="/simulation" element={<Simulation />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/users" element={<Users />} />
-            <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />
-          </Routes>
+          <Suspense fallback={<p style={{ color: 'var(--muted)' }}>読み込み中...</p>}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/deals" element={<Deals />} />
+              <Route path="/deals/:id" element={<DealDetail />} />
+              <Route path="/corps/:code" element={<CorpDetail />} />
+              <Route path="/import" element={<ImportPage />} />
+              <Route path="/simulation" element={<Simulation />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/users" element={<Users />} />
+              <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
     </UserContext.Provider>

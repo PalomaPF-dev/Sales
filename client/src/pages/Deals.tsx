@@ -5,7 +5,7 @@ import type { Deal, Meta, RoundState } from '../types';
 import { RoundStateBadge } from '../components/ui';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
-import { parseBulkFile, sendBulkUpdate, type BulkResult } from '../bulkUpdateClient';
+import type { BulkResult } from '../bulkUpdateClient';
 import { useUser } from '../user';
 
 interface DealsRes {
@@ -70,9 +70,10 @@ export default function Deals() {
     setMsg(null);
     setBulkProgress('ファイルを読み込んでいます...');
     try {
-      const parsed = await parseBulkFile(file);
+      const bulkClient = await import('../bulkUpdateClient');
+      const parsed = await bulkClient.parseBulkFile(file);
       setBulkProgress(`${parsed.rows.length.toLocaleString()}行を${dryRun ? '確認' : '取込'}中...`);
-      const res = await sendBulkUpdate(parsed.rows, {
+      const res = await bulkClient.sendBulkUpdate(parsed.rows, {
         dryRun,
         onProgress: (done, total) =>
           setBulkProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行`),

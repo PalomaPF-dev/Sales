@@ -1,6 +1,10 @@
 import { useRef, useState } from 'react';
 import { Card } from './ui';
-import { parseHistFile, sendHistImport, type HistParsed, type HistResult } from '../histImportClient';
+import type { HistParsed, HistResult } from '../histImportClient';
+
+// Excelの読み書きの部品は大きい（数百KB）。最初の画面表示に含めると
+// ログインまで遅くなるため、ファイルを選んだ時にだけ読み込む。
+const histClient = () => import('../histImportClient');
 
 /**
  * 出荷実績（月別履歴）の取込カード。管理者・開発者だけに出す。
@@ -27,7 +31,7 @@ export default function HistImportCard() {
     setProgress('ファイルを読み取っています...');
     try {
       await new Promise((r) => setTimeout(r, 50));
-      const p = await parseHistFile(file);
+      const p = await (await histClient()).parseHistFile(file);
       setParsed({ p, name: file.name });
       setProgress('');
     } catch (e) {
@@ -43,7 +47,7 @@ export default function HistImportCard() {
     setBusy(true);
     setErr('');
     try {
-      const r = await sendHistImport(parsed.p, parsed.name, (done, total) =>
+      const r = await (await histClient()).sendHistImport(parsed.p, parsed.name, (done, total) =>
         setProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行を反映中...`));
       setResult(r);
       setProgress('');
