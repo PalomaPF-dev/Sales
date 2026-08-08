@@ -92,13 +92,21 @@ export default function Deals() {
   const get = (k: string) => params.get(k) || '';
   const page = Number(params.get('page') || 1);
 
-  const setParam = (key: string, value: string) => {
+  /**
+   * 絞り込みを書き換える。複数まとめて渡せるようにしてある。
+   * 1つずつ呼ぶと、2回目が1回目より前の状態から作り直してしまい、
+   * 先の変更が消える（支店を選ぶと同時に営業所を空にする場合など）。
+   */
+  const setMany = (updates: Record<string, string>) => {
     const next = new URLSearchParams(params);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    if (key !== 'page') next.delete('page');
+    for (const [key, value] of Object.entries(updates)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+      if (key !== 'page') next.delete('page');
+    }
     setParams(next, { replace: true });
   };
+  const setParam = (key: string, value: string) => setMany({ [key]: value });
 
   useEffect(() => {
     api<Meta>('/meta').then((m) => {
@@ -337,7 +345,7 @@ export default function Deals() {
         </label>
         <label className="fld">
           支店
-          <select value={get('branch')} onChange={(e) => { setParam('branch', e.target.value); setParam('office', ''); }}>
+          <select value={get('branch')} onChange={(e) => setMany({ branch: e.target.value, office: '' })}>
             <option value="">全社</option>
             {meta?.branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
           </select>

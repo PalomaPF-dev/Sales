@@ -108,6 +108,98 @@ function round(v, digits = 0) {
   return Math.round(n * p) / p;
 }
 
+/**
+ * ダッシュボードの表をExcelにする。画面と同じ数字・同じ並びで、
+ * 「まとめ」「器具区分別」「支店別」「法人別」をシートに分ける。
+ *
+ * 画面は月あたりと期間合計を1つのマスに重ねているが、Excelでは
+ * そのまま計算に使えるよう、列を分けて数値で入れる。
+ */
+export function buildDashboardWorkbook(data, opts = {}) {
+  const months = Number(data.months) > 0 ? Number(data.months) : 12;
+  const n = (v) => Number(v ?? 0);
+  const m = (k, fallback) => ymLabel(data.aggMeta?.[k], fallback);
+  const m1 = m('m1', '翌月');
+  const m2 = m('m2', '翌々月');
+  const m3 = m('m3', '3か月後');
+  const t = data.abTotals ?? {};
+
+  const wb = XLSX.utils.book_new();
+  const addSheet = (name, aoa, widths) => {
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = widths.map((wch) => ({ wch }));
+    ws['!freeze'] = { xSplit: 1, ySplit: 1 };
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  };
+
+  // ── 条件（どの絞り込みで出したかを残す）
+  const cond = [['項目', '内容']];
+  for (const [label, value] of opts.filters ?? []) cond.push([label, value]);
+  if ((opts.filters ?? []).length === 0) cond.push(['絞り込み', 'なし（全件）']);
+  cond.push([]);
+  cond.push(['表示範囲', data.scope?.label ?? '']);
+  cond.push(['出荷実績の件数', n(data.histTotals?.deals)]);
+  cond.push(['出荷実績の数量合計', round(data.histTotals?.qty)]);
+  cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
+  cond.push(['対象の月数', months]);
+  addSheet('条件', cond, [28, 40]);
+
+  // ── まとめ（月ごとに現状額・A基準額・値上げ額）
+  const base = n(t.base_amt);
+  const summary = [[
+    '月', '現状額（月あたり）', '現状額（期間合計）',
+    'A基準額（月あたり）', 'A基準額（期間合計）',
+    '値上げ額（月あたり）', '値上げ額（期間合計）', '値上げ率',
+  ]];
+  for (const [label, amt] of [[m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]]) {
+    const gain = amt - base;
+    summary.push([
+      label, round(base / months), round(base),
+      round(amt / months), round(amt),
+      round(gain / months), round(gain),
+      base > 0 ? round((gain / base) * 100, 1) / 100 : '',
+    ]);
+  }
+  addSheet('まとめ', summary, [12, 18, 18, 18, 18, 18, 18, 10]);
+
+  // ── 器具区分別・支店別・法人別（画面と同じ列）
+  const head = (first) => [
+    first, '件数', '数量合計', '数量（月平均）',
+    '現状額（月あたり）', '現状額（期間合計）',
+    `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`,
+    `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`,
+    `${m3} A基準額（月あたり）`, `${m3} 値上げ額（月あたり）`,
+    `${m3} A基準額（期間合計）`, `${m3} 値上げ額（期間合計）`,
+    '値上げ率',
+    '想定B基準（月あたり）', '想定B基準の値上げ額（月あたり）', 'A基準との差（月あたり）',
+  ];
+  const line = (r) => {
+    const b = n(r.base_amt);
+    const g3 = n(r.a3_amt) - b;
+    return [
+      r.name || '—', n(r.deals), round(r.qty), round(n(r.qty) / months, 1),
+      round(b / months), round(b),
+      round(n(r.a1_amt) / months), round((n(r.a1_amt) - b) / months),
+      round(n(r.a2_amt) / months), round((n(r.a2_amt) - b) / months),
+      round(n(r.a3_amt) / months), round(g3 / months),
+      round(n(r.a3_amt)), round(g3),
+      b > 0 ? round((g3 / b) * 100, 1) / 100 : '',
+      round(n(r.bsim_amt) / months), round((n(r.bsim_amt) - b) / months),
+      round((n(r.bsim_amt) - n(r.a3_amt)) / months),
+    ];
+  };
+  const widths = [22, 8, 12, 12, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 10, 18, 20, 18];
+  for (const [sheet, label, rows] of [
+    ['器具区分別', '器具区分', data.abByEquip ?? []],
+    ['支店別', '支店', data.abByBranch ?? []],
+    ['法人別', '法人', data.abByCorp ?? []],
+  ]) {
+    addSheet(sheet, [head(label), ...rows.map(line), line({ ...t, name: '合計' })], widths);
+  }
+
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
+}
+
 export function buildWorkbook(rows, priceTypes = [], opts = {}) {
   const months = Number(opts.months) > 0 ? Number(opts.months) : 12;
   const columns = buildColumns({ months, withCost: Boolean(opts.withCost), aggMeta: opts.aggMeta });

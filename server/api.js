@@ -13,7 +13,7 @@ import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
-import { buildWorkbook } from './export.js';
+import { buildWorkbook, buildDashboardWorkbook } from './export.js';
 import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
 import {
   deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
@@ -1225,10 +1225,13 @@ function scopeInfo(user) {
  *
  * 単価だけの管理表なので金額は扱わず、件数と割合で進捗を示す。
  */
-api.get('/dashboard', wrap(async (req, res) => {
-  if (!requireLogin(req, res)) return;
+/**
+ * ダッシュボードの集計をまとめて作る。画面（/dashboard）と
+ * Excel出力（/dashboard/export）で同じ数字を使うため、ここに集約している。
+ */
+async function dashboardData(query, user) {
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
-  const { where, params: p } = dealFilters(req.query, req.user);
+  const { where, params: p } = dealFilters(query, user);
   const andWhere = (cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
 
   // 支店別・営業所別・法人別の値上げ額。
@@ -1292,11 +1295,11 @@ api.get('/dashboard', wrap(async (req, res) => {
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
   // （承認日・A基準の有無）は掛けない。マスタ登録件数の母数もこれを使う。
-  const pureQuery = { ...req.query };
+  const pureQuery = { ...query };
   delete pureQuery.aDateYm;
   delete pureQuery.aDateOp;
   delete pureQuery.aState;
-  const pure = dealFilters(pureQuery, req.user);
+  const pure = dealFilters(pureQuery, user);
 
   const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByCorp, aggMetaRow] = await Promise.all([
     db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty
@@ -1317,8 +1320,10 @@ api.get('/dashboard', wrap(async (req, res) => {
   // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
 
-  res.json({
-    scope: scopeInfo(req.user),
+  let aggMeta = null;
+  try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら無し */ }
+  return {
+    scope: scopeInfo(user),
     histTotals,
     aMonths,
     abTotals,
@@ -1326,9 +1331,41 @@ api.get('/dashboard', wrap(async (req, res) => {
     abByBranch,
     abByCorp,
     months,
-    aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
-  });
+    aggMeta,
+  };
+}
+
+api.get('/dashboard', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  res.json(await dashboardData(req.query, req.user));
 }));
+
+/** ダッシュボードの表をそのままExcelにする。絞り込みは画面と同じものが効く */
+api.get('/dashboard/export', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const data = await dashboardData(req.query, req.user);
+  const buffer = buildDashboardWorkbook(data, { filters: dashboardFilterLabels(req.query) });
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.set('Content-Disposition',
+    contentDisposition(`値上げダッシュボード_${stamp}.xlsx`, `dashboard_${stamp}.xlsx`));
+  res.send(buffer);
+}));
+
+/** 出力したファイルに「どの条件で出したか」を残すための一覧 */
+function dashboardFilterLabels(q) {
+  const items = [];
+  for (const [key, label] of [
+    ['corp', '法人'], ['branch', '支店'], ['office', '営業所'],
+    ['equip', '器具区分'], ['person', '担当者'],
+  ]) {
+    if (q[key]) items.push([label, String(q[key])]);
+  }
+  if (q.aDateYm) {
+    items.push(['承認日', `${q.aDateYm} ${q.aDateOp === 'before' ? 'より前' : '以降'}`]);
+  }
+  return items;
+}
 
 /**
  * 想定B基準の割合を案件に当てるためのJOIN。

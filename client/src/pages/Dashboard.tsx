@@ -70,11 +70,19 @@ export default function Dashboard() {
   const [msg, setMsg] = useState('');
 
   const get = (k: string) => params.get(k) || '';
-  const setParam = (key: string, value: string) => {
+  /**
+   * 絞り込みを書き換える。複数まとめて渡せるようにしてある。
+   * 1つずつ呼ぶと、2回目が1回目より前の状態から作り直してしまい、
+   * 先の変更が消える（支店を選ぶと同時に営業所を空にする場合など）。
+   */
+  const setMany = (updates: Record<string, string>) => {
     const next = new URLSearchParams(params);
-    if (value) next.set(key, value); else next.delete(key);
+    for (const [key, value] of Object.entries(updates)) {
+      if (value) next.set(key, value); else next.delete(key);
+    }
     setParams(next, { replace: true });
   };
+  const setParam = (key: string, value: string) => setMany({ [key]: value });
 
   // 承認日の初期値を入れ終えるまで集計を呼ばない（無駄な1回を避ける）
   const [ready, setReady] = useState(false);
@@ -191,7 +199,21 @@ export default function Dashboard() {
 
   return (
     <div>
-      <h1 className="page-title">ダッシュボード</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h1 className="page-title" style={{ marginBottom: 0 }}>ダッシュボード</h1>
+        {/* いま見えている条件のまま、下の表をExcelにする */}
+        <button
+          className="btn"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => {
+            const qs = new URLSearchParams();
+            for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
+            window.location.href = `/api/dashboard/export?${qs}`;
+          }}
+        >
+          Excel出力
+        </button>
+      </div>
       <p className="page-sub">
         出荷実績（{meta?.histMeta?.period ?? '期間全体'}）の<strong>純粋な品目件数</strong>を母数に、
         マスタ登録（A基準）の件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績の平均出荷単価)×数量）を出します。
@@ -213,7 +235,7 @@ export default function Dashboard() {
         </label>
         <label className="fld">
           支店
-          <select value={get('branch')} onChange={(e) => { setParam('branch', e.target.value); setParam('office', ''); }}>
+          <select value={get('branch')} onChange={(e) => setMany({ branch: e.target.value, office: '' })}>
             <option value="">全社</option>
             {meta?.branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
           </select>
