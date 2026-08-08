@@ -1,62 +1,19 @@
 import XLSX from 'xlsx';
 
 /**
- * 管理表と同じ列名でExcelを組み立てる。
- * 取込側（server/fields.js）の項目名と対になっているため、
- * 書き出したファイルをそのまま取り込み直せる。
- * 単価だけの管理表のため、台数と金額の列は持たない。
+ * 案件一覧の内容をそのままExcelにする。
+ *
+ * 列は画面と同じ並び（基本情報 → 出荷実績 → A基準 → B基準 → 値上げ幅 → 交渉）。
+ * 絞り込みは呼び出し側（/deals/export）で効かせているので、
+ * ここには絞り込み済みの行だけが渡ってくる。
+ *
+ * 書き出したファイルに決定単価などを書き込んで戻せるよう、先頭に案件IDを置く
+ * （同じ法人・同じ器種の行が複数あるとき、これが無いとどの行か決められない）。
  */
-const COLUMNS = [
-  // 書き出したファイルに合意単価などを書き込んで戻せるよう、行を特定できるIDを持たせる。
-  // これが無いと、同じ得意先・同じ器種の行が複数あるときにどの行か決められない。
-  ['案件ID', 'id'],
-  ['売上年月', 'sales_ym'],
-  ['法人コード', 'corp_code'],
-  ['法人名', 'corp_name'],
-  ['得意先コード', 'customer_code'],
-  ['得意先名', 'customer_name'],
-  ['納入先コード', 'delivery_code'],
-  ['納入先名', 'delivery_name'],
-  ['扱い先コード', 'handler_code'],
-  ['扱い先名', 'handler_name'],
-  ['業種名', 'industry'],
-  ['器具区分', 'equip_code'],
-  ['器具区分名', 'equip_name'],
-  ['カテゴリーコード', 'category_code'],
-  ['カテゴリー名', 'category_name'],
-  ['器種コード', 'model_code'],
-  ['ガスコード', 'gas_code'],
-  ['器種名', 'model_name'],
-  ['ガス種', 'gas_type'],
-  ['定価', 'list_price'],
-  ['掛け率', 'rate'],
-  ['出荷単価', 'base_price'],              // ❶
-  ['最終単価', 'final_price'],
-  ['売上伝票ＮＯ', 'voucher_no'],
-  ['見積伝票番号', 'quote_no'],
-  ['受注日', 'order_date'],
-  ['売上日', 'sales_date'],
-  ['売上担当者支店名', 'branch'],
-  ['売上担当者営業所名', 'office'],
-  ['売上担当者名', 'sales_person'],
-  ['得意先担当者名', 'customer_person'],
-  ['新定価', 'new_list_price'],
-  ['目標値上げ単価', 'r2_target_price'],   // ❷
-  ['１回目提示日', 'offer1_date'],
-  ['1回目提示率', 'offer1_rate'],
-  ['1回目提示単価', 'offer1_price'],
-  ['商談結果（記号入力）', 'r2_result_symbol'],
-  ['最終確定日', 'final_confirm_date'],
-  ['最終確定値上日', 'final_raise_date'],
-  ['稟議NO', 'r2_ringi_no'],
-  ['最終確定掛率', 'final_rate'],
-  ['合意単価（最終確定単価）', 'r2_agreed_price'], // ❸
-  ['値上がり単価', 'r2_raise_unit'],       // ❹
-  ['適用年月', 'r2_applied_ym'],
-  ['完了', 'r2_done_label'],
-  ['交渉状況（法人）', 'corp_status_label'],
-  ['単価種別', 'price_type_label'],
-];
+
+/** 「2026-09」→「9月」。取込前は仮の名前で出す */
+const ymLabel = (ym, fallback) =>
+  (ym && /^\d{4}-\d{2}$/.test(ym) ? ym : fallback);
 
 const CORP_STATUS_LABELS = {
   not_started: '未着手',
@@ -65,23 +22,106 @@ const CORP_STATUS_LABELS = {
   declined: '値上げ不可',
 };
 
-export function buildWorkbook(rows, priceTypes = []) {
-  const ptName = new Map(priceTypes.map((p) => [p.code, `${p.code}. ${p.name}`]));
+const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
 
-  const header = COLUMNS.map(([label]) => label);
-  const body = rows.map((r) =>
-    COLUMNS.map(([, key]) => {
-      if (key === 'r2_done_label') return Number(r.r2_done) ? '〇' : '';
-      if (key === 'corp_status_label') return CORP_STATUS_LABELS[r.corp_status] ?? '';
-      if (key === 'price_type_label') return ptName.get(r.price_type_code) ?? '';
-      const v = r[key];
-      return v === null || v === undefined ? '' : v;
-    })
-  );
+/**
+ * 列の定義を組み立てる。
+ * A基準の見出しは取り込んだ月（2026-09 など）にする。
+ * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
+ */
+function buildColumns({ months, withCost, aggMeta }) {
+  const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
+  const m0 = m('m0', '当月');
+  const m1 = m('m1', '翌月');
+  const m2 = m('m2', '翌々月');
+  const m3 = m('m3', '3か月後');
+
+  /** 値上げ幅 = その月のA基準 − 実績の平均出荷単価。単価0は未申請なので空にする */
+  const diff = (key) => (r) => {
+    const a = Number(r[key]);
+    if (!(a > 0) || r.hist_avg_price == null) return '';
+    return round(a - Number(r.hist_avg_price));
+  };
+
+  const cols = [
+    ['案件ID', (r) => r.id],
+    ['法人コード', (r) => r.corp_code],
+    ['法人名', (r) => r.corp_name],
+    ['得意先名', (r) => r.customer_name],
+    ['納入先名', (r) => r.delivery_name],
+    ['器種コード', (r) => r.model_code],
+    ['器種名', (r) => r.model_name],
+    ['器具区分', (r) => r.equip_name],
+    ['ガス種', (r) => r.gas_type],
+    ['支店', (r) => r.branch],
+    ['営業所', (r) => r.office],
+    ['担当者', (r) => r.sales_person],
+
+    // 出荷実績（案件の土台）
+    ['平均出荷単価', (r) => round(r.hist_avg_price)],
+    ['数量合計', (r) => round(r.hist_qty)],
+    ['数量（月平均）', (r) => (r.hist_qty == null ? '' : round(Number(r.hist_qty) / months, 2))],
+
+    // A基準（マスタ登録の申請単価）と、その承認日・稟議No
+    [`A基準 ${m0}`, (r) => round(r.a_price_m0)],
+    [`承認日 ${m0}`, (r) => r.a_date_m0],
+    [`稟議No ${m0}`, (r) => r.a_ringi_m0],
+    [`A基準 ${m1}`, (r) => round(r.a_price_m1)],
+    [`承認日 ${m1}`, (r) => r.a_date_m1],
+    [`稟議No ${m1}`, (r) => r.a_ringi_m1],
+    [`A基準 ${m2}`, (r) => round(r.a_price_m2)],
+    [`承認日 ${m2}`, (r) => r.a_date_m2],
+    [`稟議No ${m2}`, (r) => r.a_ringi_m2],
+    [`A基準 ${m3}`, (r) => round(r.a_price_m3)],
+    [`承認日 ${m3}`, (r) => r.a_date_m3],
+    [`稟議No ${m3}`, (r) => r.a_ringi_m3],
+
+    // B基準（実際の決定単価。アプリで入力する）
+    ['決定単価（B基準）', (r) => round(r.b_price)],
+
+    // 値上げ幅（A基準 − 実績）と、月あたりの値上げ額
+    [`値上げ幅 ${m1}`, diff('a_price_m1')],
+    [`値上げ幅 ${m2}`, diff('a_price_m2')],
+    [`値上げ幅 ${m3}`, diff('a_price_m3')],
+    [`値上げ額（月あたり）${m3}`, (r) => {
+      const a = Number(r.a_price_m3);
+      if (!(a > 0) || r.hist_avg_price == null || r.hist_qty == null) return '';
+      return round((a - Number(r.hist_avg_price)) * (Number(r.hist_qty) / months));
+    }],
+
+    // 交渉
+    ['適用年月', (r) => r.r2_applied_ym],
+    ['状態', (r) => STATE_LABELS[r.r2_state] ?? ''],
+    ['交渉状況（法人）', (r) => CORP_STATUS_LABELS[r.corp_status] ?? ''],
+  ];
+
+  if (withCost) cols.push(['実績原価（管理者のみ）', (r) => round(r.cost_price)]);
+  return cols;
+}
+
+/** 小数の端数で列がガタつかないように丸める。値が無ければ空欄 */
+function round(v, digits = 0) {
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  const p = 10 ** digits;
+  return Math.round(n * p) / p;
+}
+
+export function buildWorkbook(rows, priceTypes = [], opts = {}) {
+  const months = Number(opts.months) > 0 ? Number(opts.months) : 12;
+  const columns = buildColumns({ months, withCost: Boolean(opts.withCost), aggMeta: opts.aggMeta });
+
+  const header = columns.map(([label]) => label);
+  const body = rows.map((r) => columns.map(([, get]) => {
+    const v = get(r);
+    return v === null || v === undefined ? '' : v;
+  }));
 
   const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-  ws['!cols'] = COLUMNS.map(([label]) => ({ wch: Math.max(10, Math.min(24, label.length * 2)) }));
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  ws['!cols'] = columns.map(([label]) => ({ wch: Math.max(10, Math.min(24, label.length * 2)) }));
+  // 見出しと、法人名までの左側を固定して横スクロールしても行が分かるようにする
+  ws['!freeze'] = { xSplit: 3, ySplit: 1 };
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '値上げ管理表');

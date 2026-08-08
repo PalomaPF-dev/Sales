@@ -1298,7 +1298,7 @@ api.get('/dashboard', wrap(async (req, res) => {
   delete pureQuery.aState;
   const pure = dealFilters(pureQuery, req.user);
 
-  const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
+  const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByCorp, aggMetaRow] = await Promise.all([
     db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
@@ -1310,15 +1310,12 @@ api.get('/dashboard', wrap(async (req, res) => {
              GROUP BY equip_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch`, p),
-    db.all(`SELECT office AS name, branch, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
-             GROUP BY branch, office`, p),
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY corp_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC LIMIT 30`, p),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
-  // 支店・営業所は都道府県順（選択肢と同じ並び）
+  // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
-  abByOffice.sort((a, b) => comparePref(a.branch, b.branch) || comparePref(a.name, b.name));
 
   res.json({
     scope: scopeInfo(req.user),
@@ -1327,7 +1324,6 @@ api.get('/dashboard', wrap(async (req, res) => {
     abTotals,
     abByEquip,
     abByBranch,
-    abByOffice,
     abByCorp,
     months,
     aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
@@ -1707,15 +1703,21 @@ api.get('/deals/export', wrap(async (req, res) => {
         + '器具区分・担当者・得意先などで絞り込んでから実行してください',
     });
   }
-  const [rows, priceTypes] = await Promise.all([
+  const [rows, priceTypes, months, aggMetaRow] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
       FROM deal_calc ${where}
       ORDER BY ${dealOrder(req.query)}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
+    histMonths(),
+    db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
-  const buffer = buildWorkbook(rows, priceTypes);
+  // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
+  const withCost = isAdminRole(req.user.role);
+  let aggMeta = null;
+  try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら仮の見出し */ }
+  const buffer = buildWorkbook(rows, priceTypes, { months, withCost, aggMeta });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));

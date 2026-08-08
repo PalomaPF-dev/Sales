@@ -43,7 +43,6 @@ interface DashboardRes {
   abTotals?: AbRow;
   abByEquip?: AbRow[];
   abByBranch?: AbRow[];
-  abByOffice?: AbRow[];
   abByCorp?: AbRow[];
   months?: number;
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string } | null;
@@ -117,52 +116,57 @@ export default function Dashboard() {
 
   const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
 
-  /** 月のマス。A基準前提の売上と、その下に値上げ額（A基準額−現状額）を出す */
-  const MonthCell = ({ amt, base }: { amt: number; base: number }) => {
-    const gain = amt - base;
-    return (
-      <td style={nums}>
-        {yen(amt)}
-        <div style={{ fontSize: 11, fontWeight: 700,
+  /**
+   * 金額のマス。まとめの表と同じで、月あたりを主に、期間合計を下に添える。
+   * gain を渡すと値上げ額（A基準額−現状額）も一緒に出す。
+   */
+  const AmtCell = ({ amt, gain }: { amt: number; gain?: number }) => (
+    <td style={nums}>
+      {yen(amt / months)}
+      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{yen(amt)}</div>
+      {gain != null && (
+        <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2,
                       color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
-          {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
+          {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
         </div>
-      </td>
-    );
-  };
+      )}
+    </td>
+  );
 
-  /** 集計表。支店別・営業所別・法人別で同じ形を使う */
-  const AbTable = ({ head, rows, withBranch }:
-    { head: string; rows: AbRow[]; withBranch?: boolean }) => (
+  /**
+   * 集計表。器具区分別・支店別・法人別で同じ形を使う。
+   * 金額はまとめの表と揃えて「月あたり（上） / 期間合計（下）」で出す。
+   */
+  const AbTable = ({ head, rows }: { head: string; rows: AbRow[] }) => (
     <div className="tbl-scroll" style={{ maxHeight: 460 }}>
       <table className="tbl">
         <thead>
           <tr>
-            {withBranch && <th>支店</th>}
             <th>{head}</th>
             <th style={nums}>件数</th>
             <th style={nums} title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
               数量<br /><small>合計 / 月平均</small>
             </th>
-            <th style={nums} title="現状の出荷単価（実績の平均）× 数量の合計。値上げしなかった場合の金額">現状額<br /><small>（出荷単価前提）</small></th>
-            <th style={nums}>{m1}<br /><small>A基準額 / 値上げ額</small></th>
-            <th style={nums}>{m2}<br /><small>A基準額 / 値上げ額</small></th>
-            <th style={nums}>{m3}<br /><small>A基準額 / 値上げ額</small></th>
-            <th style={nums} title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価">
-              想定B基準<br /><small>想定額 / 値上げ額</small>
+            <th style={nums} title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額">
+              現状額<br /><small>月あたり / 期間合計</small>
             </th>
-            <th style={nums} title="想定B基準 − A基準（3か月後）。マイナスは値引きして妥結する見込みの分">
-              A基準との差
+            <th style={nums}>{m1}<br /><small>A基準額 / 合計 / 値上げ額</small></th>
+            <th style={nums}>{m2}<br /><small>A基準額 / 合計 / 値上げ額</small></th>
+            <th style={nums}>{m3}<br /><small>A基準額 / 合計 / 値上げ額</small></th>
+            <th style={nums} title={`${m3}の値上げ額 ÷ 現状額`}>値上げ率</th>
+            <th style={nums} title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価">
+              想定B基準<br /><small>想定額 / 合計 / 値上げ額</small>
             </th>
           </tr>
         </thead>
         <tbody>
-          {[...rows, { ...t!, name: '合計', branch: '' }].map((r, i) => {
+          {[...rows, { ...t!, name: '合計' }].map((r, i) => {
             const last = i === rows.length;
             const base = num(r.base_amt);
+            const gain3 = num(r.a3_amt) - base;
+            const rate = base > 0 ? Math.round((gain3 / base) * 1000) / 10 : null;
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
-                {withBranch && <td>{last ? '' : (r.branch || '—')}</td>}
                 <td>{r.name || '—'}</td>
                 <td style={nums}>{num(r.deals).toLocaleString()}</td>
                 <td style={nums}>
@@ -171,20 +175,12 @@ export default function Dashboard() {
                     月{(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                   </div>
                 </td>
-                <td style={nums}>{yen(base)}</td>
-                <MonthCell amt={num(r.a1_amt)} base={base} />
-                <MonthCell amt={num(r.a2_amt)} base={base} />
-                <MonthCell amt={num(r.a3_amt)} base={base} />
-                <MonthCell amt={num(r.bsim_amt)} base={base} />
-                {(() => {
-                  const gap = num(r.bsim_amt) - num(r.a3_amt);
-                  return (
-                    <td style={{ ...nums, fontWeight: 600,
-                                 color: gap < 0 ? '#c2410c' : gap > 0 ? '#15803d' : 'var(--muted)' }}>
-                      {gap === 0 ? '—' : `${gap > 0 ? '＋' : '−'}${yen(Math.abs(gap))}`}
-                    </td>
-                  );
-                })()}
+                <AmtCell amt={base} />
+                <AmtCell amt={num(r.a1_amt)} gain={num(r.a1_amt) - base} />
+                <AmtCell amt={num(r.a2_amt)} gain={num(r.a2_amt) - base} />
+                <AmtCell amt={num(r.a3_amt)} gain={gain3} />
+                <td style={nums}>{rate == null ? '—' : `${rate > 0 ? '+' : ''}${rate}%`}</td>
+                <AmtCell amt={num(r.bsim_amt)} gain={num(r.bsim_amt) - base} />
               </tr>
             );
           })}
@@ -360,10 +356,6 @@ export default function Dashboard() {
 
       <Card title="支店別の値上げ額">
         <AbTable head="支店" rows={data.abByBranch ?? []} />
-      </Card>
-
-      <Card title="営業所別の値上げ額">
-        <AbTable head="営業所" rows={data.abByOffice ?? []} withBranch />
       </Card>
 
       <Card title="法人別の値上げ額（現状額の上位30）">
