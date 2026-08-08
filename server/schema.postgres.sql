@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS deals (
   a_date_m1       TEXT,
   a_date_m2       TEXT,
   a_date_m3       TEXT,
+  -- A基準それぞれの稟議No（マスタ登録に「稟議」列があれば入る。承認日が最新の行のもの）
+  a_ringi_m0      TEXT,
+  a_ringi_m1      TEXT,
+  a_ringi_m2      TEXT,
+  a_ringi_m3      TEXT,
   b_price         REAL,   -- B基準: 実際の決定単価（アプリで入力。取込では上書きしない）
   hist_ent_cd     TEXT,   -- 出荷実績（月別履歴）の法人グループコード（名前照合で対応づけ）
   hist_avg_price  REAL,   -- 実績の平均単価（法人×品目・期間全体）
@@ -180,6 +185,11 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   d1_max     TEXT,
   d2_max     TEXT,
   d3_max     TEXT,
+  -- 稟議Noは承認日が最新の行のものを残す（承認とセットの情報のため）
+  r0_no      TEXT,
+  r1_no      TEXT,
+  r2_no      TEXT,
+  r3_no      TEXT,
   -- 支店・営業所・担当者は数量の一番多い行（主な納入先）を代表として残す
   branch       TEXT,
   office       TEXT,

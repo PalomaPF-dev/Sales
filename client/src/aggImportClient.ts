@@ -28,6 +28,11 @@ export interface AggRow {
   a_date_m1: string | null;
   a_date_m2: string | null;
   a_date_m3: string | null;
+  // A基準それぞれの稟議No（「稟議」を含む列があれば入る。無いファイルでは空）
+  a_ringi_m0: string | null;
+  a_ringi_m1: string | null;
+  a_ringi_m2: string | null;
+  a_ringi_m3: string | null;
 }
 
 export interface AggParsed {
@@ -35,6 +40,7 @@ export interface AggParsed {
   skippedRows: number;
   hasM0: boolean;      // 「当月」の列があるファイルか
   hasDates: boolean;   // 「登録日（〜）」の列があるファイルか
+  hasRingi: boolean;   // 「稟議」の列があるファイルか
   meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string };
 }
 
@@ -80,16 +86,29 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
 
   /**
-   * 月のまとまりを読む。見出しは「当月・マスタ単価・登録日(当月)」の並びで、
-   * 単価は月の右隣、承認日はその右隣にある（登録日の無い古い形式もある）。
+   * 月のまとまりを読む。見出しは「当月・マスタ単価・登録日(当月)…」の並びで、
+   * 月の見出しから次の月の見出しまでを1つのまとまりとして、
+   * その中からマスタ単価・登録日（承認日）・稟議Noの列を探す。
+   * （登録日や稟議Noの無い古い形式でも読めるようにしている）
    */
+  const MONTH_LABELS = ['当月', '翌月', '翌々月', '3か月後'];
   const monthCols = (label: string) => {
     const at = find(label);
     if (at < 0) return null;
+    let end = headers.length;
+    for (let i = at + 1; i < headers.length; i++) {
+      if (MONTH_LABELS.includes(headers[i])) { end = i; break; }
+    }
+    const within = (pred: (h: string) => boolean) => {
+      for (let i = at + 1; i < end; i++) if (pred(headers[i])) return i;
+      return -1;
+    };
+    const price = within((h) => h.includes('マスタ単価'));
     return {
       at,
-      price: at + 1,
-      date: headers[at + 2]?.includes('登録日') ? at + 2 : -1,
+      price: price >= 0 ? price : at + 1,
+      date: within((h) => h.includes('登録日')),
+      ringi: within((h) => h.includes('稟議')),
     };
   };
 
@@ -131,6 +150,12 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       + '価格申請（向こう3か月の単価）のあるシートが必要です');
   }
 
+  // 月のまとまりの外に「稟議」列が1つだけある形式なら、全部の月に同じ稟議Noを使う
+  const firstMonthAt = Math.min(...[m0, m1, m2, m3].filter(Boolean).map((m) => m!.at));
+  const globalRingi = headers.findIndex((h, i) => h.includes('稟議') && i < firstMonthAt);
+  const ringiOf = (m: { ringi: number } | null) =>
+    (m && m.ringi >= 0 ? m.ringi : globalRingi);
+
   const txt = (r: unknown[], i: number) => String(r[i] ?? '').trim();
   const at = (r: unknown[], i: number) => (i >= 0 ? r[i] : null);
   const rows: AggRow[] = [];
@@ -157,6 +182,10 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       a_date_m1: toYmd(at(r, m1!.date)),
       a_date_m2: toYmd(at(r, m2!.date)),
       a_date_m3: toYmd(at(r, m3!.date)),
+      a_ringi_m0: txt(r, ringiOf(m0)) || null,
+      a_ringi_m1: txt(r, ringiOf(m1)) || null,
+      a_ringi_m2: txt(r, ringiOf(m2)) || null,
+      a_ringi_m3: txt(r, ringiOf(m3)) || null,
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');
@@ -173,6 +202,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     rows, skippedRows, meta,
     hasM0: Boolean(m0),
     hasDates: m3!.date >= 0,
+    hasRingi: ringiOf(m3) >= 0,
   };
 }
 

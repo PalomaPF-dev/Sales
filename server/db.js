@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-07-agg-org';
+const SCHEMA_VERSION = '2026-08-08-ringi';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -528,6 +528,15 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN a_date_m1 TEXT',
     'ALTER TABLE deals ADD COLUMN a_date_m2 TEXT',
     'ALTER TABLE deals ADD COLUMN a_date_m3 TEXT',
+    // A基準それぞれの稟議No（マスタ登録に「稟議」列があるときだけ入る）
+    'ALTER TABLE deals ADD COLUMN a_ringi_m0 TEXT',
+    'ALTER TABLE deals ADD COLUMN a_ringi_m1 TEXT',
+    'ALTER TABLE deals ADD COLUMN a_ringi_m2 TEXT',
+    'ALTER TABLE deals ADD COLUMN a_ringi_m3 TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN r0_no TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN r1_no TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN r2_no TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN r3_no TEXT',
     'ALTER TABLE deals ADD COLUMN b_price REAL',
     // 集約の作業表にも当月分と承認日を足す
     'ALTER TABLE agg_staging ADD COLUMN a0_amt REAL NOT NULL DEFAULT 0',
@@ -563,7 +572,7 @@ async function beforeSchema() {
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
   try {
-    await db.get('SELECT a_date_m3 FROM deal_calc LIMIT 1');
+    await db.get('SELECT a_ringi_m3 FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

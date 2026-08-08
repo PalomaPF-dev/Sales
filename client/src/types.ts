@@ -51,6 +51,11 @@ export interface Deal {
   a_date_m1?: string | null;
   a_date_m2?: string | null;
   a_date_m3?: string | null;
+  // A基準それぞれの稟議No（マスタ登録に「稟議」列があるファイルのみ）
+  a_ringi_m0?: string | null;
+  a_ringi_m1?: string | null;
+  a_ringi_m2?: string | null;
+  a_ringi_m3?: string | null;
   b_price?: number | null;          // B基準: 実際の決定単価
   hist_avg_price?: number | null;   // 出荷実績（月別履歴）の平均単価（法人×品目）
   hist_qty?: number | null;         // 出荷実績の数量合計（法人×品目）

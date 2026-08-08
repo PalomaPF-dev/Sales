@@ -246,14 +246,23 @@ export default function Deals() {
   /**
    * A基準の1マス。申請単価と、その単価の承認日（マスタ登録の登録日）を重ねて出す。
    * 法人×品目にまとめているため、承認日はそのまとまりで一番新しい日になる。
+   * カーソルを合わせると承認日と稟議Noが見える（稟議Noはマスタ登録に列があるときだけ）。
    */
-  const aCell = (price: number | null | undefined, date: string | null | undefined) => {
+  const aCell = (
+    price: number | null | undefined,
+    date: string | null | undefined,
+    ringi: string | null | undefined,
+  ) => {
     const day = dateLabel(date);
+    const tip = [
+      date && `承認日（マスタ登録の登録日）: ${date}`,
+      ringi && `稟議No: ${ringi}`,
+    ].filter(Boolean).join('\n');
     return (
-      <>
+      <span title={tip || undefined}>
         {yen(price)}
-        {day && <div className="sub" title={`承認日（マスタ登録の登録日）: ${date}`}>{day}</div>}
-      </>
+        {day && <div className="sub">{day}{ringi ? ' ※' : ''}</div>}
+      </span>
     );
   };
 
@@ -565,11 +574,12 @@ export default function Deals() {
                     )}
                   </td>
 
-                  {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日 */}
-                  <td className="num sep">{aCell(d.a_price_m0, d.a_date_m0)}</td>
-                  <td className="num">{aCell(d.a_price_m1, d.a_date_m1)}</td>
-                  <td className="num">{aCell(d.a_price_m2, d.a_date_m2)}</td>
-                  <td className="num">{aCell(d.a_price_m3, d.a_date_m3)}</td>
+                  {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日。
+                      カーソルで承認日と稟議Noが見える */}
+                  <td className="num sep">{aCell(d.a_price_m0, d.a_date_m0, d.a_ringi_m0)}</td>
+                  <td className="num">{aCell(d.a_price_m1, d.a_date_m1, d.a_ringi_m1)}</td>
+                  <td className="num">{aCell(d.a_price_m2, d.a_date_m2, d.a_ringi_m2)}</td>
+                  <td className="num">{aCell(d.a_price_m3, d.a_date_m3, d.a_ringi_m3)}</td>
 
                   {/* B基準: 実際の決定単価。同課（営業企画）と管理者が入れる */}
                   <td className="num sep">

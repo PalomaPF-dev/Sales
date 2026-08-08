@@ -2181,9 +2181,18 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     return null;
   };
 
-  // 承認日（登録日）は「YYYY-MM-DD」。足し合わせず、まとまりの中で一番新しい日を残す
+  // 承認日（登録日）は「YYYY-MM-DD」。足し合わせず、まとまりの中で一番新しい日を残す。
+  // 稟議Noは承認とセットの情報なので、承認日が一番新しい行のものを一緒に残す。
   const ymd = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
-  const newer = (a, b) => (b && (!a || b > a) ? b : a);
+  const txt2 = (v) => (String(v ?? '').trim() || null);
+  const takeApproval = (a, dKey, rKey, date, ringi) => {
+    if (date && (!a[dKey] || date > a[dKey])) {
+      a[dKey] = date;
+      if (ringi) a[rKey] = ringi;
+    } else if (!a[dKey] && !a[rKey] && ringi) {
+      a[rKey] = ringi;   // 承認日の無い形式でも、稟議Noだけあれば最初のものを残す
+    }
+  };
 
   // 法人×品目ごとに、数量と「単価×数量」を足し込む（加重平均のため）
   const acc = new Map();
@@ -2199,6 +2208,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       ent, model: String(r.model_code).trim(), qty: 0, base: 0,
       a0: 0, a1: 0, a2: 0, a3: 0, cost: 0,
       d0: null, d1: null, d2: null, d3: null,
+      r0: null, r1: null, r2: null, r3: null,
       branch: null, office: null, person: null, top: Number.NEGATIVE_INFINITY,
     };
     // 支店・営業所・担当者は、数量の一番多い行（主な納入先）を代表にする
@@ -2215,10 +2225,10 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     a.a2 += num(r.a_price_m2) * qty;
     a.a3 += num(r.a_price_m3) * qty;
     a.cost += num(r.cost_price) * qty;
-    a.d0 = newer(a.d0, ymd(r.a_date_m0));
-    a.d1 = newer(a.d1, ymd(r.a_date_m1));
-    a.d2 = newer(a.d2, ymd(r.a_date_m2));
-    a.d3 = newer(a.d3, ymd(r.a_date_m3));
+    takeApproval(a, 'd0', 'r0', ymd(r.a_date_m0), txt2(r.a_ringi_m0));
+    takeApproval(a, 'd1', 'r1', ymd(r.a_date_m1), txt2(r.a_ringi_m1));
+    takeApproval(a, 'd2', 'r2', ymd(r.a_date_m2), txt2(r.a_ringi_m2));
+    takeApproval(a, 'd3', 'r3', ymd(r.a_date_m3), txt2(r.a_ringi_m3));
     acc.set(key, a);
   }
 
@@ -2229,15 +2239,21 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   // 送りが分かれても、数量の一番多い行の支店・営業所・担当者が残るようにする
   const keepTop = (c) =>
     `${c} = CASE WHEN excluded.top_qty > agg_staging.top_qty THEN excluded.${c} ELSE agg_staging.${c} END`;
+  // 稟議Noは承認日とセット。承認日が新しい側の値を採る（同じなら入っている方を残す）
+  const keepWithDate = (c, d) =>
+    `${c} = CASE WHEN agg_staging.${d} IS NULL OR excluded.${d} > agg_staging.${d}
+       THEN COALESCE(excluded.${c}, agg_staging.${c}) ELSE agg_staging.${c} END`;
   const vals = [...acc.values()].map((a) =>
     [a.ent, a.model, a.qty, a.base, a.a0, a.a1, a.a2, a.a3, a.cost, a.d0, a.d1, a.d2, a.d3,
+      a.r0, a.r1, a.r2, a.r3,
       a.branch, a.office, a.person, Number.isFinite(a.top) ? a.top : 0]);
   if (vals.length) {
     await db.run(
       `INSERT INTO agg_staging
          (ent_cd, model_code, qty, base_amt, a0_amt, a1_amt, a2_amt, a3_amt, cost_amt,
-          d0_max, d1_max, d2_max, d3_max, branch, office, sales_person, top_qty)
-       VALUES ${vals.map(() => `(${'?,'.repeat(16)}?)`).join(',')}
+          d0_max, d1_max, d2_max, d3_max, r0_no, r1_no, r2_no, r3_no,
+          branch, office, sales_person, top_qty)
+       VALUES ${vals.map(() => `(${'?,'.repeat(20)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          qty = agg_staging.qty + excluded.qty,
          base_amt = agg_staging.base_amt + excluded.base_amt,
@@ -2246,6 +2262,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
          a2_amt = agg_staging.a2_amt + excluded.a2_amt,
          a3_amt = agg_staging.a3_amt + excluded.a3_amt,
          cost_amt = agg_staging.cost_amt + excluded.cost_amt,
+         ${[0, 1, 2, 3].map((n) => keepWithDate(`r${n}_no`, `d${n}_max`)).join(', ')},
          ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
          ${['branch', 'office', 'sales_person', 'top_qty'].map(keepTop).join(', ')}`,
       vals.flat()
@@ -2271,6 +2288,10 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       a_date_m1 = s.d1_max,
       a_date_m2 = s.d2_max,
       a_date_m3 = s.d3_max,
+      a_ringi_m0 = s.r0_no,
+      a_ringi_m1 = s.r1_no,
+      a_ringi_m2 = s.r2_no,
+      a_ringi_m3 = s.r3_no,
       cost_price = CASE WHEN s.qty > 0 THEN s.cost_amt / s.qty END,
       -- 支店・営業所・担当者は実績側に無いので、マスタ登録から写す
       -- （まとまりの中で数量の一番多い行のもの）
