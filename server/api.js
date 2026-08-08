@@ -1334,7 +1334,16 @@ api.get('/simulation', wrap(async (req, res) => {
     groupBy = col;
   }
   const scope = scopeConditions(req.user);
-  const where = ['agg_key IS NOT NULL', 'qty > 0', ...scope.where].join(' AND ');
+  const conds = ['agg_key IS NOT NULL', 'qty > 0', ...scope.where];
+  const params = [...scope.params];
+  // 法人を選ぶと、その法人の中だけを集計する
+  // （法人ごとに器具区分単位で増減%を設定できるようにするため）
+  const corp = String(req.query.corp ?? '').trim();
+  if (corp) {
+    conds.push('corp_code = ?');
+    params.push(corp);
+  }
+  const where = conds.join(' AND ');
   const isAdm = isAdminRole(req.user.role);
   const costCols = isAdm
     ? `, SUM(cost_price * qty) AS cost_amt,
@@ -1352,7 +1361,7 @@ api.get('/simulation', wrap(async (req, res) => {
            SUM(CASE WHEN b_price IS NULL THEN a_price_m3 * qty ELSE 0 END) AS a3_amt_nob
            ${costCols}
       FROM deal_calc WHERE ${where}
-     GROUP BY ${groupBy} ORDER BY SUM(qty) DESC`, scope.params);
+     GROUP BY ${groupBy} ORDER BY SUM(qty) DESC`, params);
   res.json({ rows, withCost: isAdm });
 }));
 

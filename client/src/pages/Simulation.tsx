@@ -41,6 +41,9 @@ const num = (v: unknown) => Number(v ?? 0);
 export default function Simulation() {
   const me = useUser();
   const [group, setGroup] = useState('equip');
+  // 法人の選択。選ぶとその法人の中だけを器具区分ごとに出し、
+  // 器具区分ごとの増減%をその法人向けの販売計画として設定できる
+  const [corp, setCorp] = useState('');
   const [rows, setRows] = useState<SimRow[]>([]);
   const [withCost, setWithCost] = useState(false);
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -56,10 +59,12 @@ export default function Simulation() {
     api<Meta>('/meta').then(setMeta).catch(() => {});
   }, []);
   useEffect(() => {
-    api<{ rows: SimRow[]; withCost: boolean }>(`/simulation?group=${group}`)
+    const qs = new URLSearchParams({ group: corp ? 'equip' : group });
+    if (corp) qs.set('corp', corp);
+    api<{ rows: SimRow[]; withCost: boolean }>(`/simulation?${qs}`)
       .then((r) => { setRows(r.rows); setWithCost(r.withCost); setRowAdj({}); setQ(''); })
       .catch((e) => setMsg(e.message));
-  }, [group]);
+  }, [group, corp]);
 
   const assumeRate = (Number(assume) || 0) / 100;
 
@@ -99,6 +104,12 @@ export default function Simulation() {
   const shown = filtered.slice(0, DISPLAY_MAX);
 
   const m3 = meta?.aggMeta?.m3 || '3か月後';
+  const corpName = meta?.corps.find((c) => c.code === corp)?.name ?? '';
+  // 法人を選んでいる間は、その法人の中の器具区分ごとの表になる
+  const unitLabel = corp ? `${corpName} の器具区分ごと`
+    : GROUPS.find((g) => g.key === group)?.label ?? '';
+  const rowLabel = corp ? '器具区分'
+    : GROUPS.find((g) => g.key === group)?.label.replace('ごと', '') ?? '';
 
   return (
     <div>
@@ -106,14 +117,24 @@ export default function Simulation() {
       <p className="page-sub">
         過去実績の数量をもとに、A基準（{m3} の申請単価）どおりの売上と、
         B基準（実際の決定単価。未入力の行は下の想定で補う）の売上を試算します。
-        販売計画の増減と妥結の想定を動かして、どのくらい変わるのかを確かめられます。
+        <strong>法人を選ぶと、その法人の中を器具区分ごとに</strong>販売計画の増減を設定して試算できます
+        （法人の中では器具ごとに単価が決まるため）。
       </p>
       {msg && <div className="alert error" onClick={() => setMsg('')}>{msg}</div>}
 
       <div className="filters">
+        <label className="fld" title="法人を選ぶと、その法人の中を器具区分ごとに出します">
+          法人
+          <select value={corp} onChange={(e) => setCorp(e.target.value)}>
+            <option value="">全体（下の単位で集計）</option>
+            {meta?.corps.map((c) => (
+              <option key={c.code} value={c.code}>{c.name}（{c.count.toLocaleString()}）</option>
+            ))}
+          </select>
+        </label>
         <label className="fld">
           集計の単位
-          <select value={group} onChange={(e) => setGroup(e.target.value)}>
+          <select value={group} onChange={(e) => setGroup(e.target.value)} disabled={Boolean(corp)}>
             {GROUPS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
           </select>
         </label>
@@ -134,10 +155,11 @@ export default function Simulation() {
         </label>
       </div>
 
-      <Card title={`試算結果（${GROUPS.find((g) => g.key === group)?.label}）`}>
+      <Card title={`試算結果（${unitLabel}）`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
           売上 = 単価 × 数量の合計 ×（1 + 増減%）。
-          <strong>増減%の欄に入れると、その{GROUPS.find((g) => g.key === group)?.label.replace('ごと', '')}だけ販売計画を変えて試算できます</strong>（空欄は上の全体の%に従います）。
+          <strong>増減%の欄に入れると、その{rowLabel}だけ販売計画を変えて試算できます</strong>（空欄は上の全体の%に従います）。
+          {corp && ' 法人を選んでいるので、増減%はこの法人の器具区分ごとの販売計画になります。'}
           B想定売上は、決定済みの行はB基準、未入力の行は「A基準 × 想定%」で計算しています。
           {withCost && ' 粗利は実績原価を引いた概算です（管理者のみ表示）。'}
           {calc.length > shown.length && ` 表示は数量上位${DISPLAY_MAX}グループまで（合計は全グループ分）。`}
@@ -146,7 +168,7 @@ export default function Simulation() {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{GROUPS.find((g) => g.key === group)?.label.replace('ごと', '')}</th>
+                <th>{rowLabel}</th>
                 <th style={{ textAlign: 'right' }} title="このグループだけの増減%。空欄は上の全体の%に従います">増減%</th>
                 <th style={{ textAlign: 'right' }}>数量</th>
                 <th style={{ textAlign: 'right' }}>過去実績売上</th>
