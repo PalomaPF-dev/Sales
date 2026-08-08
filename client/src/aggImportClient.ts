@@ -86,11 +86,13 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
 
   /**
-   * 月のまとまりを読む。見出しは「当月・マスタ単価・登録日(当月)…」の並びで、
-   * 月の見出しから次の月の見出しまでを1つのまとまりとして、
+   * 月のまとまりを読む。見出しは「当月・マスタ単価・登録日(当月)・ＷＦ申請番号１…」の
+   * 並びで、月の見出しから次の月の見出しまでを1つのまとまりとして、
    * その中からマスタ単価・登録日（承認日）・稟議Noの列を探す。
-   * （登録日や稟議Noの無い古い形式でも読めるようにしている）
+   * 稟議Noの列名は「ＷＦ申請番号」（値上げ申請ワークフローの番号）。
+   * 「稟議」と書かれた形式でも読めるようにしている。登録日や稟議Noの無い古い形式も可。
    */
+  const RINGI_RE = /稟議|申請番号/;
   const MONTH_LABELS = ['当月', '翌月', '翌々月', '3か月後'];
   const monthCols = (label: string) => {
     const at = find(label);
@@ -108,7 +110,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       at,
       price: price >= 0 ? price : at + 1,
       date: within((h) => h.includes('登録日')),
-      ringi: within((h) => h.includes('稟議')),
+      ringi: within((h) => RINGI_RE.test(h)),
     };
   };
 
@@ -150,9 +152,9 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       + '価格申請（向こう3か月の単価）のあるシートが必要です');
   }
 
-  // 月のまとまりの外に「稟議」列が1つだけある形式なら、全部の月に同じ稟議Noを使う
+  // 月のまとまりの外に稟議No列が1つだけある形式なら、全部の月に同じ番号を使う
   const firstMonthAt = Math.min(...[m0, m1, m2, m3].filter(Boolean).map((m) => m!.at));
-  const globalRingi = headers.findIndex((h, i) => h.includes('稟議') && i < firstMonthAt);
+  const globalRingi = headers.findIndex((h, i) => RINGI_RE.test(h) && i < firstMonthAt);
   const ringiOf = (m: { ringi: number } | null) =>
     (m && m.ringi >= 0 ? m.ringi : globalRingi);
 
