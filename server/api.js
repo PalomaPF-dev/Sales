@@ -18,6 +18,7 @@ import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
 import {
   deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
 } from './privateBlob.js';
+import { checkLoginThrottle, recordLoginFailure } from './loginThrottle.js';
 import { comparePref } from './prefOrder.js';
 import {
   KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
@@ -195,6 +196,9 @@ function requireAdmin(req, res) {
 // 連続失敗時のロック設定
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
+// 失敗回数を数える期間。最後の失敗からこれだけ間が空いたら数え直す。
+// 数え直さないと回数が永久に積み上がり、ロック明けの1回でまた上限に達する。
+const FAILED_WINDOW_MINUTES = 15;
 
 /**
  * 利用者に見せる時刻。
@@ -254,7 +258,8 @@ api.post('/setup', wrap(async (req, res) => {
 
   await db.run(
     `UPDATE users SET password_hash = ?, must_change_password = 0,
-            failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?`,
+            failed_attempts = 0, locked_until = NULL, last_failed_at = NULL,
+            last_login_at = ? WHERE id = ?`,
     [await hashPassword(password), now(), user.id]);
 
   // そのままログインした状態にして、続けて操作できるようにする
@@ -271,16 +276,31 @@ api.post('/login', wrap(async (req, res) => {
     return res.status(400).json({ error: 'ログインIDとパスワードを入力してください' });
   }
 
+  // 送信元単位の制限。利用者ごとのロックは「1アカウントに何度も」しか止められず、
+  // 「多数のアカウントに1回ずつ」試す形は上限に達しないまま通り続ける。
+  const throttled = await checkLoginThrottle('login', req);
+  if (throttled) {
+    res.set('Retry-After', String(throttled.retryAfterSec));
+    return res.status(429).json({
+      error: `ログインの試行が集中したため、一時的に受け付けを止めています。${localTime(throttled.until)}以降に再度お試しください`,
+    });
+  }
+
   const user = await db.get('SELECT * FROM users WHERE login_id = ?', [loginId]);
 
   // ユーザーの有無を推測されないよう、失敗時の応答は区別しない
-  const deny = () => res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
+  const deny = async () => {
+    await recordLoginFailure('login', req);
+    return res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
+  };
 
   if (!user || !user.active) {
     await verifyPassword(password, null); // 応答時間を揃える
     return deny();
   }
   if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
+    // ここは送信元の回数に加えない。加えると、ログインIDを1つ知っている相手が
+    // その営業所全体を締め出せてしまう
     return res.status(423).json({
       error: `ログインの試行回数が上限を超えました。${localTime(user.locked_until)}以降に再度お試しください`,
     });
@@ -288,17 +308,25 @@ api.post('/login', wrap(async (req, res) => {
 
   const ok = await verifyPassword(password, user.password_hash);
   if (!ok) {
-    const failed = Number(user.failed_attempts || 0) + 1;
+    // 前回の失敗から間が空いていれば1から数え直す。
+    // 積み上がったままだとロック明けの1回でまた上限に達するため、
+    // ログインIDを知っている相手が15分に1回の要求でロックを永続化できてしまう。
+    const lastFailedMs = user.last_failed_at ? new Date(user.last_failed_at).getTime() : NaN;
+    const inWindow = Number.isFinite(lastFailedMs)
+      && lastFailedMs > Date.now() - FAILED_WINDOW_MINUTES * 60 * 1000;
+    const failed = inWindow ? Number(user.failed_attempts || 0) + 1 : 1;
     const lockUntil = failed >= MAX_FAILED
       ? new Date(Date.now() + LOCK_MINUTES * 60 * 1000).toISOString()
       : null;
-    await db.run('UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?',
-      [failed, lockUntil, user.id]);
+    await db.run(
+      'UPDATE users SET failed_attempts = ?, locked_until = ?, last_failed_at = ? WHERE id = ?',
+      [failed, lockUntil, now(), user.id]);
     return deny();
   }
 
   await db.run(
-    'UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?',
+    `UPDATE users SET failed_attempts = 0, locked_until = NULL, last_failed_at = NULL,
+            last_login_at = ? WHERE id = ?`,
     [now(), user.id]
   );
   // 旧方式(scrypt)のまま残っているハッシュは、ログイン成功時に現行方式へ入れ替える。
@@ -350,11 +378,19 @@ api.get('/admin-recovery', wrap(async (req, res) => {
     });
   }
 
+  // 合言葉を総当たりされないよう、こちらも送信元単位で回数を数える
+  const throttled = await checkLoginThrottle('recovery', req);
+  if (throttled) {
+    res.set('Retry-After', String(throttled.retryAfterSec));
+    return res.status(404).json({ error: '見つかりません' });
+  }
+
   const given = String(req.query?.token ?? '');
   const a = Buffer.from(given, 'utf8');
   const b = Buffer.from(expected, 'utf8');
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
     console.warn('管理者復旧: 合言葉が一致しませんでした');
+    await recordLoginFailure('recovery', req);
     return res.status(404).json({ error: '見つかりません' });
   }
 
@@ -374,7 +410,8 @@ api.get('/admin-recovery', wrap(async (req, res) => {
     // 権限が足りないまま入れても復旧にならない。
     await db.run(
       `UPDATE users SET password_hash = ?, role = 'admin', active = 1,
-              must_change_password = 1, failed_attempts = 0, locked_until = NULL
+              must_change_password = 1, failed_attempts = 0, locked_until = NULL,
+              last_failed_at = NULL
          WHERE id = ?`, [hash, existing.id]);
     await destroyUserSessions(existing.id);
     action = 'reset';
@@ -460,8 +497,8 @@ api.get('/sso', wrap(async (req, res) => {
   // パスワードでのログインと同じ扱いにする。ロックが残っていても
   // ポータルで本人確認が済んでいるため解除する。
   await db.run(
-    `UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ?
-       WHERE id = ?`, [now(), user.id]);
+    `UPDATE users SET failed_attempts = 0, locked_until = NULL, last_failed_at = NULL,
+            last_login_at = ? WHERE id = ?`, [now(), user.id]);
 
   const { token, expires } = await createSession(user.id);
   setSessionCookie(req, res, token, expires);
@@ -571,7 +608,7 @@ api.post('/admin/users/:id/reset-password', wrap(async (req, res) => {
   const temp = generateTempPassword();
   await db.run(
     `UPDATE users SET password_hash = ?, must_change_password = 1,
-            failed_attempts = 0, locked_until = NULL WHERE id = ?`,
+            failed_attempts = 0, locked_until = NULL, last_failed_at = NULL WHERE id = ?`,
     [await hashPassword(temp), user.id]
   );
   await destroyUserSessions(user.id); // 既存のログインを打ち切る

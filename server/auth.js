@@ -33,9 +33,39 @@ function safeEqual(a, b) {
   return timingSafeEqual(bufA, bufB);
 }
 
+/**
+ * コンテンツセキュリティポリシー。
+ *
+ * 万一どこかに文字列が差し込まれても、外部から読み込んだスクリプトや
+ * インラインスクリプトが動かないようにする（script-src 'self'）。
+ *
+ * style-src に 'unsafe-inline' が入っているのは、本文フォントを
+ * Google Fonts から読んでいること、およびビルド結果に小さなCSSが
+ * 埋め込まれることがあるため。スクリプト側は緩めていないので、
+ * 差し込みからの実行という肝心のところは塞げている。
+ *
+ * ※Vercelでは画面ファイル（HTML/JS/CSS）をCDNが直接返すため、
+ *   このミドルウェアは /api/* にしか掛からない。
+ *   画面側は vercel.json の headers で同じ内容を付けている。
+ *   どちらかを変えたらもう一方も必ず合わせること。
+ */
+export const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+].join('; ');
+
 export function securityHeaders(req, res, next) {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
   res.set('Referrer-Policy', 'same-origin');
+  res.set('Content-Security-Policy', CONTENT_SECURITY_POLICY);
   next();
 }

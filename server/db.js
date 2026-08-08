@@ -161,7 +161,7 @@ function toPgPlaceholders(sql) {
 // 主キーがidでないテーブルを足すときは、ここにも必ず追加すること。
 const TABLES_WITHOUT_ID = new Set([
   'settings', 'price_types', 'corp_negotiations', 'sso_used_tokens',
-  'corp_map', 'agg_staging',
+  'corp_map', 'agg_staging', 'login_attempts',
 ]);
 
 /** SQLiteの方言をPostgreSQLへ寄せる */
@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-08-ringi';
+const SCHEMA_VERSION = '2026-08-08-login-throttle';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -509,6 +509,9 @@ async function beforeSchema() {
     'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN locked_until TEXT',
+    // 直近の失敗時刻。これが無いと失敗回数が永久に積み上がり、
+    // ロック明けの1回でまた上限に達してしまう（server/api.js のログイン処理）
+    'ALTER TABLE users ADD COLUMN last_failed_at TEXT',
     'ALTER TABLE users ADD COLUMN last_login_at TEXT',
     // 同じファイルの二重取込を検知するための内容ハッシュとデータ指紋
     'ALTER TABLE import_batches ADD COLUMN content_hash TEXT',

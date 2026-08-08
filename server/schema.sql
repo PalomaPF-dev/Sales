@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   must_change_password INTEGER NOT NULL DEFAULT 0, -- 仮パスワードの初回変更を強制
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,             -- 連続失敗による一時ロックの解除時刻
+  last_failed_at TEXT,           -- 直近の失敗時刻。間が空いたら数え直す
   last_login_at TEXT
 );
 
@@ -48,6 +49,20 @@ CREATE TABLE IF NOT EXISTS sso_used_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sso_expires ON sso_used_tokens(expires_at);
+
+-- 送信元IPごとのログイン失敗の記録（server/loginThrottle.js）。
+-- 利用者ごとのロック（users.locked_until）では止まらない
+-- 「多数のアカウントに1回ずつ試す」形の総当たりを抑えるために使う。
+CREATE TABLE IF NOT EXISTS login_attempts (
+  scope             TEXT NOT NULL,  -- 'login' / 'recovery'
+  ip                TEXT NOT NULL,
+  failed_attempts   INTEGER NOT NULL DEFAULT 0,
+  window_started_at TEXT NOT NULL,  -- 数え始めた時刻。一定時間が過ぎたら数え直す
+  locked_until      TEXT,           -- 上限に達したときの解除時刻
+  PRIMARY KEY (scope, ip)
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_window ON login_attempts(window_started_at);
 
 -- マスター単価種別（6種類）
 CREATE TABLE IF NOT EXISTS price_types (

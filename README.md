@@ -128,6 +128,9 @@ Excelを開いて保存し直しただけのファイルも、データの指紋
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | アクセス保護。公開環境では必須 |
 | `PORT` / `DATA_DIR` | 待受ポート / ローカルDBの保存先 |
 | `BCRYPT_ROUNDS` | パスワードハッシュのコスト（既定10。ポータル側と揃えてください） |
+| `LOGIN_IP_MAX_FAILED` | 送信元ごとのログイン失敗の上限（既定30回）。超えた送信元を一時的に止めます |
+| `LOGIN_IP_WINDOW_MINUTES` | 上の回数を数える期間（既定15分）。この間隔が空いたら数え直します |
+| `LOGIN_IP_LOCK_MINUTES` | 上限に達した送信元を止める時間（既定15分） |
 | `DEV_LOGIN_AS` | 開発時のみ。ログインを省略するログインID（本番では無効） |
 | `DISABLE_AUTH` | `true` にするとログインを不要にする（動作確認用）。**本番（Vercel / `NODE_ENV=production`）では設定されていても無視され、通常どおりログインを求めます** |
 | `DISPLAY_TZ` | 画面に出す時刻の時間帯（既定: `Asia/Tokyo`）。サーバーの時計がUTCでも日本時間で表示するために使います |

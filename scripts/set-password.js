@@ -108,7 +108,7 @@ if (password) {
 
 await db.run(
   `UPDATE users SET password_hash = ?, must_change_password = ?,
-          failed_attempts = 0, locked_until = NULL WHERE id = ?`,
+          failed_attempts = 0, locked_until = NULL, last_failed_at = NULL WHERE id = ?`,
   [await hashPassword(password), mustChange, user.id]
 );
 await destroyUserSessions(user.id); // 既存のログインを打ち切る
