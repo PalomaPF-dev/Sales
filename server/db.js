@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-07-a-dates';
+const SCHEMA_VERSION = '2026-08-07-agg-org';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -535,6 +535,11 @@ async function beforeSchema() {
     'ALTER TABLE agg_staging ADD COLUMN d1_max TEXT',
     'ALTER TABLE agg_staging ADD COLUMN d2_max TEXT',
     'ALTER TABLE agg_staging ADD COLUMN d3_max TEXT',
+    // 支店・営業所・担当者は、数量の一番多い行を代表として案件へ写す
+    'ALTER TABLE agg_staging ADD COLUMN branch TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN office TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN sales_person TEXT',
+    'ALTER TABLE agg_staging ADD COLUMN top_qty REAL',
     // 出荷実績（月別履歴）。法人×品目の平均単価と数量合計を参照用に持つ
     'ALTER TABLE deals ADD COLUMN hist_ent_cd TEXT',
     'ALTER TABLE deals ADD COLUMN hist_avg_price REAL',

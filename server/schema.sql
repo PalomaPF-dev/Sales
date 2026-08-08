@@ -174,6 +174,11 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   d1_max     TEXT,
   d2_max     TEXT,
   d3_max     TEXT,
+  -- 支店・営業所・担当者は数量の一番多い行（主な納入先）を代表として残す
+  branch       TEXT,
+  office       TEXT,
+  sales_person TEXT,
+  top_qty      REAL,
   PRIMARY KEY (ent_cd, model_code)
 );
 

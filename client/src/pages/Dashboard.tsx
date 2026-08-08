@@ -15,6 +15,7 @@ const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office'] as const;
  */
 interface AbRow {
   name?: string | null;
+  branch?: string | null;
   deals: number;
   qty: number;
   base_amt: number;
@@ -27,7 +28,9 @@ interface DashboardRes {
   scope: { level: string; label: string; missing?: string; note?: string };
   abTotals?: AbRow;
   abByBranch?: AbRow[];
+  abByOffice?: AbRow[];
   abByCorp?: AbRow[];
+  months?: number;
   aggMeta?: { m1: string; m2: string; m3: string; basePeriod: string } | null;
 }
 
@@ -77,41 +80,63 @@ export default function Dashboard() {
   const m1 = data.aggMeta?.m1 || '翌月';
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
+  const months = data.months || 12;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
-  /** 集計表。支店別・法人別で同じ形を使う */
-  const AbTable = ({ head, rows }: { head: string; rows: AbRow[] }) => (
-    <div className="tbl-scroll" style={{ maxHeight: 420 }}>
+  const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
+
+  /** 月のマス。実績（A基準前提の売上）と、その下に値上げ額（実績−目標額）を出す */
+  const MonthCell = ({ amt, base }: { amt: number; base: number }) => {
+    const gain = amt - base;
+    return (
+      <td style={nums}>
+        {yen(amt)}
+        <div style={{ fontSize: 11, fontWeight: 700,
+                      color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
+          {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
+        </div>
+      </td>
+    );
+  };
+
+  /** 集計表。支店別・営業所別・法人別で同じ形を使う */
+  const AbTable = ({ head, rows, withBranch }:
+    { head: string; rows: AbRow[]; withBranch?: boolean }) => (
+    <div className="tbl-scroll" style={{ maxHeight: 460 }}>
       <table className="tbl">
         <thead>
           <tr>
+            {withBranch && <th>支店</th>}
             <th>{head}</th>
-            <th style={{ textAlign: 'right' }}>件数</th>
-            <th style={{ textAlign: 'right' }}>数量</th>
-            <th style={{ textAlign: 'right' }} title="現状の出荷単価 × 数量の合計">目標額<br /><small>（出荷単価前提）</small></th>
-            <th style={{ textAlign: 'right' }}>実績 {m1}</th>
-            <th style={{ textAlign: 'right' }}>実績 {m2}</th>
-            <th style={{ textAlign: 'right' }}>実績 {m3}</th>
-            <th style={{ textAlign: 'right' }} title="実績（3か月後）− 目標額">値上げ額</th>
+            <th style={nums}>件数</th>
+            <th style={nums} title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
+              数量<br /><small>合計 / 月平均</small>
+            </th>
+            <th style={nums} title="実績の平均出荷単価 × 数量の合計">目標額<br /><small>（出荷単価前提）</small></th>
+            <th style={nums}>{m1}<br /><small>実績 / 値上げ額</small></th>
+            <th style={nums}>{m2}<br /><small>実績 / 値上げ額</small></th>
+            <th style={nums}>{m3}<br /><small>実績 / 値上げ額</small></th>
           </tr>
         </thead>
         <tbody>
-          {[...rows, { ...t!, name: '合計' }].map((r, i) => {
+          {[...rows, { ...t!, name: '合計', branch: '' }].map((r, i) => {
             const last = i === rows.length;
-            const gain = num(r.a3_amt) - num(r.base_amt);
+            const base = num(r.base_amt);
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
+                {withBranch && <td>{last ? '' : (r.branch || '—')}</td>}
                 <td>{r.name || '—'}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.deals).toLocaleString()}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{num(r.qty).toLocaleString()}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.base_amt))}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.a1_amt))}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.a2_amt))}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{yen(num(r.a3_amt))}</td>
-                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600,
-                             color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
-                  {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
+                <td style={nums}>{num(r.deals).toLocaleString()}</td>
+                <td style={nums}>
+                  {num(r.qty).toLocaleString()}
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                    月{(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  </div>
                 </td>
+                <td style={nums}>{yen(base)}</td>
+                <MonthCell amt={num(r.a1_amt)} base={base} />
+                <MonthCell amt={num(r.a2_amt)} base={base} />
+                <MonthCell amt={num(r.a3_amt)} base={base} />
               </tr>
             );
           })}
@@ -124,10 +149,11 @@ export default function Dashboard() {
     <div>
       <h1 className="page-title">ダッシュボード</h1>
       <p className="page-sub">
-        支店別・法人別の値上げ額です。<strong>目標額</strong>は現状の出荷単価
-        {data.aggMeta?.basePeriod && `（${data.aggMeta.basePeriod}）`} × 数量の合計、
+        支店別・営業所別・法人別の値上げ額です。<strong>目標額</strong>は実績の平均出荷単価 × 数量の合計、
         <strong>実績</strong>はマスタ登録単価（A基準）前提で数量を固定した月別合計、
-        その差が<strong>値上げ額</strong>です。
+        その差が<strong>値上げ額</strong>です。金額は期間全体（{data.aggMeta?.basePeriod ? '' : ''}
+        {meta?.histMeta?.period ?? ''}）の合計で、月あたりは÷{months}か月です。
+        対象は<strong>A基準の入っている案件</strong>だけ（マスタ登録に無い品目は値上げの対象外のため）。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
 
@@ -170,15 +196,22 @@ export default function Dashboard() {
       </div>
 
       <div className="tiles">
-        <Kpi label="対象" value={`${num(t?.deals).toLocaleString()}件`} sub={`数量 ${num(t?.qty).toLocaleString()}`} />
+        <Kpi label="対象（A基準あり）" value={`${num(t?.deals).toLocaleString()}件`}
+             sub={`数量 ${num(t?.qty).toLocaleString()}（月${Math.round(num(t?.qty) / months).toLocaleString()}）`} />
         <Kpi label="目標額（出荷単価前提）" value={yen(num(t?.base_amt))} />
         <Kpi label={`実績（${m3}・A基準前提）`} value={yen(num(t?.a3_amt))} />
         <Kpi label="値上げ額の合計" value={`${totalGain >= 0 ? '＋' : '−'}${yen(Math.abs(totalGain))}`}
-             sub={num(t?.base_amt) > 0 ? `目標額比 ${(Math.round((totalGain / num(t?.base_amt)) * 1000) / 10).toLocaleString()}%` : undefined} />
+             sub={`月あたり ${totalGain >= 0 ? '＋' : '−'}${yen(Math.abs(totalGain) / months)}`
+               + (num(t?.base_amt) > 0
+                 ? ` ・ 目標額比 ${(Math.round((totalGain / num(t?.base_amt)) * 1000) / 10).toLocaleString()}%` : '')} />
       </div>
 
       <Card title="支店別の値上げ額">
         <AbTable head="支店" rows={data.abByBranch ?? []} />
+      </Card>
+
+      <Card title="営業所別の値上げ額">
+        <AbTable head="営業所" rows={data.abByOffice ?? []} withBranch />
       </Card>
 
       <Card title="法人別の値上げ額（目標額の上位30）">

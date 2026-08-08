@@ -12,6 +12,10 @@ import { api } from './api';
 export interface AggRow {
   customer_name: string;   // 法人の照合に使う（得意先名 → 法人グループ）
   model_code: string;
+  // 支店・営業所・担当者。法人×品目にまとめるときは数量の一番多い行を代表にする
+  branch: string;
+  office: string;
+  sales_person: string;
   qty: unknown;
   base_price: unknown;
   cost_price: unknown;
@@ -139,6 +143,9 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     rows.push({
       customer_name: txt(r, col.customer_name),
       model_code: model,
+      branch: txt(r, col.branch),
+      office: txt(r, col.office),
+      sales_person: txt(r, col.sales_person),
       qty: r[col.qty],
       base_price: r[col.base_price],
       cost_price: col.cost_price >= 0 ? r[col.cost_price] : null,

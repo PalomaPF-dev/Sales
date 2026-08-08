@@ -1231,34 +1231,51 @@ api.get('/dashboard', wrap(async (req, res) => {
   const { where, params: p } = dealFilters(req.query, req.user);
   const andWhere = (cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
 
-  // 支店別・法人別の値上げ額。
-  //   目標額 = 現状の出荷単価 × 数量の合計
+  // 支店別・営業所別・法人別の値上げ額。
+  //   目標額 = 実績の平均出荷単価 × 数量の合計
   //   実績   = マスタ登録単価（A基準）前提で、数量を固定したままの月別合計
-  //   値上げ額 = 実績（3か月後） − 目標額
+  //   値上げ額 = 実績（その月） − 目標額
+  //
+  // A基準の入っていない案件を混ぜると、目標額だけが積み上がって
+  // 値上げ額が大きくマイナスに出る。対象はA基準のある案件だけにする。
+  // 単価0は「未申請」の印なので、値上げなし（＝実績と同じ）として扱う。
+  //
+  // 列は REAL（PostgreSQLでは単精度）で、そのまま足すと数十億円の合計で
+  // まとまりごとに丸めがズレる。倍精度に上げてから足す
+  // （FLOAT は PostgreSQL では倍精度、SQLite では通常の実数）。
+  const f = (c) => `CAST(${c} AS FLOAT)`;
+  const aCol = (n) =>
+    `CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${f('hist_avg_price')} END * hist_qty`;
   const ab = `
     COUNT(*) AS deals,
-    SUM(qty) AS qty,
-    SUM(base_price * qty) AS base_amt,
-    SUM(a_price_m1 * qty) AS a1_amt,
-    SUM(a_price_m2 * qty) AS a2_amt,
-    SUM(a_price_m3 * qty) AS a3_amt`;
-  const abCond = 'agg_key IS NOT NULL AND qty > 0';
-  const [abTotals, abByBranch, abByCorp, aggMetaRow] = await Promise.all([
+    SUM(${f('hist_qty')}) AS qty,
+    SUM(${f('hist_avg_price')} * hist_qty) AS base_amt,
+    SUM(${aCol(1)}) AS a1_amt,
+    SUM(${aCol(2)}) AS a2_amt,
+    SUM(${aCol(3)}) AS a3_amt`;
+  const abCond = 'a_price_m3 IS NOT NULL AND hist_avg_price IS NOT NULL AND hist_qty > 0';
+  const months = await histMonths();
+  const [abTotals, abByBranch, abByOffice, abByCorp, aggMetaRow] = await Promise.all([
     db.get(`SELECT ${ab} FROM deal_calc ${andWhere(abCond)}`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
              GROUP BY branch`, p),
+    db.all(`SELECT office AS name, branch, ${ab} FROM deal_calc ${andWhere(abCond)}
+             GROUP BY branch, office`, p),
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM(base_price * qty) DESC LIMIT 30`, p),
+             GROUP BY corp_name ORDER BY SUM(hist_avg_price * hist_qty) DESC LIMIT 30`, p),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
-  // 支店は都道府県順（選択肢と同じ並び）
+  // 支店・営業所は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
+  abByOffice.sort((a, b) => comparePref(a.branch, b.branch) || comparePref(a.name, b.name));
 
   res.json({
     scope: scopeInfo(req.user),
     abTotals,
     abByBranch,
+    abByOffice,
     abByCorp,
+    months,
     aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
   });
 }));
@@ -1464,14 +1481,16 @@ api.get('/deals', wrap(async (req, res) => {
   const size = Math.min(200, Number(req.query.size) || 50);
   const months = await histMonths();
   const [totals, rows] = await Promise.all([
-    // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も返す。
-    // 値上げ幅（A基準−実績の平均単価）× 月平均の数量（数量合計÷月数）。
+    // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
+    // 値上げ幅（その月のA基準−実績の平均単価）× 月平均の数量（数量合計÷月数）。
     db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
-             SUM(CASE WHEN a_price_m3 IS NOT NULL AND hist_avg_price IS NOT NULL
-                       THEN (a_price_m3 - hist_avg_price) * COALESCE(hist_qty, 0) / ${months}
-                  END) AS raise_amount
+             ${[1, 2, 3].map((n) => `
+             SUM(CASE WHEN a_price_m${n} > 0 AND hist_avg_price IS NOT NULL
+                       THEN (CAST(a_price_m${n} AS FLOAT) - hist_avg_price)
+                            * COALESCE(hist_qty, 0) / ${months}
+                  END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
     // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
@@ -2180,7 +2199,15 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       ent, model: String(r.model_code).trim(), qty: 0, base: 0,
       a0: 0, a1: 0, a2: 0, a3: 0, cost: 0,
       d0: null, d1: null, d2: null, d3: null,
+      branch: null, office: null, person: null, top: Number.NEGATIVE_INFINITY,
     };
+    // 支店・営業所・担当者は、数量の一番多い行（主な納入先）を代表にする
+    if (qty > a.top) {
+      a.top = qty;
+      a.branch = String(r.branch ?? '').trim() || null;
+      a.office = String(r.office ?? '').trim() || null;
+      a.person = String(r.sales_person ?? '').trim() || null;
+    }
     a.qty += qty;
     a.base += num(r.base_price) * qty;
     a.a0 += num(r.a_price_m0) * qty;
@@ -2199,14 +2226,18 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   const keepNewer = (c) =>
     `${c} = CASE WHEN agg_staging.${c} IS NULL OR excluded.${c} > agg_staging.${c}`
     + ` THEN excluded.${c} ELSE agg_staging.${c} END`;
+  // 送りが分かれても、数量の一番多い行の支店・営業所・担当者が残るようにする
+  const keepTop = (c) =>
+    `${c} = CASE WHEN excluded.top_qty > agg_staging.top_qty THEN excluded.${c} ELSE agg_staging.${c} END`;
   const vals = [...acc.values()].map((a) =>
-    [a.ent, a.model, a.qty, a.base, a.a0, a.a1, a.a2, a.a3, a.cost, a.d0, a.d1, a.d2, a.d3]);
+    [a.ent, a.model, a.qty, a.base, a.a0, a.a1, a.a2, a.a3, a.cost, a.d0, a.d1, a.d2, a.d3,
+      a.branch, a.office, a.person, Number.isFinite(a.top) ? a.top : 0]);
   if (vals.length) {
     await db.run(
       `INSERT INTO agg_staging
          (ent_cd, model_code, qty, base_amt, a0_amt, a1_amt, a2_amt, a3_amt, cost_amt,
-          d0_max, d1_max, d2_max, d3_max)
-       VALUES ${vals.map(() => `(${'?,'.repeat(12)}?)`).join(',')}
+          d0_max, d1_max, d2_max, d3_max, branch, office, sales_person, top_qty)
+       VALUES ${vals.map(() => `(${'?,'.repeat(16)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          qty = agg_staging.qty + excluded.qty,
          base_amt = agg_staging.base_amt + excluded.base_amt,
@@ -2215,7 +2246,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
          a2_amt = agg_staging.a2_amt + excluded.a2_amt,
          a3_amt = agg_staging.a3_amt + excluded.a3_amt,
          cost_amt = agg_staging.cost_amt + excluded.cost_amt,
-         ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')}`,
+         ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
+         ${['branch', 'office', 'sales_person', 'top_qty'].map(keepTop).join(', ')}`,
       vals.flat()
     );
   }
@@ -2240,6 +2272,11 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       a_date_m2 = s.d2_max,
       a_date_m3 = s.d3_max,
       cost_price = CASE WHEN s.qty > 0 THEN s.cost_amt / s.qty END,
+      -- 支店・営業所・担当者は実績側に無いので、マスタ登録から写す
+      -- （まとまりの中で数量の一番多い行のもの）
+      branch = s.branch,
+      office = s.office,
+      sales_person = s.sales_person,
       updated_at = ?
     FROM agg_staging s
     WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
