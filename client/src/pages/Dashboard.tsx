@@ -52,6 +52,65 @@ interface DashboardRes {
 const num = (n: unknown) => Number(n ?? 0);
 const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
 
+/** グラフの目盛り用に金額を短く書く。458億 / 9,240万 / ¥1,234 */
+const shortYen = (v: number) => {
+  const a = Math.abs(v);
+  if (a >= 1e8) return `${(v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 1 })}億`;
+  if (a >= 1e4) return `${(v / 1e4).toLocaleString(undefined, { maximumFractionDigits: 0 })}万`;
+  return yen(v);
+};
+
+/**
+ * まとめの棒グラフ。現状額と、A基準の月別（9月・10月・11月）を並べる。
+ *
+ * 外部の部品を使わず、そのまま描けるSVGで作る（読み込みを増やさないため）。
+ * 幅は親に合わせて伸縮する。
+ */
+function SummaryChart({ bars }: { bars: { label: string; value: number; gain?: number }[] }) {
+  const W = 760;
+  const H = 250;
+  const padT = 46;   // 棒の上に金額と値上げ額を書く分
+  const padB = 34;   // 月名を書く分
+  const max = Math.max(...bars.map((b) => b.value), 1);
+  const bw = W / bars.length;
+  const plot = H - padT - padB;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+         role="img" aria-label="現状額とA基準の比較">
+      {/* 現状額の高さに水平線を引き、各月がどれだけ上回るかを見えるようにする */}
+      {bars[0] && (() => {
+        const y = H - padB - (bars[0].value / max) * plot;
+        return <line x1={0} y1={y} x2={W} y2={y} stroke="#cbd5e1" strokeDasharray="4 4" />;
+      })()}
+      {bars.map((b, i) => {
+        const h = (b.value / max) * plot;
+        const x = i * bw + bw * 0.2;
+        const w = bw * 0.6;
+        const y = H - padB - h;
+        const first = i === 0;
+        return (
+          <g key={b.label}>
+            <rect x={x} y={y} width={w} height={Math.max(h, 1)} rx={4}
+                  fill={first ? '#94a3b8' : '#2563eb'} />
+            <text x={x + w / 2} y={y - 8} textAnchor="middle" fontSize={17} fontWeight={700} fill="#0f172a">
+              {shortYen(b.value)}
+            </text>
+            {b.gain != null && b.gain !== 0 && (
+              <text x={x + w / 2} y={y - 26} textAnchor="middle" fontSize={14} fontWeight={700}
+                    fill={b.gain < 0 ? '#c2410c' : '#15803d'}>
+                {b.gain > 0 ? '＋' : '−'}{shortYen(Math.abs(b.gain))}
+              </text>
+            )}
+            <text x={x + w / 2} y={H - 12} textAnchor="middle" fontSize={15} fill="#475569">
+              {b.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 /** KPIタイル。既存の .tiles / .tile の見た目に合わせる */
 function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -76,16 +135,33 @@ export default function Dashboard() {
     setParams(next, { replace: true });
   };
 
+  // 承認日の初期値を入れ終えるまで集計を呼ばない（無駄な1回を避ける）
+  const [ready, setReady] = useState(false);
+
   useEffect(() => {
-    api<Meta>('/meta').then(setMeta).catch(() => {});
+    api<Meta>('/meta')
+      .then((m) => {
+        setMeta(m);
+        // 既定は「当月以降に承認された単価だけ」。それより前の承認は
+        // 値上げ前の古い単価が多く、値上げ額として見ると実態と合わない。
+        // 全期間を見たいときは承認日の欄を空にする。
+        if (!params.get('aDateYm') && m.aggMeta?.m0) {
+          const next = new URLSearchParams(params);
+          next.set('aDateYm', m.aggMeta.m0);
+          setParams(next, { replace: true });
+        }
+      })
+      .catch(() => {})
+      .finally(() => setReady(true));
   }, []);
 
   useEffect(() => {
+    if (!ready) return;
     const qs = new URLSearchParams();
     for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
     setData(null);
     api<DashboardRes>(`/dashboard?${qs}`).then(setData).catch((e) => setMsg(e.message));
-  }, [params]);
+  }, [params, ready]);
 
   if (msg) return <div className="alert error">{msg}</div>;
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
@@ -181,8 +257,9 @@ export default function Dashboard() {
       <p className="page-sub">
         出荷実績（{meta?.histMeta?.period ?? '期間全体'}）の<strong>純粋な品目件数</strong>を母数に、
         マスタ登録（A基準）の件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績の平均出荷単価)×数量）を出します。
-        <strong>承認日</strong>で絞ると、マスタ登録件数と値上げ額がその条件に変わります
-        （出荷実績の母数は変わりません）。
+        <strong>承認日</strong>は既定で<strong>当月以降に承認された単価だけ</strong>を見ています
+        （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
+        絞り込みでマスタ登録件数と値上げ額が変わります（出荷実績の母数は変わりません）。
         下の表の<strong>現状額</strong>は現状の出荷単価（実績の平均）×数量で、値上げしなかった場合の金額です。
         各月の<strong>A基準額</strong>はA基準前提で数量を固定した月別合計で、その差が値上げ額です。金額は期間全体の合計、月あたりは÷{months}か月。
         表示範囲: <strong>{data.scope.label}</strong>
@@ -286,6 +363,20 @@ export default function Dashboard() {
           );
         })()}
       </div>
+
+      <Card title={`まとめ（現状額とA基準）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
+        <p className="pt-note" style={{ marginTop: 0 }}>
+          灰色が<strong>現状額</strong>（値上げしなかった場合）、青が<strong>A基準額</strong>（申請単価どおりの場合）。
+          青の上の緑の数字が<strong>値上げ額</strong>（A基準額 − 現状額）です。
+          金額は期間全体（{meta?.histMeta?.period ?? ''}）の合計で、数量は実績のまま固定しています。
+        </p>
+        <SummaryChart bars={[
+          { label: '現状額', value: num(t?.base_amt) },
+          { label: m1, value: num(t?.a1_amt), gain: num(t?.a1_amt) - num(t?.base_amt) },
+          { label: m2, value: num(t?.a2_amt), gain: num(t?.a2_amt) - num(t?.base_amt) },
+          { label: m3, value: num(t?.a3_amt), gain: num(t?.a3_amt) - num(t?.base_amt) },
+        ]} />
+      </Card>
 
       <Card title="器具区分別の値上げ額">
         <AbTable head="器具区分" rows={data.abByEquip ?? []} />
