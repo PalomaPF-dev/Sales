@@ -125,25 +125,33 @@ export default function Dashboard() {
   const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
 
   /**
-   * 金額のマス。まとめの表と同じで、月あたりを主に、期間合計を下に添える。
-   * gain を渡すと値上げ額（A基準額−現状額）も一緒に出す。
+   * 金額のマス。すべて1か月あたりで出す（期間合計は出さない）。
+   * base を渡すと、その月の値上げ額と、現状額に対する値上げ率も添える。
    */
-  const AmtCell = ({ amt, gain }: { amt: number; gain?: number }) => (
-    <td style={nums}>
-      {yen(amt / months)}
-      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{yen(amt)}</div>
-      {gain != null && (
-        <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2,
-                      color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
-          {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
-        </div>
-      )}
-    </td>
-  );
+  const AmtCell = ({ amt, base }: { amt: number; base?: number }) => {
+    const gain = base == null ? null : amt - base;
+    const rate = base != null && base > 0 ? Math.round((gain! / base) * 1000) / 10 : null;
+    return (
+      <td style={nums}>
+        {yen(amt / months)}
+        {gain != null && (
+          <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2,
+                        color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
+            {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
+            {rate != null && gain !== 0 && (
+              <span style={{ fontWeight: 400, color: 'var(--muted)' }}>
+                {' '}({rate > 0 ? '+' : ''}{rate}%)
+              </span>
+            )}
+          </div>
+        )}
+      </td>
+    );
+  };
 
   /**
    * 集計表。器具区分別・支店別・法人別で同じ形を使う。
-   * 金額はまとめの表と揃えて「月あたり（上） / 期間合計（下）」で出す。
+   * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
    */
   const AbTable = ({ head, rows }: { head: string; rows: AbRow[] }) => (
     <div className="tbl-scroll" style={{ maxHeight: 460 }}>
@@ -155,15 +163,14 @@ export default function Dashboard() {
             <th style={nums} title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
               数量<br /><small>合計 / 月平均</small>
             </th>
-            <th style={nums} title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額">
-              現状額<br /><small>月あたり / 期間合計</small>
+            <th style={nums} title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
+              現状額<br /><small>月あたり</small>
             </th>
-            <th style={nums}>{m1}<br /><small>A基準額 / 合計 / 値上げ額</small></th>
-            <th style={nums}>{m2}<br /><small>A基準額 / 合計 / 値上げ額</small></th>
-            <th style={nums}>{m3}<br /><small>A基準額 / 合計 / 値上げ額</small></th>
-            <th style={nums} title={`${m3}の値上げ額 ÷ 現状額`}>値上げ率</th>
+            <th style={nums}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></th>
+            <th style={nums}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></th>
+            <th style={nums}>{m3}<br /><small>A基準額 / 値上げ額（率）</small></th>
             <th style={nums} title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価">
-              想定B基準<br /><small>想定額 / 合計 / 値上げ額</small>
+              想定B基準<br /><small>想定額 / 値上げ額（率）</small>
             </th>
           </tr>
         </thead>
@@ -171,8 +178,6 @@ export default function Dashboard() {
           {[...rows, { ...t!, name: '合計' }].map((r, i) => {
             const last = i === rows.length;
             const base = num(r.base_amt);
-            const gain3 = num(r.a3_amt) - base;
-            const rate = base > 0 ? Math.round((gain3 / base) * 1000) / 10 : null;
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
                 <td>{r.name || '—'}</td>
@@ -184,11 +189,10 @@ export default function Dashboard() {
                   </div>
                 </td>
                 <AmtCell amt={base} />
-                <AmtCell amt={num(r.a1_amt)} gain={num(r.a1_amt) - base} />
-                <AmtCell amt={num(r.a2_amt)} gain={num(r.a2_amt) - base} />
-                <AmtCell amt={num(r.a3_amt)} gain={gain3} />
-                <td style={nums}>{rate == null ? '—' : `${rate > 0 ? '+' : ''}${rate}%`}</td>
-                <AmtCell amt={num(r.bsim_amt)} gain={num(r.bsim_amt) - base} />
+                <AmtCell amt={num(r.a1_amt)} base={base} />
+                <AmtCell amt={num(r.a2_amt)} base={base} />
+                <AmtCell amt={num(r.a3_amt)} base={base} />
+                <AmtCell amt={num(r.bsim_amt)} base={base} />
               </tr>
             );
           })}
@@ -221,7 +225,9 @@ export default function Dashboard() {
         （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
         絞り込みでマスタ登録件数と値上げ額が変わります（出荷実績の母数は変わりません）。
         下の表の<strong>現状額</strong>は現状の出荷単価（実績の平均）×数量で、値上げしなかった場合の金額です。
-        各月の<strong>A基準額</strong>はA基準前提で数量を固定した月別合計で、その差が値上げ額です。金額は期間全体の合計、月あたりは÷{months}か月。
+        各月の<strong>A基準額</strong>はA基準前提で数量を固定した金額で、その差が値上げ額、
+        現状額に対する割合が<strong>値上げ率</strong>です。
+        金額はすべて<strong>1か月あたり</strong>（期間全体の合計 ÷ {months}か月）です。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
 
@@ -304,40 +310,33 @@ export default function Dashboard() {
           [m3, data.aMonths?.raise_m3],
         ] as [string, number | null | undefined][]).map(([label, raise]) => {
           const r = num(raise) / months;
+          // 現状額に対して何%の値上げになるか
+          const base = num(t?.base_amt);
+          const rate = base > 0 ? Math.round((num(raise) / base) * 1000) / 10 : null;
           return (
             <Kpi key={label}
                  label={`値上げ額（月あたり） ${label}`}
                  value={`${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}`}
-                 sub={`期間合計 ${num(raise) >= 0 ? '＋' : '−'}${yen(Math.abs(num(raise)))}`} />
+                 sub={rate == null ? undefined : `現状額に対して ${rate > 0 ? '+' : ''}${rate}%`} />
           );
         })}
-        {/* 法人ごとの妥結見通し（想定B基準）で試算した場合。A基準との差も出す */}
-        {(() => {
-          const bs = num(data.aMonths?.raise_bsim) / months;
-          const gap = (num(data.aMonths?.raise_bsim) - num(data.aMonths?.raise_m3)) / months;
-          return (
-            <Kpi label={`想定B基準（月あたり） ${m3}`}
-                 value={`${bs >= 0 ? '＋' : '−'}${yen(Math.abs(bs))}`}
-                 sub={`A基準との差 ${gap >= 0 ? '＋' : '−'}${yen(Math.abs(gap))}`
-                   + `（決定済み ${num(data.aMonths?.b_rows).toLocaleString()}件）`} />
-          );
-        })()}
       </div>
 
       <Card title={`まとめ（現状額とA基準）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
           <strong>現状額</strong>は値上げしなかった場合、<strong>A基準額</strong>は申請単価どおりの場合、
-          その差が<strong>値上げ額</strong>です。数量は実績のまま固定しています。
-          <strong>月あたり</strong>は期間全体（{meta?.histMeta?.period ?? ''}）の合計を{months}か月で割った額です。
+          その差が<strong>値上げ額</strong>で、現状額に対する割合が<strong>値上げ率</strong>です。
+          金額はすべて<strong>1か月あたり</strong>（期間全体〈{meta?.histMeta?.period ?? ''}〉の合計 ÷ {months}か月）、
+          数量は実績のまま固定しています。
         </p>
         <table className="tbl">
           <thead>
             <tr>
               <th>月</th>
-              <th style={nums}>現状額<br /><small>月あたり / 期間合計</small></th>
-              <th style={nums}>A基準額<br /><small>月あたり / 期間合計</small></th>
-              <th style={nums}>値上げ額<br /><small>月あたり / 期間合計</small></th>
-              <th style={nums}>値上げ率</th>
+              <th style={nums}>現状額<br /><small>月あたり</small></th>
+              <th style={nums}>A基準額<br /><small>月あたり</small></th>
+              <th style={nums}>値上げ額<br /><small>月あたり</small></th>
+              <th style={nums} title="値上げ額 ÷ 現状額">値上げ率</th>
             </tr>
           </thead>
           <tbody>
@@ -349,20 +348,11 @@ export default function Dashboard() {
                 return (
                   <tr key={label}>
                     <td><strong>{label}</strong></td>
-                    <td style={nums}>
-                      {yen(base / months)}
-                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{yen(base)}</div>
-                    </td>
-                    <td style={nums}>
-                      {yen(amt / months)}
-                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{yen(amt)}</div>
-                    </td>
+                    <td style={nums}>{yen(base / months)}</td>
+                    <td style={nums}>{yen(amt / months)}</td>
                     <td style={{ ...nums, fontWeight: 700,
                                  color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
                       {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
-                      <div style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)' }}>
-                        {gain === 0 ? '' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
-                      </div>
                     </td>
                     <td style={nums}>{rate == null ? '—' : `${rate > 0 ? '+' : ''}${rate}%`}</td>
                   </tr>
