@@ -51,6 +51,7 @@ interface DashboardRes {
 const num = (n: unknown) => Number(n ?? 0);
 const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
 
+const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
 
 /** KPIタイル。既存の .tiles / .tile の見た目に合わせる */
 function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -59,6 +60,147 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
       <div className="label">{label}</div>
       <div className="value">{value}</div>
       {sub && <div className="delta">{sub}</div>}
+    </div>
+  );
+}
+
+/**
+ * 金額のマス。すべて1か月あたりで出す（期間合計は出さない）。
+ * base を渡すと、その月の値上げ額と、現状額に対する値上げ率も添える。
+ */
+function AmtCell({ amt, base, months }: { amt: number; base?: number; months: number }) {
+  const gain = base == null ? null : amt - base;
+  const rate = base != null && base > 0 ? Math.round((gain! / base) * 1000) / 10 : null;
+  return (
+    <td style={nums}>
+      {yen(amt / months)}
+      {gain != null && (
+        <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2,
+                      color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
+          {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
+          {rate != null && gain !== 0 && (
+            <span style={{ fontWeight: 400, color: 'var(--muted)' }}>
+              {' '}({rate > 0 ? '+' : ''}{rate}%)
+            </span>
+          )}
+        </div>
+      )}
+    </td>
+  );
+}
+
+// 集計表の並び替えの対象。月の列は「その月の値上げ額（A基準額−現状額）」で並べる
+// （A基準額そのものだと規模の大きい区分が常に上に来て、値上げの大小が見えないため）
+type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'a1' | 'a2' | 'a3' | 'bsim';
+
+function sortValue(r: AbRow, col: SortCol): number | string {
+  switch (col) {
+    case 'name': return r.name ?? '';
+    case 'deals': return num(r.deals);
+    case 'qty': return num(r.qty);
+    case 'base': return num(r.base_amt);
+    case 'a1': return num(r.a1_amt) - num(r.base_amt);
+    case 'a2': return num(r.a2_amt) - num(r.base_amt);
+    case 'a3': return num(r.a3_amt) - num(r.base_amt);
+    case 'bsim': return num(r.bsim_amt) - num(r.base_amt);
+  }
+}
+
+/**
+ * 集計表。器具区分別・支店別・法人別で同じ形を使う。
+ * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
+ * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
+ */
+function AbTable({ head, rows, total, months, m1, m2, m3 }: {
+  head: string; rows: AbRow[]; total?: AbRow;
+  months: number; m1: string; m2: string; m3: string;
+}) {
+  // 未指定のときはサーバーの並び（現状額の大きい順）のまま
+  const [sort, setSort] = useState<{ col: SortCol; desc: boolean } | null>(null);
+
+  // 金額や件数は大きい順から、名前は読みの順から始める。
+  // 同じ見出しを押すたびに 逆順 → 解除（既定の並び）に戻る。
+  const toggleSort = (col: SortCol) => {
+    const firstDesc = col !== 'name';
+    if (!sort || sort.col !== col) setSort({ col, desc: firstDesc });
+    else if (sort.desc === firstDesc) setSort({ col, desc: !firstDesc });
+    else setSort(null);
+  };
+
+  const sorted = [...rows];
+  if (sort) {
+    sorted.sort((a, b) => {
+      const va = sortValue(a, sort.col);
+      const vb = sortValue(b, sort.col);
+      const c = typeof va === 'string' || typeof vb === 'string'
+        ? String(va).localeCompare(String(vb), 'ja')
+        : va - vb;
+      return sort.desc ? -c : c;
+    });
+  }
+
+  /** 並び替えできる見出し。案件一覧と同じ見た目（矢印つき） */
+  const Th = ({ col, right, title, children }: {
+    col: SortCol; right?: boolean; title?: string; children: React.ReactNode;
+  }) => {
+    const on = sort != null && sort.col === col;
+    const mark = !on || sort == null ? '' : sort.desc ? '▼' : '▲';
+    return (
+      <th className={`sortable${on ? ' sorted' : ''}`}
+          style={right ? nums : undefined}
+          onClick={() => toggleSort(col)}
+          title={`${title ? `${title}。` : ''}押すと並び替えます（もう一度で逆順、3回目で元の並び）`}>
+        {children}<span className="sort-mark">{mark}</span>
+      </th>
+    );
+  };
+
+  return (
+    <div className="tbl-scroll" style={{ maxHeight: 460 }}>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <Th col="name">{head}</Th>
+            <Th col="deals" right>件数</Th>
+            <Th col="qty" right title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
+              数量<br /><small>合計 / 月平均</small>
+            </Th>
+            <Th col="base" right title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
+              現状額<br /><small>月あたり</small>
+            </Th>
+            <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></Th>
+            <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></Th>
+            <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額（率）</small></Th>
+            <Th col="bsim" right
+                title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価。想定の値上げ額で並びます">
+              想定B基準<br /><small>想定額 / 値上げ額（率）</small>
+            </Th>
+          </tr>
+        </thead>
+        <tbody>
+          {[...sorted, ...(total ? [{ ...total, name: '合計' }] : [])].map((r, i) => {
+            const last = i === sorted.length;
+            const base = num(r.base_amt);
+            return (
+              <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
+                <td>{r.name || '—'}</td>
+                <td style={nums}>{num(r.deals).toLocaleString()}</td>
+                <td style={nums}>
+                  {num(r.qty).toLocaleString()}
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                    月{(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  </div>
+                </td>
+                <AmtCell amt={base} months={months} />
+                <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
+                <AmtCell amt={num(r.a2_amt)} base={base} months={months} />
+                <AmtCell amt={num(r.a3_amt)} base={base} months={months} />
+                <AmtCell amt={num(r.bsim_amt)} base={base} months={months} />
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -121,85 +263,6 @@ export default function Dashboard() {
   const m3 = data.aggMeta?.m3 || '3か月後';
   const months = data.months || 12;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
-
-  const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
-
-  /**
-   * 金額のマス。すべて1か月あたりで出す（期間合計は出さない）。
-   * base を渡すと、その月の値上げ額と、現状額に対する値上げ率も添える。
-   */
-  const AmtCell = ({ amt, base }: { amt: number; base?: number }) => {
-    const gain = base == null ? null : amt - base;
-    const rate = base != null && base > 0 ? Math.round((gain! / base) * 1000) / 10 : null;
-    return (
-      <td style={nums}>
-        {yen(amt / months)}
-        {gain != null && (
-          <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2,
-                        color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
-            {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
-            {rate != null && gain !== 0 && (
-              <span style={{ fontWeight: 400, color: 'var(--muted)' }}>
-                {' '}({rate > 0 ? '+' : ''}{rate}%)
-              </span>
-            )}
-          </div>
-        )}
-      </td>
-    );
-  };
-
-  /**
-   * 集計表。器具区分別・支店別・法人別で同じ形を使う。
-   * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
-   */
-  const AbTable = ({ head, rows }: { head: string; rows: AbRow[] }) => (
-    <div className="tbl-scroll" style={{ maxHeight: 460 }}>
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th>{head}</th>
-            <th style={nums}>件数</th>
-            <th style={nums} title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
-              数量<br /><small>合計 / 月平均</small>
-            </th>
-            <th style={nums} title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
-              現状額<br /><small>月あたり</small>
-            </th>
-            <th style={nums}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></th>
-            <th style={nums}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></th>
-            <th style={nums}>{m3}<br /><small>A基準額 / 値上げ額（率）</small></th>
-            <th style={nums} title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価">
-              想定B基準<br /><small>想定額 / 値上げ額（率）</small>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {[...rows, { ...t!, name: '合計' }].map((r, i) => {
-            const last = i === rows.length;
-            const base = num(r.base_amt);
-            return (
-              <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
-                <td>{r.name || '—'}</td>
-                <td style={nums}>{num(r.deals).toLocaleString()}</td>
-                <td style={nums}>
-                  {num(r.qty).toLocaleString()}
-                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    月{(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                  </div>
-                </td>
-                <AmtCell amt={base} />
-                <AmtCell amt={num(r.a1_amt)} base={base} />
-                <AmtCell amt={num(r.a2_amt)} base={base} />
-                <AmtCell amt={num(r.a3_amt)} base={base} />
-                <AmtCell amt={num(r.bsim_amt)} base={base} />
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
 
   return (
     <div>
@@ -363,15 +426,15 @@ export default function Dashboard() {
       </Card>
 
       <Card title="器具区分別の値上げ額">
-        <AbTable head="器具区分" rows={data.abByEquip ?? []} />
+        <AbTable head="器具区分" rows={data.abByEquip ?? []} total={t} months={months} m1={m1} m2={m2} m3={m3} />
       </Card>
 
       <Card title="支店別の値上げ額">
-        <AbTable head="支店" rows={data.abByBranch ?? []} />
+        <AbTable head="支店" rows={data.abByBranch ?? []} total={t} months={months} m1={m1} m2={m2} m3={m3} />
       </Card>
 
       <Card title="法人別の値上げ額（現状額の上位30）">
-        <AbTable head="法人" rows={data.abByCorp ?? []} />
+        <AbTable head="法人" rows={data.abByCorp ?? []} total={t} months={months} m1={m1} m2={m2} m3={m3} />
       </Card>
     </div>
   );
