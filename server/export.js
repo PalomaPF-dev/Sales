@@ -110,10 +110,10 @@ function round(v, digits = 0) {
 
 /**
  * ダッシュボードの表をExcelにする。画面と同じ数字・同じ並びで、
- * 「まとめ」「器具区分別」「支店別」「法人別」をシートに分ける。
+ * 「まとめ」「器具区分別」「支店別」「法人別（上位30社）」をシートに分ける。
  *
- * 画面は月あたりと期間合計を1つのマスに重ねているが、Excelでは
- * そのまま計算に使えるよう、列を分けて数値で入れる。
+ * 金額はすべて1か月あたり（期間合計の列は出さない。営業部の管理表の
+ * 形式に合わせた）。想定B基準は法人別のシートにだけ出す。
  */
 export function buildDashboardWorkbook(data, opts = {}) {
   const months = Number(data.months) > 0 ? Number(data.months) : 12;
@@ -132,8 +132,10 @@ export function buildDashboardWorkbook(data, opts = {}) {
     XLSX.utils.book_append_sheet(wb, ws, name);
   };
 
-  // ── 条件（どの絞り込みで出したかを残す）
-  const cond = [['項目', '内容']];
+  // ── 条件（いつ・どの絞り込みで出したかを残す）
+  // サーバーはUTCで動くため、日本時間に直した日付を出す
+  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const cond = [['価格調査データ', today], ['項目', '内容']];
   for (const [label, value] of opts.filters ?? []) cond.push([label, value]);
   if ((opts.filters ?? []).length === 0) cond.push(['絞り込み', 'なし（全件）']);
   cond.push([]);
@@ -141,59 +143,56 @@ export function buildDashboardWorkbook(data, opts = {}) {
   cond.push(['出荷実績の件数', n(data.histTotals?.deals)]);
   cond.push(['出荷実績の数量合計', round(data.histTotals?.qty)]);
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
-  cond.push(['対象の月数', months]);
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（月ごとに現状額・A基準額・値上げ額）
   const base = n(t.base_amt);
   const summary = [[
     '月', '現状額（月あたり）', 'A基準額（月あたり）', '値上げ額（月あたり）', '値上げ率',
-    '現状額（期間合計）', 'A基準額（期間合計）', '値上げ額（期間合計）',
   ]];
   for (const [label, amt] of [[m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]]) {
     const gain = amt - base;
     summary.push([
       label, round(base / months), round(amt / months), round(gain / months),
       base > 0 ? round((gain / base) * 100, 1) / 100 : '',
-      round(base), round(amt), round(gain),
     ]);
   }
-  addSheet('まとめ', summary, [12, 18, 18, 18, 10, 18, 18, 18]);
+  addSheet('まとめ', summary, [12, 18, 18, 18, 10]);
 
-  // ── 器具区分別・支店別・法人別（画面と同じ列）
-  // 画面と同じ並び。月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
-  // 期間合計はExcelでの計算用に3か月後の分だけ残す（÷月数は条件シートに書いてある）。
-  const head = (first) => [
+  // ── 器具区分別・支店別・法人別（画面と同じ数字）
+  // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
+  // 想定B基準は法人ごとに決める値のため、法人別のシートにだけ添える。
+  const head = (first, withBsim) => [
     first, '件数', '数量合計', '数量（月平均）',
     '現状額（月あたり）',
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
     `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`, `${m2} 値上げ率`,
     `${m3} A基準額（月あたり）`, `${m3} 値上げ額（月あたり）`, `${m3} 値上げ率`,
-    '想定B基準（月あたり）', '想定B基準の値上げ額（月あたり）', 'A基準との差（月あたり）',
-    '現状額（期間合計）', `${m3} A基準額（期間合計）`, `${m3} 値上げ額（期間合計）`,
+    ...(withBsim ? ['想定B基準（月あたり）'] : []),
   ];
-  const line = (r) => {
+  const line = (r, withBsim) => {
     const b = n(r.base_amt);
     const rate = (amt) => (b > 0 ? round(((amt - b) / b) * 100, 1) / 100 : '');
-    const g3 = n(r.a3_amt) - b;
     return [
       r.name || '—', n(r.deals), round(r.qty), round(n(r.qty) / months, 1),
       round(b / months),
       round(n(r.a1_amt) / months), round((n(r.a1_amt) - b) / months), rate(n(r.a1_amt)),
       round(n(r.a2_amt) / months), round((n(r.a2_amt) - b) / months), rate(n(r.a2_amt)),
-      round(n(r.a3_amt) / months), round(g3 / months), rate(n(r.a3_amt)),
-      round(n(r.bsim_amt) / months), round((n(r.bsim_amt) - b) / months),
-      round((n(r.bsim_amt) - n(r.a3_amt)) / months),
-      round(b), round(n(r.a3_amt)), round(g3),
+      round(n(r.a3_amt) / months), round((n(r.a3_amt) - b) / months), rate(n(r.a3_amt)),
+      ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };
-  const widths = [22, 8, 12, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 20, 18, 18, 18, 18];
-  for (const [sheet, label, rows] of [
-    ['器具区分別', '器具区分', data.abByEquip ?? []],
-    ['支店別', '支店', data.abByBranch ?? []],
-    ['法人別', '法人', data.abByCorp ?? []],
+  const widths = [22, 8, 12, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10];
+  for (const [sheet, label, rows, withBsim] of [
+    ['器具区分別', '器具区分', data.abByEquip ?? [], false],
+    ['支店別', '支店', data.abByBranch ?? [], false],
+    ['法人別（上位30社）', '法人', data.abByCorp ?? [], true],
   ]) {
-    addSheet(sheet, [head(label), ...rows.map(line), line({ ...t, name: '合計' })], widths);
+    addSheet(sheet,
+      [head(label, withBsim),
+        ...rows.map((r) => line(r, withBsim)),
+        line({ ...t, name: '合計' }, withBsim)],
+      withBsim ? [...widths, 18] : widths);
   }
 
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
