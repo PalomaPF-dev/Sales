@@ -24,12 +24,14 @@
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
   /*
     フォントはOS標準（Webフォントは使わない。社内ネットワークでの読み込み待ちを無くすため）。
-    Windows は英数字が Segoe UI、日本語がメイリオになる。
-    system-ui を先頭にすると日本語Windowsでは游ゴシック UI が当たるが、
-    線が細く薄く表示されて見づらいため、意図的にメイリオを優先している。
+    Windows は数字・英字も含めてメイリオで表示する。
+    system-ui を先頭にすると日本語Windowsでは游ゴシック UI が、
+    Segoe UI を先頭にすると数字が Segoe UI が当たるが、どちらも線が細く
+    「薄い・細い」と見づらさの指摘があったため、意図的にメイリオだけを優先する
+    （メイリオの英数字は Verdana 系で、画面表示での視認性が高い）。
     Mac はメイリオが無いので Hiragino Sans が当たる。
   */
-  font-family: 'Segoe UI', 'Meiryo', 'Hiragino Sans', system-ui, sans-serif;
+  font-family: 'Meiryo', 'Hiragino Sans', system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
