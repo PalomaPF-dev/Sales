@@ -75,7 +75,7 @@ function AmtCell({ amt, base, months }: { amt: number; base?: number; months: nu
     <td style={nums}>
       {yen(amt / months)}
       {gain != null && (
-        <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2,
+        <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2,
                       color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : 'var(--muted)' }}>
           {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
           {rate != null && gain !== 0 && (
@@ -187,7 +187,7 @@ function AbTable({ head, rows, total, months, m1, m2, m3 }: {
                 <td style={nums}>{num(r.deals).toLocaleString()}</td>
                 <td style={nums}>
                   {num(r.qty).toLocaleString()}
-                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>
                     月{(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                   </div>
                 </td>
