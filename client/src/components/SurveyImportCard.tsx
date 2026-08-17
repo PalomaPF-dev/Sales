@@ -94,6 +94,9 @@ export default function SurveyImportCard({ anchorYm, onDone }:
               （{parsed.p.months[0]} 〜 {parsed.p.months[parsed.p.months.length - 1]}
               の{parsed.p.months.length}か月）
               {parsed.p.hasQty ? '' : ' ・ 売上数の列が無いため単純平均で集約します'}
+              {parsed.p.hasBase
+                ? ' ・ 1-3月出荷単価と売上数もこのファイルの値に差し替えます'
+                : ' ・ 1-3月出荷単価の列が無いため、現状単価は今のままです'}
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>

@@ -15,7 +15,8 @@ import { api } from './api';
 export interface SurveyRow {
   customer_name: string;    // 法人の照合に使う（得意先名 → 法人グループ）
   model_code: string;
-  qty: unknown;             // 重み（1~3月の売上数。無ければ全行を同じ重みにする）
+  qty: unknown;             // 1~3月の売上数（3か月分の合計）。加重平均の重みにも使う
+  base_price: unknown;      // 1-3月出荷単価（現状単価）。無ければ null
   /** 月ごとの実単価。meta.months と同じ並び。値の無い月は null */
   prices: (number | null)[];
 }
@@ -28,6 +29,8 @@ export interface SurveyParsed {
   /** 見出しのままの月名（4月・5月…）。画面の確認用 */
   monthLabels: string[];
   hasQty: boolean;
+  /** 「1-3月出荷単価」の列があるか（現状単価もこのファイルから取り込める） */
+  hasBase: boolean;
 }
 
 /** 見出しの表記ゆれを吸収する（全角数字・全角かっこ） */
@@ -97,6 +100,10 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   // 重み（加重平均の分母）。マスタ登録と同じ「売上数」の列を使う
   const qtyAt = findLike('売上数');
 
+  // 現状単価（1-3月出荷単価）。「最新出荷単価」は今の単価ではないので外す。
+  // この列があれば、現状の単価・数量もこのファイルから取り込む
+  const baseAt = headers.findIndex((h) => h.includes('出荷単価') && !h.includes('最新'));
+
   const num = (v: unknown): number | null => {
     if (v === null || v === undefined || String(v).trim() === '') return null;
     const n = Number(String(v).replace(/[,¥\s]/g, ''));
@@ -117,6 +124,7 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       customer_name: String(r[col.customer_name] ?? '').trim(),
       model_code: model,
       qty: qtyAt >= 0 ? r[qtyAt] : null,
+      base_price: baseAt >= 0 ? r[baseAt] : null,
       prices,
     });
   }
@@ -128,6 +136,7 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     months: sortedMonths,
     monthLabels: sortedCols.map((mc) => mc.label),
     hasQty: qtyAt >= 0,
+    hasBase: baseAt >= 0,
   };
 }
 

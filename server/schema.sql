@@ -224,6 +224,9 @@ CREATE TABLE IF NOT EXISTS agg_staging (
 CREATE TABLE IF NOT EXISTS act_staging (
   ent_cd     TEXT NOT NULL,
   model_code TEXT NOT NULL,
+  -- 現状（1-3月出荷単価×売上数）と売上数の合計。現状単価もこのファイルから取り込む
+  base_amt REAL NOT NULL DEFAULT 0,
+  qty_sum  REAL NOT NULL DEFAULT 0,
   a1_amt   REAL NOT NULL DEFAULT 0,
   a2_amt   REAL NOT NULL DEFAULT 0,
   a3_amt   REAL NOT NULL DEFAULT 0,

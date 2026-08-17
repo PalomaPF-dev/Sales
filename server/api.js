@@ -2713,9 +2713,14 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     const a = acc.get(key) ?? {
       ent, model: String(r.model_code).trim(),
       amt: Array(ACT_SLOTS).fill(0), wgt: Array(ACT_SLOTS).fill(0),
+      base: 0, qty: 0,
     };
     const qty = num(r.qty);
     const w = qty > 0 ? qty : 1;
+    // 現状（1-3月出荷単価）。実単価と同じファイルから取るので、
+    // 「実際いくらで出たか」と「元がいくらか」が必ず同じ土俵になる
+    a.base += num(r.base_price) * qty;
+    a.qty += qty;
     const prices = Array.isArray(r.prices) ? r.prices : [];
     for (let i = 0; i < Math.min(prices.length, ACT_SLOTS); i++) {
       const p = num(prices[i]);
@@ -2726,9 +2731,10 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     acc.set(key, a);
   }
 
-  const vals = [...acc.values()].map((a) => [a.ent, a.model, ...a.amt, ...a.wgt]);
+  const vals = [...acc.values()].map((a) => [a.ent, a.model, a.base, a.qty, ...a.amt, ...a.wgt]);
   if (vals.length) {
-    const cols = ['ent_cd', 'model_code', ...actCols('a').map((c) => `${c}_amt`),
+    const cols = ['ent_cd', 'model_code', 'base_amt', 'qty_sum',
+      ...actCols('a').map((c) => `${c}_amt`),
       ...actCols('w').map((c) => `${c}_sum`)];
     await db.run(
       `INSERT INTO act_staging (${cols.join(',')})
@@ -2747,8 +2753,15 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   const stamp = now();
   const sets = Array.from({ length: ACT_SLOTS }, (_, i) =>
     `act_price_${i + 1} = CASE WHEN s.w${i + 1}_sum > 0 THEN s.a${i + 1}_amt / s.w${i + 1}_sum END`);
+  // 実単価に加えて、現状（1-3月出荷単価・売上数）も同じファイルの値へ差し替える。
+  // 単価の列が無いファイル（旧形式）では現状はそのまま残す
   await db.run(`
-    UPDATE deals SET ${sets.join(', ')}, updated_at = ?
+    UPDATE deals SET ${sets.join(', ')},
+      master_avg_price = CASE WHEN s.qty_sum > 0 AND s.base_amt > 0
+                              THEN s.base_amt / s.qty_sum ELSE deals.master_avg_price END,
+      master_qty = CASE WHEN s.qty_sum > 0 AND s.base_amt > 0
+                        THEN s.qty_sum ELSE deals.master_qty END,
+      updated_at = ?
     FROM act_staging s
     WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
 

@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-18-actual-prices-2';
+const SCHEMA_VERSION = '2026-08-18-survey-base';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -565,6 +565,9 @@ async function beforeSchema() {
     // blob_url があればそちらが正、無ければ従来どおり content（base64）を読む。
     'ALTER TABLE attachments ADD COLUMN blob_url TEXT',
     // 価格調査（実単価）の受け皿。月の並びは settings の actual_meta に持つ
+    // 価格調査から現状（1-3月出荷単価・売上数）も取り込むための集計列
+    'ALTER TABLE act_staging ADD COLUMN base_amt REAL NOT NULL DEFAULT 0',
+    'ALTER TABLE act_staging ADD COLUMN qty_sum REAL NOT NULL DEFAULT 0',
     'ALTER TABLE deals ADD COLUMN act_price_1 REAL',
     'ALTER TABLE deals ADD COLUMN act_price_2 REAL',
     'ALTER TABLE deals ADD COLUMN act_price_3 REAL',
