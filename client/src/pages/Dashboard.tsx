@@ -20,9 +20,16 @@ interface AbRow {
   qty: number;
   base_amt: number;
   a0_amt: number;
-  /** 実績（価格調査の月ごと）。act_amt_1 が4月ぶん…という並び。未取込なら入らない */
+  /**
+   * 実績（価格調査の月ごと）。act_amt_1 が4月ぶん…という並び。未取込なら入らない。
+   * amt=実績額、base=同じ品目ぶんの現状額、cnt=実単価のあった件数、
+   * up=現状より上がった件数、same=単価が変わっていない件数
+   */
   [key: `act_amt_${number}`]: number | undefined;
   [key: `act_base_${number}`]: number | undefined;
+  [key: `act_cnt_${number}`]: number | undefined;
+  [key: `act_up_${number}`]: number | undefined;
+  [key: `act_same_${number}`]: number | undefined;
   a1_amt: number;
   a2_amt: number;
   a3_amt: number;
@@ -45,7 +52,11 @@ interface DashboardRes {
     b_rows: number;
   };
   /** 価格調査の実単価から出した月ごとの実績。実単価のある案件だけで集計する */
-  actuals?: { ym: string; amount: number; base: number; deals: number }[];
+  actuals?: {
+    ym: string; amount: number; base: number; deals: number;
+    /** 内訳。up=現状より上がった件数、same=単価が変わっていない件数 */
+    up?: number; same?: number;
+  }[];
   /** 集計表に出している実績の月の並び（実単価が未取込なら空） */
   abActYms?: string[];
   abTotals?: AbRow;
@@ -76,7 +87,9 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
  * 金額のマス。すべて1か月あたりで出す（期間合計は出さない）。
  * base を渡すと、その月の値上げ額と、現状額に対する値上げ率も添える。
  */
-function AmtCell({ amt, base, months }: { amt: number; base?: number; months: number }) {
+function AmtCell({ amt, base, months, note, noteTitle }: {
+  amt: number; base?: number; months: number; note?: string; noteTitle?: string;
+}) {
   const gain = base == null ? null : amt - base;
   const rate = base != null && base > 0 ? Math.round((gain! / base) * 1000) / 10 : null;
   return (
@@ -91,6 +104,11 @@ function AmtCell({ amt, base, months }: { amt: number; base?: number; months: nu
               {' '}({rate > 0 ? '+' : ''}{rate}%)
             </span>
           )}
+        </div>
+      )}
+      {note && (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }} title={noteTitle}>
+          {note}
         </div>
       )}
     </td>
@@ -217,7 +235,12 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
                   r[`act_amt_${i + 1}`] == null
                     ? <td key={ym} style={nums}>—</td>
                     : <AmtCell key={ym} amt={num(r[`act_amt_${i + 1}`])}
-                               base={num(r[`act_base_${i + 1}`])} months={months} />
+                               base={num(r[`act_base_${i + 1}`])} months={months}
+                               note={`↑${num(r[`act_up_${i + 1}`]).toLocaleString()}`
+                                 + ` / ${num(r[`act_cnt_${i + 1}`]).toLocaleString()}件`}
+                               noteTitle={`${ym}: 上がった ${num(r[`act_up_${i + 1}`]).toLocaleString()}件`
+                                 + ` / 単価が変わっていない ${num(r[`act_same_${i + 1}`]).toLocaleString()}件`
+                                 + `（実単価のあった ${num(r[`act_cnt_${i + 1}`]).toLocaleString()}件）`} />
                 ))}
                 <AmtCell amt={num(r.a0_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
@@ -404,11 +427,16 @@ export default function Dashboard() {
         {(data.actuals ?? []).map((a) => {
           const gain = (a.amount - a.base) / months;
           const rate = a.base > 0 ? Math.round(((a.amount - a.base) / a.base) * 1000) / 10 : null;
+          // 上がった件数と、単価が変わっていない件数。
+          // 差が出ない月も「まだ動いていない」と読めるようにする
+          const up = num(a.up);
+          const same = num(a.same);
           return (
             <Kpi key={`act-${a.ym}`}
                  label={`値上げ額（月あたり） ${a.ym} 実績`}
                  value={`${gain >= 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
-                 sub={rate == null ? undefined : `実単価のあった ${a.deals.toLocaleString()}件で ${rate > 0 ? '+' : ''}${rate}%`} />
+                 sub={`上がった ${up.toLocaleString()}件 / 単価同じ ${same.toLocaleString()}件`
+                   + `（実単価 ${a.deals.toLocaleString()}件${rate == null ? '' : `・${rate > 0 ? '+' : ''}${rate}%`}）`} />
           );
         })}
         {([
@@ -445,6 +473,9 @@ export default function Dashboard() {
               <th>月</th>
               <th>区分</th>
               <th style={nums}>件数</th>
+              <th style={nums} title="実績の月だけ。現状より単価が上がった件数と、単価が変わっていない件数">
+                内訳<br /><small>上がった / 同じ</small>
+              </th>
               <th style={nums}>現状額<br /><small>月あたり</small></th>
               <th style={nums}>金額<br /><small>月あたり</small></th>
               <th style={nums}>値上げ額<br /><small>月あたり</small></th>
@@ -461,11 +492,13 @@ export default function Dashboard() {
               ...(data.actuals ?? []).map((a) => ({
                 key: `act-${a.ym}`, ym: a.ym, kind: '実績' as const,
                 deals: a.deals, base: a.base, amt: a.amount,
+                up: num(a.up), same: num(a.same),
               })),
               ...([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
                 .map(([label, amt]) => ({
                   key: `plan-${label}`, ym: label, kind: '計画' as const,
                   deals: num(t?.deals), base: num(t?.base_amt), amt,
+                  up: null, same: null,
                 })),
             ]
               .sort((a, b) => (a.ym === b.ym ? (a.kind === '実績' ? -1 : 1) : a.ym.localeCompare(b.ym)))
@@ -479,6 +512,16 @@ export default function Dashboard() {
                       <span className={`badge ${row.kind === '実績' ? 'green' : 'blue'}`}>{row.kind}</span>
                     </td>
                     <td style={nums}>{row.deals.toLocaleString()}</td>
+                    <td style={nums}>
+                      {row.up == null ? '—' : (
+                        <span title={`上がった ${row.up.toLocaleString()}件 / 単価が変わっていない ${row.same?.toLocaleString()}件`}>
+                          <span style={{ fontWeight: 700, color: row.up > 0 ? '#15803d' : 'var(--muted)' }}>
+                            {row.up.toLocaleString()}
+                          </span>
+                          {' / '}{row.same?.toLocaleString()}
+                        </span>
+                      )}
+                    </td>
                     <td style={nums}>{yen(row.base / months)}</td>
                     <td style={nums}>{yen(row.amt / months)}</td>
                     <td style={{ ...nums, fontWeight: 700,

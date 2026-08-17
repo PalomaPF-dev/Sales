@@ -1303,11 +1303,20 @@ async function dashboardData(query, user) {
   // （4月からの推移を、まとめの表と同じ粒度で見られるようにする）。
   // 走査は既存の集計と同じ1回のままで、足し算だけが増える。
   const actSlot = (actualMeta?.months ?? []).length;
+  // 上がった/単価同じ の判定。実単価は円単位なので0.5円未満のズレは「同じ」とみなす
+  const actUp = (n) => `act_price_${n} > 0 AND (${effPrice}) IS NOT NULL
+       AND ${f(`act_price_${n}`)} - (${effPrice}) >= 0.5`;
+  const actSame = (n) => `act_price_${n} > 0 AND (${effPrice}) IS NOT NULL
+       AND ABS(${f(`act_price_${n}`)} - (${effPrice})) < 0.5`;
+
   const abAct = Array.from({ length: actSlot }, (_, i) => `,
     SUM(CASE WHEN act_price_${i + 1} > 0
          THEN ${f(`act_price_${i + 1}`)} * (${effQty}) END) AS act_amt_${i + 1},
     SUM(CASE WHEN act_price_${i + 1} > 0
-         THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1}`).join('');
+         THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1},
+    SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1},
+    SUM(CASE WHEN ${actUp(i + 1)} THEN 1 ELSE 0 END) AS act_up_${i + 1},
+    SUM(CASE WHEN ${actSame(i + 1)} THEN 1 ELSE 0 END) AS act_same_${i + 1}`).join('');
 
   const ab = `
     COUNT(*) AS deals,
@@ -1348,7 +1357,9 @@ async function dashboardData(query, user) {
   const actAmt = Array.from({ length: ACT_SLOTS }, (_, i) => `
     SUM(CASE WHEN act_price_${i + 1} > 0 THEN ${f(`act_price_${i + 1}`)} * (${effQty}) END) AS act_amt_${i + 1},
     SUM(CASE WHEN act_price_${i + 1} > 0 THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1},
-    SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1}`).join(',');
+    SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1},
+    SUM(CASE WHEN ${actUp(i + 1)} THEN 1 ELSE 0 END) AS act_up_${i + 1},
+    SUM(CASE WHEN ${actSame(i + 1)} THEN 1 ELSE 0 END) AS act_same_${i + 1}`).join(',');
 
   const [pureTotals, aMonths, abByEquip, abByBranch, abByCorp] = await Promise.all([
     // 品目件数・数量と、月ごとの実単価は同じ絞り込みなので1文にまとめる
@@ -1373,7 +1384,9 @@ async function dashboardData(query, user) {
   // 合計だけをもう一度数えると10万件の走査が1回増えるので、ここで足す
   const sumKeys = ['deals', 'qty', 'base_amt', 'a0_amt', 'a1_amt', 'a2_amt', 'a3_amt',
     'bsim_amt', 'b_rows',
-    ...Array.from({ length: actSlot }, (_, i) => [`act_amt_${i + 1}`, `act_base_${i + 1}`]).flat()];
+    ...Array.from({ length: actSlot }, (_, i) =>
+      [`act_amt_${i + 1}`, `act_base_${i + 1}`, `act_cnt_${i + 1}`,
+        `act_up_${i + 1}`, `act_same_${i + 1}`]).flat()];
   const abTotals = abByEquip.reduce((acc, r) => {
     for (const k of sumKeys) acc[k] = Number(acc[k] ?? 0) + Number(r[k] ?? 0);
     return acc;
@@ -1389,6 +1402,9 @@ async function dashboardData(query, user) {
     amount: Number(actMonths?.[`act_amt_${i + 1}`] ?? 0),
     base: Number(actMonths?.[`act_base_${i + 1}`] ?? 0),
     deals: Number(actMonths?.[`act_cnt_${i + 1}`] ?? 0),
+    // 内訳。値上げがまだ反映されていない（単価同じ）も件数で分かるようにする
+    up: Number(actMonths?.[`act_up_${i + 1}`] ?? 0),
+    same: Number(actMonths?.[`act_same_${i + 1}`] ?? 0),
   })).filter((a) => a.deals > 0);
   return {
     scope: scopeInfo(user),

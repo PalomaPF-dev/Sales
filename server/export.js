@@ -171,26 +171,29 @@ export function buildDashboardWorkbook(data, opts = {}) {
   // ── まとめ（実績と計画を月の流れで並べる）
   const base = n(t.base_amt);
   const summary = [[
-    '月', '区分', '件数', '現状額（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
+    '月', '区分', '件数', '上がった件数', '単価同じ件数',
+    '現状額（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
   ]];
   const summaryRows = [
     // 価格調査の実単価（実績）。現状額もその月に実単価のある案件だけで出す
     ...(data.actuals ?? []).map((a) => ({
       ym: a.ym, kind: '実績', deals: n(a.deals), b: n(a.base), amt: n(a.amount),
+      up: n(a.up), same: n(a.same),
     })),
     // A基準（計画）
     ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
-      ym, kind: '計画', deals: n(t.deals), b: base, amt,
+      ym, kind: '計画', deals: n(t.deals), b: base, amt, up: '', same: '',
     })),
   ].sort((a, b2) => (a.ym === b2.ym ? (a.kind === '実績' ? -1 : 1) : String(a.ym).localeCompare(String(b2.ym))));
   for (const r of summaryRows) {
     const gain = r.amt - r.b;
     summary.push([
-      r.ym, r.kind, r.deals, round(r.b / months), round(r.amt / months), round(gain / months),
+      r.ym, r.kind, r.deals, r.up, r.same,
+      round(r.b / months), round(r.amt / months), round(gain / months),
       r.b > 0 ? round((gain / r.b) * 100, 1) / 100 : '',
     ]);
   }
-  addSheet('まとめ', summary, [12, 8, 10, 18, 18, 18, 10]);
+  addSheet('まとめ', summary, [12, 8, 10, 12, 12, 18, 18, 18, 10]);
 
   // ── 器具区分別・支店別・法人別（画面と同じ数字）
   // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
@@ -204,6 +207,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ...abActYms.flatMap((ym) => [
       `${ym} 実績額（月あたり）`, `${ym} 実績の現状額（月あたり）`,
       `${ym} 値上げ額（月あたり）`, `${ym} 値上げ率`,
+      `${ym} 上がった件数`, `${ym} 単価同じ件数`,
     ]),
     `${m0} A基準額（月あたり）`, `${m0} 値上げ額（月あたり）`, `${m0} 値上げ率`,
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
@@ -219,11 +223,12 @@ export function buildDashboardWorkbook(data, opts = {}) {
       round(b / months),
       ...abActYms.flatMap((_, i) => {
         const amt = r[`act_amt_${i + 1}`];
-        if (amt == null) return ['', '', '', ''];   // その月の実績が無い
+        if (amt == null) return ['', '', '', '', '', ''];   // その月の実績が無い
         const ab = n(r[`act_base_${i + 1}`]);
         return [
           round(n(amt) / months), round(ab / months), round((n(amt) - ab) / months),
           ab > 0 ? round(((n(amt) - ab) / ab) * 100, 1) / 100 : '',
+          n(r[`act_up_${i + 1}`]), n(r[`act_same_${i + 1}`]),
         ];
       }),
       round(n(r.a0_amt) / months), round((n(r.a0_amt) - b) / months), rate(n(r.a0_amt)),
@@ -234,7 +239,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ];
   };
   const widths = [22, 8, 12, 18,
-    ...abActYms.flatMap(() => [18, 20, 18, 10]),
+    ...abActYms.flatMap(() => [18, 20, 18, 10, 12, 12]),
     18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
   for (const [sheet, label, rows, withBsim] of [
     ['器具区分別', '器具区分', data.abByEquip ?? [], false],
