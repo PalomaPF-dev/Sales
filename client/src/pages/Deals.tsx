@@ -17,8 +17,7 @@ interface DealsRes {
   };
   page: number;
   size: number;
-  months: number;        // 月別履歴の対象月数（数量の月平均に使う）
-  masterMonths?: number; // マスタ登録の出荷実績（1~3月など）の月数
+  months: number;   // 月別履歴の対象月数（数量の月平均に使う）
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
@@ -248,20 +247,17 @@ export default function Deals() {
   };
 
   // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う。
-  // 数量はどちらも期間の合計なので、それぞれの月数で割って月平均を出す。
+  // マスタ登録の売上数は月平均の値なのでそのまま、月別履歴は期間合計を月数で割る。
   const months = data?.months || 12;
-  const mMonths = data?.masterMonths || 3;
   const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
   /** マスタ登録の実績がある行か */
   const isMaster = (d: Deal) => d.master_avg_price != null;
   /** 実績の平均単価（マスタ登録優先） */
   const effPrice = (d: Deal) => (isMaster(d) ? d.master_avg_price : d.hist_avg_price);
-  /** 実績の数量合計（マスタ登録優先） */
-  const effQty = (d: Deal) => (isMaster(d) ? d.master_qty : d.hist_qty);
-  /** 月平均の数量（期間の合計 ÷ その実績の月数） */
+  /** 月平均の数量 */
   const monthlyQty = (d: Deal) => {
-    const q = effQty(d);
-    return q == null ? null : Number(q) / (isMaster(d) ? mMonths : months);
+    if (isMaster(d)) return d.master_qty ?? null;
+    return d.hist_qty == null ? null : Number(d.hist_qty) / months;
   };
 
   /**
@@ -537,8 +533,9 @@ export default function Deals() {
               <Th col="office">営業所</Th>
               <Th col="sales_person">担当者</Th>
               <Th col="hist_avg_price" className="num sep">平均単価</Th>
-              <Th col="hist_qty" className="num" title="期間の合計と、1か月あたり（期間の月数で割った値）">
-                数量<br /><small>合計 / 月平均</small>
+              <Th col="hist_qty" className="num"
+                  title="1か月あたりの数量（マスタ登録は月平均の値そのまま、月別履歴は期間合計÷月数）">
+                数量<br /><small>月平均</small>
               </Th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
               <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
@@ -600,12 +597,8 @@ export default function Deals() {
                     )}
                   </td>
                   <td className="num">
-                    {yen(effQty(d))}
-                    {monthlyQty(d) != null && (
-                      <div className="sub" title={`1か月あたり（÷${isMaster(d) ? mMonths : months}か月）`}>
-                        月{Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
-                      </div>
-                    )}
+                    {monthlyQty(d) == null ? '—'
+                      : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                   </td>
 
                   {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日。

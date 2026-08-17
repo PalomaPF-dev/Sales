@@ -29,18 +29,21 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
  * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
-function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
+function buildColumns({ months, withCost, aggMeta }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
   const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
 
-  // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ基準）
+  // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ基準）。
+  // マスタ登録の売上数は月平均の値のためそのまま、月別履歴は期間合計を月数で割って月平均にする
   const isMaster = (r) => r.master_avg_price != null;
   const effPrice = (r) => (isMaster(r) ? r.master_avg_price : r.hist_avg_price);
-  const effQty = (r) => (isMaster(r) ? r.master_qty : r.hist_qty);
-  const effMonths = (r) => (isMaster(r) ? masterMonths : months);
+  const monthlyQty = (r) => {
+    if (isMaster(r)) return r.master_qty;
+    return r.hist_qty == null ? null : Number(r.hist_qty) / months;
+  };
   const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';
 
   /** 値上げ幅 = その月のA基準 − 実績単価。単価0は未申請なので空にする */
@@ -66,8 +69,7 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
 
     // 出荷実績（案件の土台）。マスタ登録の1~3月実績を優先し、無い行は月別履歴
     ['平均出荷単価', (r) => round(effPrice(r))],
-    ['数量合計', (r) => round(effQty(r))],
-    ['数量（月平均）', (r) => (effQty(r) == null ? '' : round(Number(effQty(r)) / effMonths(r), 2))],
+    ['数量（月平均）', (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
     ['実績の出どころ', (r) => (effPrice(r) == null ? '' : (isMaster(r) ? `マスタ登録（${basePeriod}）` : '月別履歴'))],
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
@@ -93,8 +95,8 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
     [`値上げ幅 ${m3}`, diff('a_price_m3')],
     [`値上げ額（月あたり）${m3}`, (r) => {
       const a = Number(r.a_price_m3);
-      if (!(a > 0) || effPrice(r) == null || effQty(r) == null) return '';
-      return round((a - Number(effPrice(r))) * (Number(effQty(r)) / effMonths(r)));
+      if (!(a > 0) || effPrice(r) == null || monthlyQty(r) == null) return '';
+      return round((a - Number(effPrice(r))) * Number(monthlyQty(r)));
     }],
 
     // 交渉

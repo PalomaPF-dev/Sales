@@ -1248,15 +1248,14 @@ async function dashboardData(query, user) {
   // （FLOAT は PostgreSQL では倍精度、SQLite では通常の実数）。
   const f = (c) => `CAST(${c} AS FLOAT)`;
   const months = await histMonths();
-  const mMonths = await masterMonths();
 
   // 実績の基準。マスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ）。
-  // 数量は期間の長さが行ごとに違うため、月平均 × 対象月数（months）に換算して揃える。
+  // マスタ登録の売上数は月平均の値なので、対象月数（months）を掛けて期間ぶんに換算して揃える。
   // こうすると「合計して ÷months で月あたりを出す」これまでの作りのまま正しい値になる。
   const effPrice = `CASE WHEN master_avg_price IS NOT NULL
                          THEN ${f('master_avg_price')} ELSE ${f('hist_avg_price')} END`;
   const effQty = `CASE WHEN master_avg_price IS NOT NULL
-                       THEN ${f('master_qty')} / ${mMonths} * ${months} ELSE ${f('hist_qty')} END`;
+                       THEN ${f('master_qty')} * ${months} ELSE ${f('hist_qty')} END`;
 
   const aCol = (n) =>
     `(CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${effPrice} END) * (${effQty})`;
@@ -1560,7 +1559,7 @@ function dealOrder(q, mon = null) {
   // 数量は期間の長さが行ごとに違うため、月平均に直して比べる。
   if (mon) {
     if (col === 'hist_avg_price') col = EFF_PRICE;
-    if (col === 'hist_qty') col = `(${effMonthlyQty(mon.mm, mon.hm)})`;
+    if (col === 'hist_qty') col = `(${effMonthlyQty(mon.hm)})`;
   }
   const dir = String(q.dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
@@ -1666,31 +1665,15 @@ async function histMonths() {
 }
 
 /**
- * マスタ登録の出荷実績の対象月数。「1~3月」なら3。
- *
- * マスタ登録の売上数（master_qty）は期間の合計で入っているので、
- * 月平均を出すのに使う。期間は取込時の見出し（「1~3月出荷単価」など）から
- * agg_meta に残してあり、読めない形式なら3か月とみなす。
- */
-async function masterMonths() {
-  const row = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
-  let meta = null;
-  try { meta = row ? JSON.parse(row.value) : null; } catch { /* 壊れていたら既定値 */ }
-  const m = /(\d{1,2})\s*[~〜～-]\s*(\d{1,2})\s*月/.exec(String(meta?.basePeriod ?? ''));
-  if (m) {
-    const span = Number(m[2]) - Number(m[1]) + 1;
-    if (span > 0 && span <= 12) return span;
-  }
-  return 3;
-}
-
-/**
  * 案件一覧の「実績」の基準。マスタ登録の1~3月出荷実績を優先し、
  * マスタ登録が無い行は月別履歴で補う（表示・並び替え・値上げ額の合計を同じ基準にする）。
+ *
+ * マスタ登録の売上数（master_qty）は月平均の値で入っているのでそのまま使い、
+ * 月別履歴（hist_qty）は期間全体の合計なので月数で割って月平均にする。
  */
 const EFF_PRICE = 'COALESCE(master_avg_price, hist_avg_price)';
-const effMonthlyQty = (mm, hm) => `CASE WHEN master_avg_price IS NOT NULL
-       THEN COALESCE(CAST(master_qty AS FLOAT), 0) / ${mm}
+const effMonthlyQty = (hm) => `CASE WHEN master_avg_price IS NOT NULL
+       THEN COALESCE(CAST(master_qty AS FLOAT), 0)
        ELSE COALESCE(CAST(hist_qty AS FLOAT), 0) / ${hm} END`;
 
 api.get('/deals', wrap(async (req, res) => {
@@ -1698,7 +1681,6 @@ api.get('/deals', wrap(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const months = await histMonths();
-  const mMonths = await masterMonths();
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
     // 値上げ幅（その月のA基準−実績単価）× 月平均の数量。
@@ -1709,7 +1691,7 @@ api.get('/deals', wrap(async (req, res) => {
              ${[1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${EFF_PRICE} IS NOT NULL
                        THEN (CAST(a_price_m${n} AS FLOAT) - ${EFF_PRICE})
-                            * (${effMonthlyQty(mMonths, months)})
+                            * (${effMonthlyQty(months)})
                   END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -1722,12 +1704,12 @@ api.get('/deals', wrap(async (req, res) => {
         (SELECT c.note FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_note,
         (SELECT COUNT(*) FROM negotiation_logs l WHERE l.corp_code = deal_calc.corp_code) AS corp_log_count
       FROM deal_calc ${where}
-      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}
+      ORDER BY ${dealOrder(req.query, { hm: months })}
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   attachStandardMatch(rows, await loadStandardIndex());
   hideCost(rows, req.user);
-  res.json({ rows, totals, page, size, months, masterMonths: mMonths });
+  res.json({ rows, totals, page, size, months });
 }));
 
 /**
@@ -1790,13 +1772,12 @@ api.get('/deals/export', wrap(async (req, res) => {
     });
   }
   const months = await histMonths();
-  const mMonths = await masterMonths();
   const [rows, priceTypes, aggMetaRow] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
       FROM deal_calc ${where}
-      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
+      ORDER BY ${dealOrder(req.query, { hm: months })}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
@@ -1804,7 +1785,7 @@ api.get('/deals/export', wrap(async (req, res) => {
   const withCost = isAdminRole(req.user.role);
   let aggMeta = null;
   try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら仮の見出し */ }
-  const buffer = buildWorkbook(rows, priceTypes, { months, masterMonths: mMonths, withCost, aggMeta });
+  const buffer = buildWorkbook(rows, priceTypes, { months, withCost, aggMeta });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));
