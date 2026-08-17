@@ -1374,8 +1374,10 @@ async function dashboardData(query, user) {
              GROUP BY equip_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch`, p),
+    // 法人はすべて返す（画面でタブに分けて出すため）。
+    // まとまりの数は法人グループの数（千件に満たない）なので、上限は付けない
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC LIMIT 30`, p),
+             GROUP BY corp_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC`, p),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));

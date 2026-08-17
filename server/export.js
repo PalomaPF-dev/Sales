@@ -133,7 +133,7 @@ function round(v, digits = 0) {
 
 /**
  * ダッシュボードの表をExcelにする。画面と同じ数字・同じ並びで、
- * 「まとめ」「器具区分別」「支店別」「法人別（上位30社）」をシートに分ける。
+ * 「まとめ」「器具区分別」「支店別」「法人別」をシートに分ける。
  *
  * 金額はすべて1か月あたり（期間合計の列は出さない。営業部の管理表の
  * 形式に合わせた）。想定B基準は法人別のシートにだけ出す。
@@ -244,7 +244,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   for (const [sheet, label, rows, withBsim] of [
     ['器具区分別', '器具区分', data.abByEquip ?? [], false],
     ['支店別', '支店', data.abByBranch ?? [], false],
-    ['法人別（上位30社）', '法人', data.abByCorp ?? [], true],
+    ['法人別', '法人', data.abByCorp ?? [], true],
   ]) {
     addSheet(sheet,
       [head(label, withBsim),

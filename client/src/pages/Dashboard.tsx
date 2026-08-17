@@ -67,6 +67,13 @@ interface DashboardRes {
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string } | null;
 }
 
+/** 集計表の切り替え。列が多いので縦に並べず、タブで出し分ける */
+const TABS = [
+  { key: 'equip' as const, label: '器具区分別', head: '器具区分', title: '器具区分別の値上げ額' },
+  { key: 'branch' as const, label: '支店別', head: '支店', title: '支店別の値上げ額' },
+  { key: 'corp' as const, label: '法人別', head: '法人', title: '法人別の値上げ額（現状額の大きい順）' },
+];
+
 const num = (n: unknown) => Number(n ?? 0);
 const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
 
@@ -299,13 +306,17 @@ export default function Dashboard() {
       .catch(() => setReady(true));
   }, []);
 
+  // 集計を取り直すのは絞り込みが変わったときだけ。
+  // 表の切り替え（tab）は手元の値を出し分けるだけなので、10万件の集計は走らせない
+  const filterQs = FILTER_KEYS.map((k) => `${k}=${get(k)}`).join('&');
+
   useEffect(() => {
     if (!ready) return;
     const qs = new URLSearchParams();
     for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
     setData(null);
     api<DashboardRes>(`/dashboard?${qs}`).then(setData).catch((e) => setMsg(e.message));
-  }, [params, ready]);
+  }, [filterQs, ready]);
 
   if (msg) return <div className="alert error">{msg}</div>;
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
@@ -316,6 +327,11 @@ export default function Dashboard() {
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
   const months = data.months || 12;
+  // 表の切り替え。既定は器具区分別（URLの tab で切り替える）
+  const tab = (['equip', 'branch', 'corp'] as const).includes(get('tab') as never)
+    ? (get('tab') as 'equip' | 'branch' | 'corp') : 'equip';
+  const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
+    (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
   return (
@@ -536,17 +552,27 @@ export default function Dashboard() {
         </table>
       </Card>
 
-      <Card title="器具区分別の値上げ額">
-        <AbTable head="器具区分" rows={data.abByEquip ?? []} total={t} months={months} actYms={data.abActYms} m0={m0} m1={m1} m2={m2} m3={m3} />
-      </Card>
-
-      <Card title="支店別の値上げ額">
-        <AbTable head="支店" rows={data.abByBranch ?? []} total={t} months={months} actYms={data.abActYms} m0={m0} m1={m1} m2={m2} m3={m3} />
-      </Card>
-
-      <Card title="法人別の値上げ額（現状額の上位30）">
-        <AbTable head="法人" rows={data.abByCorp ?? []} total={t} months={months} actYms={data.abActYms} m0={m0} m1={m1} m2={m2} m3={m3} />
-      </Card>
+      {/*
+        器具区分別・支店別・法人別はどれも列が多いため、縦に並べず切り替えで出す。
+        選んだタブはURLに残るので、開き直しても同じ表が出る。
+      */}
+      <div className="card">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>{TABS.find((x) => x.key === tab)?.title}</h3>
+          <div className="seg" style={{ marginLeft: 'auto' }}>
+            {TABS.map((x) => (
+              <button key={x.key} className={tab === x.key ? 'on' : ''}
+                      onClick={() => setParam('tab', x.key === 'equip' ? '' : x.key)}>
+                {x.label}
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>{rowsOf(x.key).length.toLocaleString()}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
+                 total={t} months={months} actYms={data.abActYms}
+                 m0={m0} m1={m1} m2={m2} m3={m3} />
+      </div>
     </div>
   );
 }
