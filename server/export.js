@@ -171,7 +171,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
   // 想定B基準は法人ごとに決める値のため、法人別のシートにだけ添える。
   const head = (first, withBsim) => [
-    first, '件数', '数量合計', '数量（月平均）',
+    first, '件数', '数量（月平均）',
     '現状額（月あたり）',
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
     `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`, `${m2} 値上げ率`,
@@ -182,7 +182,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
     const b = n(r.base_amt);
     const rate = (amt) => (b > 0 ? round(((amt - b) / b) * 100, 1) / 100 : '');
     return [
-      r.name || '—', n(r.deals), round(r.qty), round(n(r.qty) / months, 1),
+      r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
       round(b / months),
       round(n(r.a1_amt) / months), round((n(r.a1_amt) - b) / months), rate(n(r.a1_amt)),
       round(n(r.a2_amt) / months), round((n(r.a2_amt) - b) / months), rate(n(r.a2_amt)),
@@ -190,7 +190,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
       ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };
-  const widths = [22, 8, 12, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10];
+  const widths = [22, 8, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10];
   for (const [sheet, label, rows, withBsim] of [
     ['器具区分別', '器具区分', data.abByEquip ?? [], false],
     ['支店別', '支店', data.abByBranch ?? [], false],

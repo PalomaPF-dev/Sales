@@ -162,8 +162,8 @@ function AbTable({ head, rows, total, months, m1, m2, m3 }: {
           <tr>
             <Th col="name">{head}</Th>
             <Th col="deals" right>件数</Th>
-            <Th col="qty" right title={`対象期間（${months}か月）に換算した合計と、1か月あたり`}>
-              数量<br /><small>合計 / 月平均</small>
+            <Th col="qty" right title="1か月あたりの数量">
+              数量<br /><small>月平均</small>
             </Th>
             <Th col="base" right title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
               現状額<br /><small>月あたり</small>
@@ -186,10 +186,7 @@ function AbTable({ head, rows, total, months, m1, m2, m3 }: {
                 <td>{r.name || '—'}</td>
                 <td style={nums}>{num(r.deals).toLocaleString()}</td>
                 <td style={nums}>
-                  {num(r.qty).toLocaleString()}
-                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    月{(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                  </div>
+                  {(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </td>
                 <AmtCell amt={base} months={months} />
                 <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
@@ -292,7 +289,7 @@ export default function Dashboard() {
         下の表の<strong>現状額</strong>は実績単価×数量で、値上げしなかった場合の金額です。
         各月の<strong>A基準額</strong>はA基準前提で数量を固定した金額で、その差が値上げ額、
         現状額に対する割合が<strong>値上げ率</strong>です。
-        金額はすべて<strong>1か月あたり</strong>（期間全体の合計 ÷ {months}か月）です。
+        金額はすべて<strong>1か月あたり</strong>です。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
 
@@ -391,8 +388,7 @@ export default function Dashboard() {
         <p className="pt-note" style={{ marginTop: 0 }}>
           <strong>現状額</strong>は値上げしなかった場合、<strong>A基準額</strong>は申請単価どおりの場合、
           その差が<strong>値上げ額</strong>で、現状額に対する割合が<strong>値上げ率</strong>です。
-          金額はすべて<strong>1か月あたり</strong>（期間全体〈{meta?.histMeta?.period ?? ''}〉の合計 ÷ {months}か月）、
-          数量は実績のまま固定しています。
+          金額はすべて<strong>1か月あたり</strong>、数量は実績のまま固定しています。
         </p>
         <table className="tbl">
           <thead>
