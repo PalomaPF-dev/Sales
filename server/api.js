@@ -1543,9 +1543,15 @@ const DEFAULT_ORDER = 'corp_name, customer_name, equip_name, model_name, id';
  * 未入力の行は末尾に寄せる。SQLiteはNULLを先頭、PostgreSQLは末尾に置くため、
  * 「NULLかどうか」を先に並べて、どちらのDBでも同じ見え方にする。
  */
-function dealOrder(q) {
-  const col = SORTABLE.get(String(q.sort ?? ''));
+function dealOrder(q, mon = null) {
+  let col = SORTABLE.get(String(q.sort ?? ''));
   if (!col) return DEFAULT_ORDER;
+  // 実績の列は、表示と同じ「マスタ登録の1~3月実績を優先した値」で並べる。
+  // 数量は期間の長さが行ごとに違うため、月平均に直して比べる。
+  if (mon) {
+    if (col === 'hist_avg_price') col = EFF_PRICE;
+    if (col === 'hist_qty') col = `(${effMonthlyQty(mon.mm, mon.hm)})`;
+  }
   const dir = String(q.dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
 }
@@ -1646,21 +1652,51 @@ async function histMonths() {
   return 12;
 }
 
+/**
+ * マスタ登録の出荷実績の対象月数。「1~3月」なら3。
+ *
+ * マスタ登録の売上数（master_qty）は期間の合計で入っているので、
+ * 月平均を出すのに使う。期間は取込時の見出し（「1~3月出荷単価」など）から
+ * agg_meta に残してあり、読めない形式なら3か月とみなす。
+ */
+async function masterMonths() {
+  const row = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
+  let meta = null;
+  try { meta = row ? JSON.parse(row.value) : null; } catch { /* 壊れていたら既定値 */ }
+  const m = /(\d{1,2})\s*[~〜～-]\s*(\d{1,2})\s*月/.exec(String(meta?.basePeriod ?? ''));
+  if (m) {
+    const span = Number(m[2]) - Number(m[1]) + 1;
+    if (span > 0 && span <= 12) return span;
+  }
+  return 3;
+}
+
+/**
+ * 案件一覧の「実績」の基準。マスタ登録の1~3月出荷実績を優先し、
+ * マスタ登録が無い行は月別履歴で補う（表示・並び替え・値上げ額の合計を同じ基準にする）。
+ */
+const EFF_PRICE = 'COALESCE(master_avg_price, hist_avg_price)';
+const effMonthlyQty = (mm, hm) => `CASE WHEN master_avg_price IS NOT NULL
+       THEN COALESCE(CAST(master_qty AS FLOAT), 0) / ${mm}
+       ELSE COALESCE(CAST(hist_qty AS FLOAT), 0) / ${hm} END`;
+
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const months = await histMonths();
+  const mMonths = await masterMonths();
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
-    // 値上げ幅（その月のA基準−実績の平均単価）× 月平均の数量（数量合計÷月数）。
+    // 値上げ幅（その月のA基準−実績単価）× 月平均の数量。
+    // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴（表示と同じ基準）。
     db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
              ${[1, 2, 3].map((n) => `
-             SUM(CASE WHEN a_price_m${n} > 0 AND hist_avg_price IS NOT NULL
-                       THEN (CAST(a_price_m${n} AS FLOAT) - hist_avg_price)
-                            * COALESCE(hist_qty, 0) / ${months}
+             SUM(CASE WHEN a_price_m${n} > 0 AND ${EFF_PRICE} IS NOT NULL
+                       THEN (CAST(a_price_m${n} AS FLOAT) - ${EFF_PRICE})
+                            * (${effMonthlyQty(mMonths, months)})
                   END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -1673,12 +1709,12 @@ api.get('/deals', wrap(async (req, res) => {
         (SELECT c.note FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_note,
         (SELECT COUNT(*) FROM negotiation_logs l WHERE l.corp_code = deal_calc.corp_code) AS corp_log_count
       FROM deal_calc ${where}
-      ORDER BY ${dealOrder(req.query)}
+      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   attachStandardMatch(rows, await loadStandardIndex());
   hideCost(rows, req.user);
-  res.json({ rows, totals, page, size, months });
+  res.json({ rows, totals, page, size, months, masterMonths: mMonths });
 }));
 
 /**
@@ -1740,21 +1776,22 @@ api.get('/deals/export', wrap(async (req, res) => {
         + '器具区分・担当者・得意先などで絞り込んでから実行してください',
     });
   }
-  const [rows, priceTypes, months, aggMetaRow] = await Promise.all([
+  const months = await histMonths();
+  const mMonths = await masterMonths();
+  const [rows, priceTypes, aggMetaRow] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
       FROM deal_calc ${where}
-      ORDER BY ${dealOrder(req.query)}`, params),
+      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
-    histMonths(),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
   // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = isAdminRole(req.user.role);
   let aggMeta = null;
   try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら仮の見出し */ }
-  const buffer = buildWorkbook(rows, priceTypes, { months, withCost, aggMeta });
+  const buffer = buildWorkbook(rows, priceTypes, { months, masterMonths: mMonths, withCost, aggMeta });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));

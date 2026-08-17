@@ -17,7 +17,8 @@ interface DealsRes {
   };
   page: number;
   size: number;
-  months: number;   // 出荷実績の対象月数（数量の月平均に使う）
+  months: number;        // 月別履歴の対象月数（数量の月平均に使う）
+  masterMonths?: number; // マスタ登録の出荷実績（1~3月など）の月数
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
@@ -246,11 +247,22 @@ export default function Deals() {
     if (ok) setMsg({ kind: 'ok', text: '適用年月を保存しました' });
   };
 
-  // 出荷実績の対象月数。数量は期間全体の合計なので、割って月平均を出す
+  // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う。
+  // 数量はどちらも期間の合計なので、それぞれの月数で割って月平均を出す。
   const months = data?.months || 12;
-  /** 月平均の数量（期間の合計 ÷ 月数） */
-  const monthlyQty = (d: Deal) =>
-    (d.hist_qty == null ? null : Number(d.hist_qty) / months);
+  const mMonths = data?.masterMonths || 3;
+  const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
+  /** マスタ登録の実績がある行か */
+  const isMaster = (d: Deal) => d.master_avg_price != null;
+  /** 実績の平均単価（マスタ登録優先） */
+  const effPrice = (d: Deal) => (isMaster(d) ? d.master_avg_price : d.hist_avg_price);
+  /** 実績の数量合計（マスタ登録優先） */
+  const effQty = (d: Deal) => (isMaster(d) ? d.master_qty : d.hist_qty);
+  /** 月平均の数量（期間の合計 ÷ その実績の月数） */
+  const monthlyQty = (d: Deal) => {
+    const q = effQty(d);
+    return q == null ? null : Number(q) / (isMaster(d) ? mMonths : months);
+  };
 
   /**
    * A基準の1マス。申請単価と、その単価の承認日（マスタ登録の登録日）を重ねて出す。
@@ -282,14 +294,15 @@ export default function Deals() {
    */
   const aDiff = (d: Deal, price: number | null | undefined, label: string) => {
     // マスタ単価0は「未申請」の印。値上げ幅としては出さない
-    if (price == null || Number(price) <= 0 || d.hist_avg_price == null) return '—';
-    const base = Number(d.hist_avg_price);
+    if (price == null || Number(price) <= 0 || effPrice(d) == null) return '—';
+    const base = Number(effPrice(d));
     const diff = Number(price) - base;
     if (diff === 0) return '0';
     const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
     return (
       <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : undefined}
-            title={`A基準（${label}の申請単価）− 実績の平均出荷単価`}>
+            title={`A基準（${label}の申請単価）− 実績の平均単価`
+              + `（${isMaster(d) ? `マスタ登録の${basePeriod}出荷実績` : '月別履歴'}）`}>
         {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
         {rate != null && <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>}
       </span>
@@ -312,7 +325,9 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>出荷実績の法人×品目</strong>を土台に、価格を比較します。
-        実績は期間全体の平均出荷単価と数量（合計と月平均）、A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
+        実績は<strong>マスタ登録の{basePeriod}出荷実績</strong>（平均単価と数量）を優先し、
+        マスタ登録に無い行は月別履歴{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}の値に「履歴」の印を付けて表示します。
+        A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
         B基準は実際の決定単価（営業企画・管理者が入力）です。
         A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
         <strong>値上げ幅</strong>は月ごとに単価が変わるため3か月分を並べ、
@@ -417,7 +432,7 @@ export default function Deals() {
             <b>{data.totals.count.toLocaleString()}</b>件
             {' ・ '}完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
             {/* 絞り込んだ全件の値上げ額（1か月あたり）。月ごとに単価が変わるので3つ出す */}
-            <span title="値上げ幅（A基準−実績の平均単価）× 月平均の数量 を、絞り込んだ全件で合計した金額">
+            <span title={`値上げ幅（A基準−実績の平均単価）× 月平均の数量 を、絞り込んだ全件で合計した金額。実績はマスタ登録の${basePeriod}出荷実績を優先し、無い行は月別履歴`}>
               {' ・ '}値上げ額（月）合計{' '}
               {([['m1', data.totals.raise_m1], ['m2', data.totals.raise_m2], ['m3', data.totals.raise_m3]] as const)
                 .map(([key, v], i) => (
@@ -502,8 +517,10 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={7} className="grp">基本情報</th>
-              <th colSpan={2} className="grp sep">
-                出荷実績<small>{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}</small>
+              <th colSpan={2} className="grp sep"
+                  title={`マスタ登録の${basePeriod}出荷実績を表示します。`
+                    + `マスタ登録に無い行は月別履歴${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}の値で、「履歴」の印を付けています`}>
+                出荷実績<small>（マスタ登録 {basePeriod}）</small>
               </th>
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
               <th className="num grp sep">B基準</th>
@@ -520,7 +537,7 @@ export default function Deals() {
               <Th col="office">営業所</Th>
               <Th col="sales_person">担当者</Th>
               <Th col="hist_avg_price" className="num sep">平均単価</Th>
-              <Th col="hist_qty" className="num" title={`期間全体の合計と、1か月あたり（÷${months}か月）`}>
+              <Th col="hist_qty" className="num" title="期間の合計と、1か月あたり（期間の月数で割った値）">
                 数量<br /><small>合計 / 月平均</small>
               </Th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
@@ -572,12 +589,20 @@ export default function Deals() {
                   <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
 
-                  {/* 出荷実績（法人×品目）。案件の土台 */}
-                  <td className="num sep">{yen(d.hist_avg_price)}</td>
+                  {/* 出荷実績（法人×品目）。マスタ登録の1~3月実績を優先し、無い行は月別履歴に「履歴」の印 */}
+                  <td className="num sep">
+                    {yen(effPrice(d))}
+                    {effPrice(d) != null && !isMaster(d) && (
+                      <div className="sub"
+                           title={`マスタ登録に無い行のため、月別履歴${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}の平均単価を表示しています`}>
+                        履歴
+                      </div>
+                    )}
+                  </td>
                   <td className="num">
-                    {yen(d.hist_qty)}
+                    {yen(effQty(d))}
                     {monthlyQty(d) != null && (
-                      <div className="sub" title={`1か月あたり（÷${months}か月）`}>
+                      <div className="sub" title={`1か月あたり（÷${isMaster(d) ? mMonths : months}か月）`}>
                         月{Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                       </div>
                     )}

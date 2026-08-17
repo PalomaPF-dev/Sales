@@ -59,6 +59,8 @@ export interface Deal {
   b_price?: number | null;          // B基準: 実際の決定単価
   hist_avg_price?: number | null;   // 出荷実績（月別履歴）の平均単価（法人×品目）
   hist_qty?: number | null;         // 出荷実績の数量合計（法人×品目）
+  master_avg_price?: number | null; // マスタ登録の1~3月出荷実績の平均単価（数量加重平均）
+  master_qty?: number | null;       // マスタ登録の1~3月売上数の合計
   /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */
   std_name?: string | null;
   /** 判別の方法。code=器種ガスコード一致 / name=品名一致 / similar=類似（先頭一致） */
