@@ -244,9 +244,11 @@ export default function Dashboard() {
           next.set('aDateYm', m.aggMeta.m0);
           setParams(next, { replace: true });
         }
+        // 既定の絞り込みと同じ回で集計を始める。
+        // 先に集計を始めると、絞り込み前の重い集計（10万件）を1回捨てることになる
+        setReady(true);
       })
-      .catch(() => {})
-      .finally(() => setReady(true));
+      .catch(() => setReady(true));
   }, []);
 
   useEffect(() => {

@@ -745,6 +745,7 @@ api.post('/admin/cleanup-blank-corp', wrap(async (req, res) => {
   ]) {
     try { await db.run(sql); } catch { /* 無ければ何もしない */ }
   }
+  invalidateMetaCache();
   const r = await db.run(`DELETE FROM deals WHERE ${BLANK_CORP_WHERE}`);
   const { total } = await db.get('SELECT COUNT(*) AS total FROM deals');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
@@ -1121,10 +1122,30 @@ api.get('/users', wrap(async (req, res) => {
   res.json(await db.all('SELECT id, name, role, branch, office FROM users WHERE active = 1 ORDER BY id'));
 }));
 
+/**
+ * 絞り込みの選択肢（/meta）の作り置き。
+ *
+ * 中身は取込でしか変わらないのに、案件10万件の集計を6回走らせるため、
+ * 画面を開くたびに数秒かかっていた。閲覧範囲ごとに作り置きして使い回す。
+ * 取込のあとは invalidateMetaCache() で捨てる（画面には最新が出る）。
+ */
+const META_CACHE_MS = 5 * 60 * 1000;
+const metaCache = new Map();
+
+function invalidateMetaCache() {
+  metaCache.clear();
+}
+
 api.get('/meta', wrap(async (req, res) => {
   // 絞り込みの候補も閲覧範囲に合わせる。
   // ここを絞らないと、担当者名や法人名の一覧から他営業所の取引先が分かってしまう。
   const scope = scopeConditions(req.user);
+  // 作り置きは閲覧範囲ごと（支店・営業所で中身が変わるため）
+  const cacheKey = JSON.stringify([scope.where, scope.params]);
+  const hit = metaCache.get(cacheKey);
+  if (hit && hit.until > Date.now()) {
+    return res.json({ ...hit.body, scope: scopeInfo(req.user) });
+  }
   const and = scope.where.length ? ` AND ${scope.where.join(' AND ')}` : '';
   const sp = scope.params;
 
@@ -1141,20 +1162,15 @@ api.get('/meta', wrap(async (req, res) => {
   branches.sort((a, b) => comparePref(a.name, b.name));
   offices.sort((a, b) => comparePref(a.name, b.name));
 
-  // マスタ登録（集約表）の取込情報。A基準の月の見出しなどに使う
-  const aggMetaRow = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
-  const histMetaRow = await db.get("SELECT value FROM settings WHERE key = 'hist_meta'");
-  // 価格調査（実単価）の取込情報。実績の月の見出しに使う
-  const actualMetaRow = await db.get("SELECT value FROM settings WHERE key = 'actual_meta'");
+  // 取込の情報（A基準の月の見出し・実単価の月など）は1回でまとめて読む
+  const { aggMeta, histMeta, actualMeta } = await loadImportMeta();
 
-  res.json({
+  const body = {
     priceTypes, equips, persons, customers, branches, offices,
     corps,
-    aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
-    histMeta: histMetaRow ? JSON.parse(histMetaRow.value) : null,
-    actualMeta: actualMetaRow ? JSON.parse(actualMetaRow.value) : null,
-    // 画面に「いま何が見えているか」を出すための情報
-    scope: scopeInfo(req.user),
+    aggMeta,
+    histMeta,
+    actualMeta,
     exportMaxRows: EXPORT_MAX_ROWS,
     // 弾ごとの進み具合。案件一覧の絞り込みに使う
     states: [
@@ -1163,7 +1179,10 @@ api.get('/meta', wrap(async (req, res) => {
       { code: 'done', name: '完了' },
     ],
     corpStatuses: CORP_STATUSES,
-  });
+  };
+  metaCache.set(cacheKey, { body, until: Date.now() + META_CACHE_MS });
+  // 画面に「いま何が見えているか」を出すための情報は人ごとに変わるため、作り置きに含めない
+  res.json({ ...body, scope: scopeInfo(req.user) });
 }));
 
 // ---- 閲覧範囲（役割ごとに見えるデータを絞る） ----
@@ -1250,8 +1269,7 @@ async function dashboardData(query, user) {
   // まとまりごとに丸めがズレる。倍精度に上げてから足す
   // （FLOAT は PostgreSQL では倍精度、SQLite では通常の実数）。
   const f = (c) => `CAST(${c} AS FLOAT)`;
-  const months = await histMonths();
-  const mMonths = await masterMonths();
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
 
   // 実績の基準。マスタ登録の単価を優先し、無い品目は出荷実績で補う（案件一覧と同じ）。
   // マスタ登録の売上数は月平均（÷3）×対象月数（months）で期間ぶんに換算して揃える。
@@ -1322,33 +1340,36 @@ async function dashboardData(query, user) {
     SUM(CASE WHEN act_price_${i + 1} > 0 THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1},
     SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1}`).join(',');
 
-  const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByCorp, aggMetaRow, actMonths, actualMetaRow] = await Promise.all([
-    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty
+  const [pureTotals, aMonths, abByEquip, abByBranch, abByCorp] = await Promise.all([
+    // 品目件数・数量と、月ごとの実単価は同じ絞り込みなので1文にまとめる
+    // （案件は10万件あり、走査の回数がそのまま待ち時間になるため）
+    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty, ${actAmt}
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
     db.get(`SELECT ${monthAgg},
               SUM(CASE WHEN a_price_m3 IS NOT NULL THEN 1 ELSE 0 END) AS covered
             FROM deal_calc ${planJoin} ${where}`, p),
-    db.get(`SELECT ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}`, p),
     db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY equip_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch`, p),
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY corp_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC LIMIT 30`, p),
-    db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
-    // 実単価は絞り込みだけを受ける（A基準の有無や承認日は掛けない。
-    // 実績はA基準の申請とは別に、出た分がそのまま記録されるため）
-    db.get(`SELECT ${actAmt} FROM deal_calc ${pure.where}`, pure.params),
-    db.get("SELECT value FROM settings WHERE key = 'actual_meta'"),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
 
-  let aggMeta = null;
-  try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら無し */ }
-  let actualMeta = null;
-  try { actualMeta = actualMetaRow ? JSON.parse(actualMetaRow.value) : null; } catch { /* 壊れていたら無し */ }
+  // 全体の合計は器具区分別を足したもの（同じ条件のため一致する）。
+  // 合計だけをもう一度数えると10万件の走査が1回増えるので、ここで足す
+  const sumKeys = ['deals', 'qty', 'base_amt', 'a0_amt', 'a1_amt', 'a2_amt', 'a3_amt',
+    'bsim_amt', 'b_rows'];
+  const abTotals = abByEquip.reduce((acc, r) => {
+    for (const k of sumKeys) acc[k] = Number(acc[k] ?? 0) + Number(r[k] ?? 0);
+    return acc;
+  }, Object.fromEntries(sumKeys.map((k) => [k, 0])));
+
+  const histTotals = { deals: pureTotals?.deals, qty: pureTotals?.qty };
+  const actMonths = pureTotals;
   // 月の並び（actual_meta）と、月ごとの実績額を突き合わせて返す。
   // 現状額（base）は、その月に実績のある案件だけを同じ数量で足したもの。
   // 実績のある案件だけで比べないと、値上げ額が実態より大きく（小さく）出てしまう。
@@ -1673,12 +1694,8 @@ function attachStandardMatch(rows, index) {
  * 出荷実績の対象月数。「2025/07〜2026/06」なら12。
  *
  * 数量は期間全体の合計で持っているので、月平均を出すのに使う。
- * 取込時に数えた月数を settings に入れてあり、無ければ期間の文字から数える。
  */
-async function histMonths() {
-  const row = await db.get("SELECT value FROM settings WHERE key = 'hist_meta'");
-  let meta = null;
-  try { meta = row ? JSON.parse(row.value) : null; } catch { /* 壊れていたら既定値 */ }
+function monthsOfHist(meta) {
   // 期間の文字（2025/07〜2026/06）から数えるのを最優先にする。
   // 保存してある月数は、旧版の取込が月見出しの列数を重複して数えていて
   // 実際の2倍（24など）になっていることがあるため、期間が読めないときだけ使う
@@ -1699,16 +1716,41 @@ async function histMonths() {
  * 月平均を出すのに使う。期間は取込時の見出し（「1~3月出荷単価」など）から
  * agg_meta に残してあり、読めない形式なら3か月とみなす。
  */
-async function masterMonths() {
-  const row = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
-  let meta = null;
-  try { meta = row ? JSON.parse(row.value) : null; } catch { /* 壊れていたら既定値 */ }
+function monthsOfMaster(meta) {
   const m = /(\d{1,2})\s*[~〜～-]\s*(\d{1,2})\s*月/.exec(String(meta?.basePeriod ?? ''));
   if (m) {
     const span = Number(m[2]) - Number(m[1]) + 1;
     if (span > 0 && span <= 12) return span;
   }
   return 3;
+}
+
+/**
+ * 取込の情報（出荷実績・マスタ登録・価格調査）をまとめて1回で読む。
+ *
+ * それぞれ別に問い合わせると、画面を開くたびに往復が3回増える。
+ * 遠くのDBでは1回あたりが積み上がるため、1文にまとめている。
+ */
+async function loadImportMeta() {
+  let rows = [];
+  try {
+    rows = await db.all(
+      "SELECT key, value FROM settings WHERE key IN ('hist_meta', 'agg_meta', 'actual_meta')");
+  } catch { /* 取込前で settings が無い場合は既定値で進む */ }
+  const parse = (key) => {
+    const row = rows.find((r) => r.key === key);
+    try { return row ? JSON.parse(row.value) : null; } catch { return null; }
+  };
+  const histMeta = parse('hist_meta');
+  const aggMeta = parse('agg_meta');
+  const actualMeta = parse('actual_meta');
+  return {
+    histMeta,
+    aggMeta,
+    actualMeta,
+    months: monthsOfHist(histMeta),
+    masterMonths: monthsOfMaster(aggMeta),
+  };
 }
 
 /**
@@ -1727,8 +1769,7 @@ api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
-  const months = await histMonths();
-  const mMonths = await masterMonths();
+  const { months, masterMonths: mMonths } = await loadImportMeta();
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
     // 値上げ幅（その月のA基準−実績単価）× 月平均の数量。
@@ -1819,24 +1860,17 @@ api.get('/deals/export', wrap(async (req, res) => {
         + '器具区分・担当者・得意先などで絞り込んでから実行してください',
     });
   }
-  const months = await histMonths();
-  const mMonths = await masterMonths();
-  const [rows, priceTypes, aggMetaRow, actualMetaRow] = await Promise.all([
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  const [rows, priceTypes] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
       FROM deal_calc ${where}
       ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
-    db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
-    db.get("SELECT value FROM settings WHERE key = 'actual_meta'"),
   ]);
   // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = isAdminRole(req.user.role);
-  let aggMeta = null;
-  try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら仮の見出し */ }
-  let actualMeta = null;
-  try { actualMeta = actualMetaRow ? JSON.parse(actualMetaRow.value) : null; } catch { /* 壊れていたら実単価なし */ }
   const buffer = buildWorkbook(rows, priceTypes,
     { months, masterMonths: mMonths, withCost, aggMeta, actualMeta });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -2570,6 +2604,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   ]);
   await db.run('DELETE FROM agg_staging');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
+  invalidateMetaCache();
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups) });
 }));
 
@@ -2693,6 +2728,7 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     db.get('SELECT COUNT(*) AS groups FROM act_staging'),
   ]);
   await db.run('DELETE FROM act_staging');
+  invalidateMetaCache();
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups) });
 }));
 
@@ -2845,6 +2881,7 @@ api.post('/hist-import/finish', wrap(async (req, res) => {
   removed += Number(blank?.changes ?? 0);
   const { total } = await db.get('SELECT COUNT(*) AS total FROM deals');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
+  invalidateMetaCache();
   res.json({ removed, total: Number(total) });
 }));
 

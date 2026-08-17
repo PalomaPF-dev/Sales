@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-17-actual-prices';
+const SCHEMA_VERSION = '2026-08-18-actual-prices-2';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -581,6 +581,19 @@ async function beforeSchema() {
     await tryAlter(sql);
   }
 
+  // 価格調査の枠として作った仮の列。実単価（act_price_*）に置き換えたので落とす。
+  // 一度も値が入っていないため、消してもデータは失われない。
+  // deal_calc が d.* でこの列を参照しているので、先にビューを落とす
+  // （このあとスキーマ適用で作り直される）。
+  try {
+    await db.get('SELECT survey_price FROM deals LIMIT 1');   // 残っているDBでだけ成功する
+    console.log('価格調査の仮の列を削除します（実単価へ移行）');
+    try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
+    for (const col of ['survey_price', 'survey_qty']) {
+      await tryAlter(`ALTER TABLE deals DROP COLUMN ${col}`);
+    }
+  } catch { /* 列が無い＝移行済みか新規DB。何もしない */ }
+
   // マスタ登録の列追加で deal_calc の列構成が変わる。CREATE OR REPLACE では
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
@@ -659,12 +672,6 @@ async function migrate() {
     }
   } catch (e) {
     console.warn(`マイグレーション警告: 完了を引き継げませんでした → ${e.message}`);
-  }
-
-  // 価格調査の枠として作った仮の列。実単価（act_price_*）に置き換えたので落とす。
-  // 一度も値が入っていないため、消してもデータは失われない。
-  for (const col of ['survey_price', 'survey_qty']) {
-    await tryAlter(`ALTER TABLE deals DROP COLUMN ${col}`);
   }
 
   // 申請ワークフローの廃止にともない使わなくなったテーブルを片付ける。
