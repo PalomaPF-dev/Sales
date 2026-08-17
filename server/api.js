@@ -1250,13 +1250,11 @@ async function dashboardData(query, user) {
   const months = await histMonths();
   const mMonths = await masterMonths();
 
-  // 実績の基準。マスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ）。
-  // マスタ登録の売上数は3か月の合計なので、月平均（÷3）×対象月数（months）で期間ぶんに換算して揃える。
+  // 実績の基準。マスタ登録の1~3月出荷実績だけを使う（案件一覧と同じ）。
+  // 売上数は3か月の合計なので、月平均（÷3）×対象月数（months）で期間ぶんに換算する。
   // こうすると「合計して ÷months で月あたりを出す」これまでの作りのまま正しい値になる。
-  const effPrice = `CASE WHEN master_avg_price IS NOT NULL
-                         THEN ${f('master_avg_price')} ELSE ${f('hist_avg_price')} END`;
-  const effQty = `CASE WHEN master_avg_price IS NOT NULL
-                       THEN ${f('master_qty')} / ${mMonths} * ${months} ELSE ${f('hist_qty')} END`;
+  const effPrice = f('master_avg_price');
+  const effQty = `${f('master_qty')} / ${mMonths} * ${months}`;
 
   const aCol = (n) =>
     `(CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${effPrice} END) * (${effQty})`;
@@ -1561,7 +1559,7 @@ function dealOrder(q, mon = null) {
   // 数量は期間の長さが行ごとに違うため、月平均に直して比べる。
   if (mon) {
     if (col === 'hist_avg_price') col = EFF_PRICE;
-    if (col === 'hist_qty') col = `(${effMonthlyQty(mon.mm, mon.hm)})`;
+    if (col === 'hist_qty') col = `(${effMonthlyQty(mon.mm)})`;
   }
   const dir = String(q.dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
@@ -1686,16 +1684,13 @@ async function masterMonths() {
 }
 
 /**
- * 案件一覧の「実績」の基準。マスタ登録の1~3月出荷実績を優先し、
- * マスタ登録が無い行は月別履歴で補う（表示・並び替え・値上げ額の合計を同じ基準にする）。
+ * 案件一覧の「実績」の基準。マスタ登録の1~3月出荷実績だけを使う
+ * （月別履歴は案件の行を作る土台としてだけ使い、単価・数量には出さない）。
  *
- * 数量はどちらも期間の合計なので、それぞれの月数（マスタ登録は3、
- * 月別履歴は12など）で割って月平均にする。
+ * 売上数は期間（3か月）の合計なので、月数で割って月平均にする。
  */
-const EFF_PRICE = 'COALESCE(master_avg_price, hist_avg_price)';
-const effMonthlyQty = (mm, hm) => `CASE WHEN master_avg_price IS NOT NULL
-       THEN COALESCE(CAST(master_qty AS FLOAT), 0) / ${mm}
-       ELSE COALESCE(CAST(hist_qty AS FLOAT), 0) / ${hm} END`;
+const EFF_PRICE = 'CAST(master_avg_price AS FLOAT)';
+const effMonthlyQty = (mm) => `COALESCE(CAST(master_qty AS FLOAT), 0) / ${mm}`;
 
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
@@ -1713,7 +1708,7 @@ api.get('/deals', wrap(async (req, res) => {
              ${[1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${EFF_PRICE} IS NOT NULL
                        THEN (CAST(a_price_m${n} AS FLOAT) - ${EFF_PRICE})
-                            * (${effMonthlyQty(mMonths, months)})
+                            * (${effMonthlyQty(mMonths)})
                   END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。

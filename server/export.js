@@ -36,14 +36,11 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
 
-  // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ基準）。
-  // 数量はどちらも期間の合計のため、それぞれの月数で割って月平均にする
-  const isMaster = (r) => r.master_avg_price != null;
-  const effPrice = (r) => (isMaster(r) ? r.master_avg_price : r.hist_avg_price);
-  const monthlyQty = (r) => {
-    if (isMaster(r)) return r.master_qty == null ? null : Number(r.master_qty) / masterMonths;
-    return r.hist_qty == null ? null : Number(r.hist_qty) / months;
-  };
+  // 実績はマスタ登録の1~3月出荷実績だけを使う（案件一覧と同じ基準。無い行は空欄）。
+  // 売上数は3か月の合計のため、月数で割って月平均にする
+  const effPrice = (r) => (r.master_avg_price ?? null);
+  const monthlyQty = (r) =>
+    (r.master_qty == null ? null : Number(r.master_qty) / masterMonths);
   const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';
   // 価格調査（当月の前の月の実績）。取込に対応するまでは空欄の枠だけ出す
   const surveyYm = (() => {
@@ -74,12 +71,11 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
     ['営業所', (r) => r.office],
     ['担当者', (r) => r.sales_person],
 
-    // 出荷実績（案件の土台）。マスタ登録の1~3月実績を優先し、無い行は月別履歴。
+    // 出荷実績（マスタ登録の1~3月実績。無い行は空欄）。
     // 価格調査は取込に対応するまで空欄（枠だけ先に作ってある）
     [`価格調査 ${surveyYm || '実績'}`, (r) => round(r.survey_price)],
-    ['平均出荷単価', (r) => round(effPrice(r))],
+    [`平均出荷単価（${basePeriod}）`, (r) => round(effPrice(r))],
     ['数量（月平均）', (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
-    ['実績の出どころ', (r) => (effPrice(r) == null ? '' : (isMaster(r) ? `マスタ登録（${basePeriod}）` : '月別履歴'))],
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
     [`A基準 ${m0}`, (r) => round(r.a_price_m0)],
@@ -160,8 +156,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   if ((opts.filters ?? []).length === 0) cond.push(['絞り込み', 'なし（全件）']);
   cond.push([]);
   cond.push(['表示範囲', data.scope?.label ?? '']);
-  cond.push(['出荷実績の件数', n(data.histTotals?.deals)]);
-  cond.push(['出荷実績の数量合計', round(data.histTotals?.qty)]);
+  cond.push(['品目件数（母数）', n(data.histTotals?.deals)]);
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
