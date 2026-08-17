@@ -76,6 +76,14 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta, actualMeta 
 
     // 価格調査の実単価（月ごと）。計画（A基準）と実際の単価を並べて見るための列
     ...actMonths.map((ym, i) => [`実単価 ${ym}`, (r) => round(r[`act_price_${i + 1}`])]),
+    // 実際に上がった幅（一番新しい月の実単価 − 現状の平均単価）。画面と同じ
+    ...(actMonths.length ? [['上がり幅（実単価−現状）', (r) => {
+      for (let i = actMonths.length; i >= 1; i--) {
+        const v = r[`act_price_${i}`];
+        if (v != null && effPrice(r) != null) return round(Number(v) - Number(effPrice(r)));
+      }
+      return '';
+    }]] : []),
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
     [`A基準 ${m0}`, (r) => round(r.a_price_m0)],
@@ -187,9 +195,16 @@ export function buildDashboardWorkbook(data, opts = {}) {
   // ── 器具区分別・支店別・法人別（画面と同じ数字）
   // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
   // 想定B基準は法人ごとに決める値のため、法人別のシートにだけ添える。
+  // 実績（価格調査の実単価）は月ごとに出す。その月に実単価のあった品目だけの
+  // 集計なので、比べる現状額もその品目ぶん（実績の現状額）を並べて入れる
+  const abActYms = Array.isArray(data.abActYms) ? data.abActYms : [];
   const head = (first, withBsim) => [
     first, '件数', '数量（月平均）',
     '現状額（月あたり）',
+    ...abActYms.flatMap((ym) => [
+      `${ym} 実績額（月あたり）`, `${ym} 実績の現状額（月あたり）`,
+      `${ym} 値上げ額（月あたり）`, `${ym} 値上げ率`,
+    ]),
     `${m0} A基準額（月あたり）`, `${m0} 値上げ額（月あたり）`, `${m0} 値上げ率`,
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
     `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`, `${m2} 値上げ率`,
@@ -202,6 +217,15 @@ export function buildDashboardWorkbook(data, opts = {}) {
     return [
       r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
       round(b / months),
+      ...abActYms.flatMap((_, i) => {
+        const amt = r[`act_amt_${i + 1}`];
+        if (amt == null) return ['', '', '', ''];   // その月の実績が無い
+        const ab = n(r[`act_base_${i + 1}`]);
+        return [
+          round(n(amt) / months), round(ab / months), round((n(amt) - ab) / months),
+          ab > 0 ? round(((n(amt) - ab) / ab) * 100, 1) / 100 : '',
+        ];
+      }),
       round(n(r.a0_amt) / months), round((n(r.a0_amt) - b) / months), rate(n(r.a0_amt)),
       round(n(r.a1_amt) / months), round((n(r.a1_amt) - b) / months), rate(n(r.a1_amt)),
       round(n(r.a2_amt) / months), round((n(r.a2_amt) - b) / months), rate(n(r.a2_amt)),
@@ -209,7 +233,9 @@ export function buildDashboardWorkbook(data, opts = {}) {
       ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };
-  const widths = [22, 8, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
+  const widths = [22, 8, 12, 18,
+    ...abActYms.flatMap(() => [18, 20, 18, 10]),
+    18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
   for (const [sheet, label, rows, withBsim] of [
     ['器具区分別', '器具区分', data.abByEquip ?? [], false],
     ['支店別', '支店', data.abByBranch ?? [], false],
