@@ -5,6 +5,8 @@ import { Card } from '../components/ui';
 import { useUser } from '../user';
 import AggImportCard from '../components/AggImportCard';
 import HistImportCard from '../components/HistImportCard';
+import SurveyImportCard from '../components/SurveyImportCard';
+import type { Meta } from '../types';
 
 /** 取込データの点検結果（数字だけになっている名前欄） */
 interface Finding { column: string; label: string; param: string; value: string; deals: number }
@@ -24,12 +26,15 @@ export default function ImportPage() {
   const [blankCorp, setBlankCorp] = useState(0);
   const [cleaning, setCleaning] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
+  // 価格調査の「4月」が何年かは、マスタ登録の当月から決める
+  const [meta, setMeta] = useState<Meta | null>(null);
   const canCheck = me.role === 'admin' || me.role === 'developer';
   const navigate = useNavigate();
 
   const load = () => {
     // 取込のたびに点検し直す（列ズレの値が入ったらすぐ気づけるように）
     if (canCheck) {
+      api<Meta>('/meta').then(setMeta).catch(() => {});
       api<{ findings: Finding[]; blankCorp: number }>('/admin/data-check')
         .then((r) => { setFindings(r.findings); setBlankCorp(r.blankCorp ?? 0); })
         .catch(() => {});
@@ -60,6 +65,8 @@ export default function ImportPage() {
         <strong>①出荷実績</strong>（法人×品目の平均出荷単価と数量）で案件の土台を作り、
         <strong>②マスタ登録</strong>のA基準単価を法人×品目へ集約して重ねます。
         A基準は毎日更新されるため、②は毎日の取り込み直しを前提にしています。
+        <strong>③価格調査</strong>を取り込むと、月ごとの実際の単価が入り、
+        計画（A基準）と実績を月の流れで比べられます。
         決定単価（B基準）など画面で入れた値は残ります。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
@@ -68,6 +75,7 @@ export default function ImportPage() {
         <>
           <HistImportCard />
           <AggImportCard onDone={load} />
+          <SurveyImportCard anchorYm={meta?.aggMeta?.m0} onDone={load} />
         </>
       ) : (
         <Card title="マスタ登録の取込">

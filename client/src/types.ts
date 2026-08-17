@@ -61,8 +61,19 @@ export interface Deal {
   hist_qty?: number | null;         // 出荷実績の数量合計（法人×品目）
   master_avg_price?: number | null; // マスタ登録の1~3月出荷実績の平均単価（数量加重平均）
   master_qty?: number | null;       // マスタ登録の1~3月売上数の合計
-  survey_price?: number | null;     // 価格調査（7月実績）の単価。取込対応まで空
-  survey_qty?: number | null;       // 価格調査（7月実績）の数量。同上
+  // 価格調査の実単価（月ごと）。並びは Meta.actualMeta.months と同じ
+  act_price_1?: number | null;
+  act_price_2?: number | null;
+  act_price_3?: number | null;
+  act_price_4?: number | null;
+  act_price_5?: number | null;
+  act_price_6?: number | null;
+  act_price_7?: number | null;
+  act_price_8?: number | null;
+  act_price_9?: number | null;
+  act_price_10?: number | null;
+  act_price_11?: number | null;
+  act_price_12?: number | null;
   /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */
   std_name?: string | null;
   /** 判別の方法。code=器種ガスコード一致 / name=品名一致 / similar=類似（先頭一致） */
@@ -138,6 +149,8 @@ export interface Meta {
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
   /** 出荷実績（月別履歴）の取込情報 */
   histMeta?: { period: string; months?: number | null; filename?: string } | null;
+  /** 価格調査（実単価）の取込情報。months は ['2026-04', ...] の並び */
+  actualMeta?: { months: string[]; filename?: string; updatedAt?: string } | null;
 }
 
 export const ROUND_STATE_NAMES: Record<string, string> = {

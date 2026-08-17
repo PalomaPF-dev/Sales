@@ -1144,12 +1144,15 @@ api.get('/meta', wrap(async (req, res) => {
   // マスタ登録（集約表）の取込情報。A基準の月の見出しなどに使う
   const aggMetaRow = await db.get("SELECT value FROM settings WHERE key = 'agg_meta'");
   const histMetaRow = await db.get("SELECT value FROM settings WHERE key = 'hist_meta'");
+  // 価格調査（実単価）の取込情報。実績の月の見出しに使う
+  const actualMetaRow = await db.get("SELECT value FROM settings WHERE key = 'actual_meta'");
 
   res.json({
     priceTypes, equips, persons, customers, branches, offices,
     corps,
     aggMeta: aggMetaRow ? JSON.parse(aggMetaRow.value) : null,
     histMeta: histMetaRow ? JSON.parse(histMetaRow.value) : null,
+    actualMeta: actualMetaRow ? JSON.parse(actualMetaRow.value) : null,
     // 画面に「いま何が見えているか」を出すための情報
     scope: scopeInfo(req.user),
     exportMaxRows: EXPORT_MAX_ROWS,
@@ -1312,7 +1315,14 @@ async function dashboardData(query, user) {
   delete pureQuery.aState;
   const pure = dealFilters(pureQuery, user);
 
-  const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByCorp, aggMetaRow] = await Promise.all([
+  // 価格調査の実単価（月ごと）。実際いくらで出たのかを、現状額と同じ数量で金額にする。
+  // 単価の無い月はその月の実績が無いということなので、金額にも数量にも含めない。
+  const actAmt = Array.from({ length: ACT_SLOTS }, (_, i) => `
+    SUM(CASE WHEN act_price_${i + 1} > 0 THEN ${f(`act_price_${i + 1}`)} * (${effQty}) END) AS act_amt_${i + 1},
+    SUM(CASE WHEN act_price_${i + 1} > 0 THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1},
+    SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1}`).join(',');
+
+  const [histTotals, aMonths, abTotals, abByEquip, abByBranch, abByCorp, aggMetaRow, actMonths, actualMetaRow] = await Promise.all([
     db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
@@ -1327,12 +1337,27 @@ async function dashboardData(query, user) {
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY corp_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC LIMIT 30`, p),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
+    // 実単価は絞り込みだけを受ける（A基準の有無や承認日は掛けない。
+    // 実績はA基準の申請とは別に、出た分がそのまま記録されるため）
+    db.get(`SELECT ${actAmt} FROM deal_calc ${pure.where}`, pure.params),
+    db.get("SELECT value FROM settings WHERE key = 'actual_meta'"),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
 
   let aggMeta = null;
   try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら無し */ }
+  let actualMeta = null;
+  try { actualMeta = actualMetaRow ? JSON.parse(actualMetaRow.value) : null; } catch { /* 壊れていたら無し */ }
+  // 月の並び（actual_meta）と、月ごとの実績額を突き合わせて返す。
+  // 現状額（base）は、その月に実績のある案件だけを同じ数量で足したもの。
+  // 実績のある案件だけで比べないと、値上げ額が実態より大きく（小さく）出てしまう。
+  const actuals = (actualMeta?.months ?? []).map((ym, i) => ({
+    ym,
+    amount: Number(actMonths?.[`act_amt_${i + 1}`] ?? 0),
+    base: Number(actMonths?.[`act_base_${i + 1}`] ?? 0),
+    deals: Number(actMonths?.[`act_cnt_${i + 1}`] ?? 0),
+  })).filter((a) => a.deals > 0);
   return {
     scope: scopeInfo(user),
     histTotals,
@@ -1343,6 +1368,7 @@ async function dashboardData(query, user) {
     abByCorp,
     months,
     aggMeta,
+    actuals,
   };
 }
 
@@ -1795,7 +1821,7 @@ api.get('/deals/export', wrap(async (req, res) => {
   }
   const months = await histMonths();
   const mMonths = await masterMonths();
-  const [rows, priceTypes, aggMetaRow] = await Promise.all([
+  const [rows, priceTypes, aggMetaRow, actualMetaRow] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
@@ -1803,12 +1829,16 @@ api.get('/deals/export', wrap(async (req, res) => {
       ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
+    db.get("SELECT value FROM settings WHERE key = 'actual_meta'"),
   ]);
   // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = isAdminRole(req.user.role);
   let aggMeta = null;
   try { aggMeta = aggMetaRow ? JSON.parse(aggMetaRow.value) : null; } catch { /* 壊れていたら仮の見出し */ }
-  const buffer = buildWorkbook(rows, priceTypes, { months, masterMonths: mMonths, withCost, aggMeta });
+  let actualMeta = null;
+  try { actualMeta = actualMetaRow ? JSON.parse(actualMetaRow.value) : null; } catch { /* 壊れていたら実単価なし */ }
+  const buffer = buildWorkbook(rows, priceTypes,
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));
@@ -2540,6 +2570,129 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   ]);
   await db.run('DELETE FROM agg_staging');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
+  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups) });
+}));
+
+// ---- 価格調査（実単価）の取込 ----
+//
+// マスタ登録と同じ 得意先×納入先×商品 の単位で、月ごとの実際の単価が入っている。
+// A基準（値上げの計画）に対して実際いくらで出たのかを並べるために取り込む。
+// 案件は 法人×品目 なので、マスタ登録と同じように法人へ集約する。
+
+/** 実単価の月の枠の数。これを超える月数のファイルは受け取らない */
+const ACT_SLOTS = 12;
+const actCols = (prefix) => Array.from({ length: ACT_SLOTS }, (_, i) => `${prefix}${i + 1}`);
+
+api.post('/survey-import/start', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const filename = String(req.body?.filename ?? '価格調査.xlsx');
+  const months = Array.isArray(req.body?.months) ? req.body.months.map(String) : [];
+  if (!months.length) return res.status(400).json({ error: '月の並びがありません' });
+  if (months.length > ACT_SLOTS) {
+    return res.status(400).json({ error: `実単価は${ACT_SLOTS}か月分までしか取り込めません` });
+  }
+  const { c } = await db.get('SELECT COUNT(*) AS c FROM corp_map');
+  if (!Number(c)) {
+    return res.status(400).json({
+      error: '先に「出荷実績（月別履歴）」を取り込んでください。'
+        + '案件一覧は出荷実績の法人×品目が土台で、価格調査はそこへ重ねます',
+    });
+  }
+  await db.run('DELETE FROM act_staging');
+  // 前回の取込の残りを消す。月の並びが変わったとき、古い月の値が残らないようにする
+  await db.run(`UPDATE deals SET ${actCols('act_price_').map((c2) => `${c2} = NULL`).join(', ')}
+                 WHERE ${actCols('act_price_').map((c2) => `${c2} IS NOT NULL`).join(' OR ')}`);
+  await db.run(
+    `INSERT INTO settings (key, value) VALUES ('actual_meta', ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [JSON.stringify({ months, filename, updatedAt: new Date().toISOString() })]
+  );
+  res.json({ ok: true });
+}));
+
+api.post('/survey-import/chunk', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
+  if (rows.length > 500) return res.status(400).json({ error: '一度に送れるのは500行までです' });
+
+  // 得意先名 → 法人グループコード（出荷実績の取込で作った対応表）
+  const map = await db.all('SELECT name_key, ent_cd FROM corp_map');
+  const byNorm = new Map(map.map((m) => [m.name_key, m.ent_cd]));
+  const norms = [...byNorm.keys()].sort((a, b) => b.length - a.length);
+  const findEnt = (name) => {
+    const n = normCorpName(name);
+    if (byNorm.has(n)) return byNorm.get(n);
+    for (const cn of norms) if (cn.length >= 3 && n.startsWith(cn)) return byNorm.get(cn);
+    return null;
+  };
+
+  const num = (v) => {
+    if (v === null || v === undefined || String(v).trim() === '') return 0;
+    const n = Number(String(v).replace(/[,¥\s]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  // 法人×品目ごとに、月ごとの「Σ 単価×重み」と「Σ 重み」を足し込む。
+  // 重みは1~3月の売上数。売上の無い行（0）は重み1として扱い、
+  // 数量の多い行にならされつつ、全行が0のまとまりでは単純な平均になるようにする。
+  const acc = new Map();
+  let matched = 0;
+  let unmatched = 0;
+  for (const r of rows) {
+    const ent = findEnt(r.customer_name);
+    if (!ent) { unmatched += 1; continue; }
+    matched += 1;
+    const key = `${ent}|${String(r.model_code).trim()}`;
+    const a = acc.get(key) ?? {
+      ent, model: String(r.model_code).trim(),
+      amt: Array(ACT_SLOTS).fill(0), wgt: Array(ACT_SLOTS).fill(0),
+    };
+    const qty = num(r.qty);
+    const w = qty > 0 ? qty : 1;
+    const prices = Array.isArray(r.prices) ? r.prices : [];
+    for (let i = 0; i < Math.min(prices.length, ACT_SLOTS); i++) {
+      const p = num(prices[i]);
+      if (p <= 0) continue;   // 単価の無い月はその月だけ飛ばす
+      a.amt[i] += p * w;
+      a.wgt[i] += w;
+    }
+    acc.set(key, a);
+  }
+
+  const vals = [...acc.values()].map((a) => [a.ent, a.model, ...a.amt, ...a.wgt]);
+  if (vals.length) {
+    const cols = ['ent_cd', 'model_code', ...actCols('a').map((c) => `${c}_amt`),
+      ...actCols('w').map((c) => `${c}_sum`)];
+    await db.run(
+      `INSERT INTO act_staging (${cols.join(',')})
+       VALUES ${vals.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
+       ON CONFLICT (ent_cd, model_code) DO UPDATE SET
+         ${cols.slice(2).map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')}`,
+      vals.flat()
+    );
+  }
+  res.json({ matched, unmatched, groups: acc.size });
+}));
+
+api.post('/survey-import/finish', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  // 集約した実単価を案件へ重ねる。単価は数量での加重平均
+  const stamp = now();
+  const sets = Array.from({ length: ACT_SLOTS }, (_, i) =>
+    `act_price_${i + 1} = CASE WHEN s.w${i + 1}_sum > 0 THEN s.a${i + 1}_amt / s.w${i + 1}_sum END`);
+  await db.run(`
+    UPDATE deals SET ${sets.join(', ')}, updated_at = ?
+    FROM act_staging s
+    WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
+
+  const anyAct = actCols('act_price_').map((c) => `${c} IS NOT NULL`).join(' OR ');
+  const [{ covered }, { total }, { groups }] = await Promise.all([
+    db.get(`SELECT COUNT(*) AS covered FROM deals WHERE ${anyAct}`),
+    db.get('SELECT COUNT(*) AS total FROM deals'),
+    db.get('SELECT COUNT(*) AS groups FROM act_staging'),
+  ]);
+  await db.run('DELETE FROM act_staging');
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups) });
 }));
 

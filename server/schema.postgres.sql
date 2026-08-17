@@ -134,8 +134,18 @@ CREATE TABLE IF NOT EXISTS deals (
   hist_qty        REAL,   -- 実績の数量合計（法人×品目・期間全体）
   master_qty      REAL,   -- マスタ登録側の数量合計（法人×品目に集約したもの）
   master_avg_price REAL,  -- マスタ登録側の出荷単価の加重平均（整合確認用）
-  survey_price    REAL,   -- 価格調査（7月実績）の単価。取込は今後追加、それまでは空
-  survey_qty      REAL,   -- 価格調査（7月実績）の数量。同上
+  act_price_1  REAL,   -- 価格調査の実単価（1番目の月。月の並びは settings の actual_meta）
+  act_price_2  REAL,   -- 価格調査の実単価（2番目の月。月の並びは settings の actual_meta）
+  act_price_3  REAL,   -- 価格調査の実単価（3番目の月。月の並びは settings の actual_meta）
+  act_price_4  REAL,   -- 価格調査の実単価（4番目の月。月の並びは settings の actual_meta）
+  act_price_5  REAL,   -- 価格調査の実単価（5番目の月。月の並びは settings の actual_meta）
+  act_price_6  REAL,   -- 価格調査の実単価（6番目の月。月の並びは settings の actual_meta）
+  act_price_7  REAL,   -- 価格調査の実単価（7番目の月。月の並びは settings の actual_meta）
+  act_price_8  REAL,   -- 価格調査の実単価（8番目の月。月の並びは settings の actual_meta）
+  act_price_9  REAL,   -- 価格調査の実単価（9番目の月。月の並びは settings の actual_meta）
+  act_price_10 REAL,   -- 価格調査の実単価（10番目の月。月の並びは settings の actual_meta）
+  act_price_11 REAL,   -- 価格調査の実単価（11番目の月。月の並びは settings の actual_meta）
+  act_price_12 REAL,   -- 価格調査の実単価（12番目の月。月の並びは settings の actual_meta）
   hist_batch      TEXT,   -- 出荷実績の取込回。今回に含まれない行を消すための印
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
@@ -211,6 +221,39 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   office       TEXT,
   sales_person TEXT,
   top_qty      REAL,
+  PRIMARY KEY (ent_cd, model_code)
+);
+
+-- 価格調査（実単価）の取込の作業表。
+-- 得意先×納入先×商品の行を、法人×品目へまとめるあいだの置き場。
+-- 月ごとに「Σ 単価×重み」と「Σ 重み」を持ち、最後に割って加重平均を出す。
+CREATE TABLE IF NOT EXISTS act_staging (
+  ent_cd     TEXT NOT NULL,
+  model_code TEXT NOT NULL,
+  a1_amt   REAL NOT NULL DEFAULT 0,
+  a2_amt   REAL NOT NULL DEFAULT 0,
+  a3_amt   REAL NOT NULL DEFAULT 0,
+  a4_amt   REAL NOT NULL DEFAULT 0,
+  a5_amt   REAL NOT NULL DEFAULT 0,
+  a6_amt   REAL NOT NULL DEFAULT 0,
+  a7_amt   REAL NOT NULL DEFAULT 0,
+  a8_amt   REAL NOT NULL DEFAULT 0,
+  a9_amt   REAL NOT NULL DEFAULT 0,
+  a10_amt   REAL NOT NULL DEFAULT 0,
+  a11_amt   REAL NOT NULL DEFAULT 0,
+  a12_amt   REAL NOT NULL DEFAULT 0,
+  w1_sum   REAL NOT NULL DEFAULT 0,
+  w2_sum   REAL NOT NULL DEFAULT 0,
+  w3_sum   REAL NOT NULL DEFAULT 0,
+  w4_sum   REAL NOT NULL DEFAULT 0,
+  w5_sum   REAL NOT NULL DEFAULT 0,
+  w6_sum   REAL NOT NULL DEFAULT 0,
+  w7_sum   REAL NOT NULL DEFAULT 0,
+  w8_sum   REAL NOT NULL DEFAULT 0,
+  w9_sum   REAL NOT NULL DEFAULT 0,
+  w10_sum   REAL NOT NULL DEFAULT 0,
+  w11_sum   REAL NOT NULL DEFAULT 0,
+  w12_sum   REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (ent_cd, model_code)
 );
 

@@ -41,6 +41,8 @@ interface DashboardRes {
     raise_bsim: number | null;
     b_rows: number;
   };
+  /** 価格調査の実単価から出した月ごとの実績。実単価のある案件だけで集計する */
+  actuals?: { ym: string; amount: number; base: number; deals: number }[];
   abTotals?: AbRow;
   abByEquip?: AbRow[];
   abByBranch?: AbRow[];
@@ -263,13 +265,6 @@ export default function Dashboard() {
   const m1 = data.aggMeta?.m1 || '翌月';
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
-  // 価格調査（当月の前の月の実績）。取込ができるまでは枠だけ出す
-  const surveyYm = (() => {
-    const m = /^(\d{4})-(\d{2})$/.exec(data.aggMeta?.m0 ?? '');
-    if (!m) return '2026-07';
-    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 2, 1));
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-  })();
   const months = data.months || 12;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
@@ -397,46 +392,57 @@ export default function Dashboard() {
         })}
       </div>
 
-      <Card title={`まとめ（現状額とA基準）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
+      <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
-          <strong>現状額</strong>は値上げしなかった場合、<strong>A基準額</strong>は申請単価どおりの場合、
-          その差が<strong>値上げ額</strong>で、現状額に対する割合が<strong>値上げ率</strong>です。
+          <strong>実績</strong>は価格調査の実際の単価、<strong>計画</strong>はA基準（申請単価）です。
+          どちらも<strong>現状額</strong>（値上げしなかった場合）と比べ、その差が<strong>値上げ額</strong>、
+          現状額に対する割合が<strong>値上げ率</strong>になります。
           金額はすべて<strong>1か月あたり</strong>、数量は実績のまま固定しています。
+          実績の行は、その月に実単価のある案件だけで現状額も出しています
+          （売上の無い品目を混ぜると値上げ額が実態と合わなくなるため）。
         </p>
         <table className="tbl">
           <thead>
             <tr>
               <th>月</th>
+              <th>区分</th>
+              <th style={nums}>件数</th>
               <th style={nums}>現状額<br /><small>月あたり</small></th>
-              <th style={nums}>A基準額<br /><small>月あたり</small></th>
+              <th style={nums}>金額<br /><small>月あたり</small></th>
               <th style={nums}>値上げ額<br /><small>月あたり</small></th>
               <th style={nums} title="値上げ額 ÷ 現状額">値上げ率</th>
             </tr>
           </thead>
           <tbody>
-            {/* 価格調査（7月実績）の枠。取込ができるまでは空欄で場所だけ確保しておく */}
-            <tr>
-              <td>
-                <strong>{surveyYm}</strong>
-                <div className="sub" title="価格調査（7月実績）の取込に対応したら、ここに数字が入ります">
-                  価格調査（取込待ち）
-                </div>
-              </td>
-              <td style={nums}>—</td>
-              <td style={nums}>—</td>
-              <td style={nums}>—</td>
-              <td style={nums}>—</td>
-            </tr>
-            {([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
-              .map(([label, amt]) => {
-                const base = num(t?.base_amt);
-                const gain = amt - base;
-                const rate = base > 0 ? Math.round((gain / base) * 1000) / 10 : null;
+            {/*
+              実績（価格調査の実単価）→ 計画（A基準）の順に、月の流れで並べる。
+              8月のように実績と計画の両方がある月は2行になり、
+              計画どおりに上がっているかをその場で見比べられる。
+            */}
+            {[
+              ...(data.actuals ?? []).map((a) => ({
+                key: `act-${a.ym}`, ym: a.ym, kind: '実績' as const,
+                deals: a.deals, base: a.base, amt: a.amount,
+              })),
+              ...([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
+                .map(([label, amt]) => ({
+                  key: `plan-${label}`, ym: label, kind: '計画' as const,
+                  deals: num(t?.deals), base: num(t?.base_amt), amt,
+                })),
+            ]
+              .sort((a, b) => (a.ym === b.ym ? (a.kind === '実績' ? -1 : 1) : a.ym.localeCompare(b.ym)))
+              .map((row) => {
+                const gain = row.amt - row.base;
+                const rate = row.base > 0 ? Math.round((gain / row.base) * 1000) / 10 : null;
                 return (
-                  <tr key={label}>
-                    <td><strong>{label}</strong></td>
-                    <td style={nums}>{yen(base / months)}</td>
-                    <td style={nums}>{yen(amt / months)}</td>
+                  <tr key={row.key}>
+                    <td><strong>{row.ym}</strong></td>
+                    <td>
+                      <span className={`badge ${row.kind === '実績' ? 'green' : 'blue'}`}>{row.kind}</span>
+                    </td>
+                    <td style={nums}>{row.deals.toLocaleString()}</td>
+                    <td style={nums}>{yen(row.base / months)}</td>
+                    <td style={nums}>{yen(row.amt / months)}</td>
                     <td style={{ ...nums, fontWeight: 700,
                                  color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
                       {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}

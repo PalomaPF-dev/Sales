@@ -29,7 +29,7 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
  * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
-function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
+function buildColumns({ months, masterMonths = 3, withCost, aggMeta, actualMeta }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
   const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
@@ -46,13 +46,8 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
     return r.hist_qty == null ? null : Number(r.hist_qty) / months;
   };
   const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';
-  // 価格調査（当月の前の月の実績）。取込に対応するまでは空欄の枠だけ出す
-  const surveyYm = (() => {
-    const v = /^(\d{4})-(\d{2})$/.exec(String(aggMeta?.m0 ?? ''));
-    if (!v) return '';
-    const d = new Date(Date.UTC(Number(v[1]), Number(v[2]) - 2, 1));
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-  })();
+  // 価格調査の実単価。取り込んだ月の分だけ列にする
+  const actMonths = Array.isArray(actualMeta?.months) ? actualMeta.months : [];
 
   /** 値上げ幅 = その月のA基準 − 実績単価。単価0は未申請なので空にする */
   const diff = (key) => (r) => {
@@ -75,11 +70,12 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
     ['営業所', (r) => r.office],
     ['担当者', (r) => r.sales_person],
 
-    // 出荷実績（マスタ登録の1~3月実績。無い行は空欄）。
-    // 価格調査は取込に対応するまで空欄（枠だけ先に作ってある）
-    [`価格調査 ${surveyYm || '実績'}`, (r) => round(r.survey_price)],
+    // 出荷実績（マスタ登録の1~3月実績を優先。無い品目は出荷実績取込の値）
     [`平均出荷単価（${basePeriod}）`, (r) => round(effPrice(r))],
     ['数量（月平均）', (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
+
+    // 価格調査の実単価（月ごと）。計画（A基準）と実際の単価を並べて見るための列
+    ...actMonths.map((ym, i) => [`実単価 ${ym}`, (r) => round(r[`act_price_${i + 1}`])]),
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
     [`A基準 ${m0}`, (r) => round(r.a_price_m0)],
@@ -164,19 +160,29 @@ export function buildDashboardWorkbook(data, opts = {}) {
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
-  // ── まとめ（月ごとに現状額・A基準額・値上げ額）
+  // ── まとめ（実績と計画を月の流れで並べる）
   const base = n(t.base_amt);
   const summary = [[
-    '月', '現状額（月あたり）', 'A基準額（月あたり）', '値上げ額（月あたり）', '値上げ率',
+    '月', '区分', '件数', '現状額（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
   ]];
-  for (const [label, amt] of [[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]]) {
-    const gain = amt - base;
+  const summaryRows = [
+    // 価格調査の実単価（実績）。現状額もその月に実単価のある案件だけで出す
+    ...(data.actuals ?? []).map((a) => ({
+      ym: a.ym, kind: '実績', deals: n(a.deals), b: n(a.base), amt: n(a.amount),
+    })),
+    // A基準（計画）
+    ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
+      ym, kind: '計画', deals: n(t.deals), b: base, amt,
+    })),
+  ].sort((a, b2) => (a.ym === b2.ym ? (a.kind === '実績' ? -1 : 1) : String(a.ym).localeCompare(String(b2.ym))));
+  for (const r of summaryRows) {
+    const gain = r.amt - r.b;
     summary.push([
-      label, round(base / months), round(amt / months), round(gain / months),
-      base > 0 ? round((gain / base) * 100, 1) / 100 : '',
+      r.ym, r.kind, r.deals, round(r.b / months), round(r.amt / months), round(gain / months),
+      r.b > 0 ? round((gain / r.b) * 100, 1) / 100 : '',
     ]);
   }
-  addSheet('まとめ', summary, [12, 18, 18, 18, 10]);
+  addSheet('まとめ', summary, [12, 8, 10, 18, 18, 18, 10]);
 
   // ── 器具区分別・支店別・法人別（画面と同じ数字）
   // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
@@ -221,7 +227,13 @@ export function buildDashboardWorkbook(data, opts = {}) {
 
 export function buildWorkbook(rows, priceTypes = [], opts = {}) {
   const months = Number(opts.months) > 0 ? Number(opts.months) : 12;
-  const columns = buildColumns({ months, withCost: Boolean(opts.withCost), aggMeta: opts.aggMeta });
+  const columns = buildColumns({
+    months,
+    masterMonths: Number(opts.masterMonths) > 0 ? Number(opts.masterMonths) : 3,
+    withCost: Boolean(opts.withCost),
+    aggMeta: opts.aggMeta,
+    actualMeta: opts.actualMeta,
+  });
 
   const header = columns.map(([label]) => label);
   const body = rows.map((r) => columns.map(([, get]) => {

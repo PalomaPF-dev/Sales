@@ -252,13 +252,23 @@ export default function Deals() {
   const months = data?.months || 3;
   const mMonths = data?.masterMonths || 3;
   const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
-  // 価格調査（当月の前の月の実績）。取込ができるまでは枠だけ出す
-  const surveyLabel = (() => {
-    const m = /^(\d{4})-(\d{2})$/.exec(meta?.aggMeta?.m0 ?? '');
-    if (!m) return '7月';
-    const n = Number(m[2]) - 1;
-    return `${n >= 1 ? n : 12}月`;
-  })();
+  // 価格調査の実単価。月の並びは取込時に決まる（actualMeta）
+  const actMonths = meta?.actualMeta?.months ?? [];
+  /** 実単価のうち一番新しい月の値。無ければ null */
+  const latestAct = (d: Deal) => {
+    for (let i = actMonths.length; i >= 1; i--) {
+      const v = (d as unknown as Record<string, number | null | undefined>)[`act_price_${i}`];
+      if (v != null) return { ym: actMonths[i - 1], price: Number(v) };
+    }
+    return null;
+  };
+  /** 実単価の全期間。カーソルを合わせたときの内訳に使う */
+  const actAll = (d: Deal) => actMonths
+    .map((ym, i) => ({
+      ym,
+      price: (d as unknown as Record<string, number | null | undefined>)[`act_price_${i + 1}`],
+    }))
+    .filter((a) => a.price != null);
   /** 実績の平均単価（マスタ登録を優先。無い品目は出荷実績の値） */
   const effPrice = (d: Deal) => d.master_avg_price ?? d.hist_avg_price ?? null;
   /** 月平均の数量（期間の合計 ÷ その実績の月数） */
@@ -523,7 +533,7 @@ export default function Deals() {
               <th colSpan={7} className="grp">基本情報</th>
               <th colSpan={3} className="grp sep"
                   title={`${basePeriod}の出荷実績。マスタ登録の単価を優先し、マスタ登録に無い品目は出荷実績取込の値を表示します。`
-                    + `${surveyLabel}実績は価格調査データの取込に対応したら入ります`}>
+                    + '実単価は価格調査の取込で入ります（カーソルを合わせると月ごとの内訳が出ます）'}>
                 出荷実績<small>（{basePeriod}）</small>
               </th>
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
@@ -541,8 +551,8 @@ export default function Deals() {
               <Th col="office">営業所</Th>
               <Th col="sales_person">担当者</Th>
               <th className="num sep"
-                  title={`価格調査（${surveyLabel}実績）の単価。取込に対応するまでは空欄です`}>
-                {surveyLabel}実績<br /><small>価格調査</small>
+                  title="価格調査の実単価のうち、一番新しい月の値。カーソルを合わせると月ごとの内訳が出ます">
+                実単価<br /><small>価格調査（最新月）</small>
               </th>
               <Th col="hist_avg_price" className="num">平均単価</Th>
               <Th col="hist_qty" className="num"
@@ -600,7 +610,19 @@ export default function Deals() {
 
                   {/* 出荷実績（法人×品目）。マスタ登録の1~3月実績（無い行は空欄）。
                       先頭は価格調査（7月実績）の枠。取込に対応するまでは空欄 */}
-                  <td className="num sep">{d.survey_price == null ? '—' : yen(d.survey_price)}</td>
+                  <td className="num sep">
+                    {(() => {
+                      const last = latestAct(d);
+                      if (!last) return '—';
+                      const all = actAll(d);
+                      return (
+                        <span title={all.map((a) => `${a.ym}: ¥${Math.round(Number(a.price)).toLocaleString()}`).join('\n')}>
+                          {yen(last.price)}
+                          <div className="sub">{last.ym.slice(5)}月</div>
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="num">{effPrice(d) == null ? '—' : yen(effPrice(d))}</td>
                   <td className="num">
                     {monthlyQty(d) == null ? '—'

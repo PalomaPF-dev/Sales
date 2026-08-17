@@ -161,7 +161,7 @@ function toPgPlaceholders(sql) {
 // 主キーがidでないテーブルを足すときは、ここにも必ず追加すること。
 const TABLES_WITHOUT_ID = new Set([
   'settings', 'price_types', 'corp_negotiations', 'sso_used_tokens',
-  'corp_map', 'agg_staging', 'corp_plans',
+  'corp_map', 'agg_staging', 'act_staging', 'corp_plans',
 ]);
 
 /** SQLiteの方言をPostgreSQLへ寄せる */
@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-17-survey-frame';
+const SCHEMA_VERSION = '2026-08-17-actual-prices';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -564,9 +564,19 @@ async function beforeSchema() {
     // 添付の実体を Vercel Blob（Privateストア）へ移す。
     // blob_url があればそちらが正、無ければ従来どおり content（base64）を読む。
     'ALTER TABLE attachments ADD COLUMN blob_url TEXT',
-    // 価格調査（7月実績）の受け皿。取込は今後追加する（それまでは空のまま）
-    'ALTER TABLE deals ADD COLUMN survey_price REAL',
-    'ALTER TABLE deals ADD COLUMN survey_qty REAL',
+    // 価格調査（実単価）の受け皿。月の並びは settings の actual_meta に持つ
+    'ALTER TABLE deals ADD COLUMN act_price_1 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_2 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_3 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_4 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_5 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_6 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_7 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_8 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_9 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_10 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_11 REAL',
+    'ALTER TABLE deals ADD COLUMN act_price_12 REAL',
   ]) {
     await tryAlter(sql);
   }
@@ -575,7 +585,7 @@ async function beforeSchema() {
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
   try {
-    await db.get('SELECT survey_price FROM deal_calc LIMIT 1');
+    await db.get('SELECT act_price_12 FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }
@@ -649,6 +659,12 @@ async function migrate() {
     }
   } catch (e) {
     console.warn(`マイグレーション警告: 完了を引き継げませんでした → ${e.message}`);
+  }
+
+  // 価格調査の枠として作った仮の列。実単価（act_price_*）に置き換えたので落とす。
+  // 一度も値が入っていないため、消してもデータは失われない。
+  for (const col of ['survey_price', 'survey_qty']) {
+    await tryAlter(`ALTER TABLE deals DROP COLUMN ${col}`);
   }
 
   // 申請ワークフローの廃止にともない使わなくなったテーブルを片付ける。
