@@ -45,6 +45,13 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
     return r.hist_qty == null ? null : Number(r.hist_qty) / months;
   };
   const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';
+  // 価格調査（当月の前の月の実績）。取込に対応するまでは空欄の枠だけ出す
+  const surveyYm = (() => {
+    const v = /^(\d{4})-(\d{2})$/.exec(String(aggMeta?.m0 ?? ''));
+    if (!v) return '';
+    const d = new Date(Date.UTC(Number(v[1]), Number(v[2]) - 2, 1));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  })();
 
   /** 値上げ幅 = その月のA基準 − 実績単価。単価0は未申請なので空にする */
   const diff = (key) => (r) => {
@@ -67,7 +74,9 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
     ['営業所', (r) => r.office],
     ['担当者', (r) => r.sales_person],
 
-    // 出荷実績（案件の土台）。マスタ登録の1~3月実績を優先し、無い行は月別履歴
+    // 出荷実績（案件の土台）。マスタ登録の1~3月実績を優先し、無い行は月別履歴。
+    // 価格調査は取込に対応するまで空欄（枠だけ先に作ってある）
+    [`価格調査 ${surveyYm || '実績'}`, (r) => round(r.survey_price)],
     ['平均出荷単価', (r) => round(effPrice(r))],
     ['数量（月平均）', (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
     ['実績の出どころ', (r) => (effPrice(r) == null ? '' : (isMaster(r) ? `マスタ登録（${basePeriod}）` : '月別履歴'))],
@@ -129,6 +138,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const months = Number(data.months) > 0 ? Number(data.months) : 12;
   const n = (v) => Number(v ?? 0);
   const m = (k, fallback) => ymLabel(data.aggMeta?.[k], fallback);
+  const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
@@ -160,7 +170,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const summary = [[
     '月', '現状額（月あたり）', 'A基準額（月あたり）', '値上げ額（月あたり）', '値上げ率',
   ]];
-  for (const [label, amt] of [[m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]]) {
+  for (const [label, amt] of [[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]]) {
     const gain = amt - base;
     summary.push([
       label, round(base / months), round(amt / months), round(gain / months),
@@ -175,6 +185,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const head = (first, withBsim) => [
     first, '件数', '数量（月平均）',
     '現状額（月あたり）',
+    `${m0} A基準額（月あたり）`, `${m0} 値上げ額（月あたり）`, `${m0} 値上げ率`,
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
     `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`, `${m2} 値上げ率`,
     `${m3} A基準額（月あたり）`, `${m3} 値上げ額（月あたり）`, `${m3} 値上げ率`,
@@ -186,13 +197,14 @@ export function buildDashboardWorkbook(data, opts = {}) {
     return [
       r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
       round(b / months),
+      round(n(r.a0_amt) / months), round((n(r.a0_amt) - b) / months), rate(n(r.a0_amt)),
       round(n(r.a1_amt) / months), round((n(r.a1_amt) - b) / months), rate(n(r.a1_amt)),
       round(n(r.a2_amt) / months), round((n(r.a2_amt) - b) / months), rate(n(r.a2_amt)),
       round(n(r.a3_amt) / months), round((n(r.a3_amt) - b) / months), rate(n(r.a3_amt)),
       ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };
-  const widths = [22, 8, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10];
+  const widths = [22, 8, 12, 18, 18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
   for (const [sheet, label, rows, withBsim] of [
     ['器具区分別', '器具区分', data.abByEquip ?? [], false],
     ['支店別', '支店', data.abByBranch ?? [], false],

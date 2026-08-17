@@ -19,6 +19,7 @@ interface AbRow {
   deals: number;
   qty: number;
   base_amt: number;
+  a0_amt: number;
   a1_amt: number;
   a2_amt: number;
   a3_amt: number;
@@ -91,7 +92,7 @@ function AmtCell({ amt, base, months }: { amt: number; base?: number; months: nu
 
 // 集計表の並び替えの対象。月の列は「その月の値上げ額（A基準額−現状額）」で並べる
 // （A基準額そのものだと規模の大きい区分が常に上に来て、値上げの大小が見えないため）
-type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'a1' | 'a2' | 'a3' | 'bsim';
+type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'a0' | 'a1' | 'a2' | 'a3' | 'bsim';
 
 function sortValue(r: AbRow, col: SortCol): number | string {
   switch (col) {
@@ -99,6 +100,7 @@ function sortValue(r: AbRow, col: SortCol): number | string {
     case 'deals': return num(r.deals);
     case 'qty': return num(r.qty);
     case 'base': return num(r.base_amt);
+    case 'a0': return num(r.a0_amt) - num(r.base_amt);
     case 'a1': return num(r.a1_amt) - num(r.base_amt);
     case 'a2': return num(r.a2_amt) - num(r.base_amt);
     case 'a3': return num(r.a3_amt) - num(r.base_amt);
@@ -111,9 +113,9 @@ function sortValue(r: AbRow, col: SortCol): number | string {
  * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
  * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
  */
-function AbTable({ head, rows, total, months, m1, m2, m3 }: {
+function AbTable({ head, rows, total, months, m0, m1, m2, m3 }: {
   head: string; rows: AbRow[]; total?: AbRow;
-  months: number; m1: string; m2: string; m3: string;
+  months: number; m0: string; m1: string; m2: string; m3: string;
 }) {
   // 未指定のときはサーバーの並び（現状額の大きい順）のまま
   const [sort, setSort] = useState<{ col: SortCol; desc: boolean } | null>(null);
@@ -168,6 +170,7 @@ function AbTable({ head, rows, total, months, m1, m2, m3 }: {
             <Th col="base" right title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
               現状額<br /><small>月あたり</small>
             </Th>
+            <Th col="a0" right title={`${m0}（当月）の値上げ額で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額（率）</small></Th>
@@ -189,6 +192,7 @@ function AbTable({ head, rows, total, months, m1, m2, m3 }: {
                   {(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </td>
                 <AmtCell amt={base} months={months} />
+                <AmtCell amt={num(r.a0_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a2_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a3_amt)} base={base} months={months} />
@@ -255,9 +259,17 @@ export default function Dashboard() {
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
 
   const t = data.abTotals;
+  const m0 = data.aggMeta?.m0 || '当月';
   const m1 = data.aggMeta?.m1 || '翌月';
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
+  // 価格調査（当月の前の月の実績）。取込ができるまでは枠だけ出す
+  const surveyYm = (() => {
+    const m = /^(\d{4})-(\d{2})$/.exec(data.aggMeta?.m0 ?? '');
+    if (!m) return '2026-07';
+    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 2, 1));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  })();
   const months = data.months || 12;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
@@ -365,8 +377,8 @@ export default function Dashboard() {
              sub={num(data.histTotals?.deals) > 0
                ? `品目ベースの ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
-        {/* 当月は値上げ前の単価が多く比較にならないため、翌月（9月）から出す */}
         {([
+          [m0, data.aMonths?.raise_m0],
           [m1, data.aMonths?.raise_m1],
           [m2, data.aMonths?.raise_m2],
           [m3, data.aMonths?.raise_m3],
@@ -401,7 +413,20 @@ export default function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {([[m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
+            {/* 価格調査（7月実績）の枠。取込ができるまでは空欄で場所だけ確保しておく */}
+            <tr>
+              <td>
+                <strong>{surveyYm}</strong>
+                <div className="sub" title="価格調査（7月実績）の取込に対応したら、ここに数字が入ります">
+                  価格調査（取込待ち）
+                </div>
+              </td>
+              <td style={nums}>—</td>
+              <td style={nums}>—</td>
+              <td style={nums}>—</td>
+              <td style={nums}>—</td>
+            </tr>
+            {([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
               .map(([label, amt]) => {
                 const base = num(t?.base_amt);
                 const gain = amt - base;
@@ -424,15 +449,15 @@ export default function Dashboard() {
       </Card>
 
       <Card title="器具区分別の値上げ額">
-        <AbTable head="器具区分" rows={data.abByEquip ?? []} total={t} months={months} m1={m1} m2={m2} m3={m3} />
+        <AbTable head="器具区分" rows={data.abByEquip ?? []} total={t} months={months} m0={m0} m1={m1} m2={m2} m3={m3} />
       </Card>
 
       <Card title="支店別の値上げ額">
-        <AbTable head="支店" rows={data.abByBranch ?? []} total={t} months={months} m1={m1} m2={m2} m3={m3} />
+        <AbTable head="支店" rows={data.abByBranch ?? []} total={t} months={months} m0={m0} m1={m1} m2={m2} m3={m3} />
       </Card>
 
       <Card title="法人別の値上げ額（現状額の上位30）">
-        <AbTable head="法人" rows={data.abByCorp ?? []} total={t} months={months} m1={m1} m2={m2} m3={m3} />
+        <AbTable head="法人" rows={data.abByCorp ?? []} total={t} months={months} m0={m0} m1={m1} m2={m2} m3={m3} />
       </Card>
     </div>
   );

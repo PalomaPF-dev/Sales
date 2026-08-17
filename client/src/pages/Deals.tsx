@@ -252,6 +252,13 @@ export default function Deals() {
   const months = data?.months || 12;
   const mMonths = data?.masterMonths || 3;
   const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
+  // 価格調査（当月の前の月の実績）。取込ができるまでは枠だけ出す
+  const surveyLabel = (() => {
+    const m = /^(\d{4})-(\d{2})$/.exec(meta?.aggMeta?.m0 ?? '');
+    if (!m) return '7月';
+    const n = Number(m[2]) - 1;
+    return `${n >= 1 ? n : 12}月`;
+  })();
   /** マスタ登録の実績がある行か */
   const isMaster = (d: Deal) => d.master_avg_price != null;
   /** 実績の平均単価（マスタ登録優先） */
@@ -515,9 +522,10 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={7} className="grp">基本情報</th>
-              <th colSpan={2} className="grp sep"
+              <th colSpan={3} className="grp sep"
                   title={`マスタ登録の${basePeriod}出荷実績を表示します。`
-                    + `マスタ登録に無い行は月別履歴${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}の値で、「履歴」の印を付けています`}>
+                    + `マスタ登録に無い行は月別履歴${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}の値で、「履歴」の印を付けています。`
+                    + `${surveyLabel}実績は価格調査データの取込に対応したら入ります`}>
                 出荷実績<small>（マスタ登録 {basePeriod}）</small>
               </th>
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
@@ -534,7 +542,11 @@ export default function Deals() {
               <Th col="branch">支店</Th>
               <Th col="office">営業所</Th>
               <Th col="sales_person">担当者</Th>
-              <Th col="hist_avg_price" className="num sep">平均単価</Th>
+              <th className="num sep"
+                  title={`価格調査（${surveyLabel}実績）の単価。取込に対応するまでは空欄です`}>
+                {surveyLabel}実績<br /><small>価格調査</small>
+              </th>
+              <Th col="hist_avg_price" className="num">平均単価</Th>
               <Th col="hist_qty" className="num"
                   title="1か月あたりの数量（マスタ登録は1~3月の合計÷3、月別履歴は期間合計÷月数）">
                 数量<br /><small>月平均</small>
@@ -588,8 +600,10 @@ export default function Deals() {
                   <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
 
-                  {/* 出荷実績（法人×品目）。マスタ登録の1~3月実績を優先し、無い行は月別履歴に「履歴」の印 */}
-                  <td className="num sep">
+                  {/* 出荷実績（法人×品目）。マスタ登録の1~3月実績を優先し、無い行は月別履歴に「履歴」の印。
+                      先頭は価格調査（7月実績）の枠。取込に対応するまでは空欄 */}
+                  <td className="num sep">{d.survey_price == null ? '—' : yen(d.survey_price)}</td>
+                  <td className="num">
                     {yen(effPrice(d))}
                     {effPrice(d) != null && !isMaster(d) && (
                       <div className="sub"

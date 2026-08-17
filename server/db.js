@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-08-corp-plans';
+const SCHEMA_VERSION = '2026-08-17-survey-frame';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -564,6 +564,9 @@ async function beforeSchema() {
     // 添付の実体を Vercel Blob（Privateストア）へ移す。
     // blob_url があればそちらが正、無ければ従来どおり content（base64）を読む。
     'ALTER TABLE attachments ADD COLUMN blob_url TEXT',
+    // 価格調査（7月実績）の受け皿。取込は今後追加する（それまでは空のまま）
+    'ALTER TABLE deals ADD COLUMN survey_price REAL',
+    'ALTER TABLE deals ADD COLUMN survey_qty REAL',
   ]) {
     await tryAlter(sql);
   }
@@ -572,7 +575,7 @@ async function beforeSchema() {
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
   try {
-    await db.get('SELECT a_ringi_m3 FROM deal_calc LIMIT 1');
+    await db.get('SELECT survey_price FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

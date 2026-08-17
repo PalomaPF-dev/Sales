@@ -1282,6 +1282,7 @@ async function dashboardData(query, user) {
     COUNT(*) AS deals,
     SUM(${effQty}) AS qty,
     SUM((${effPrice}) * (${effQty})) AS base_amt,
+    SUM(${aCol(0)}) AS a0_amt,
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,

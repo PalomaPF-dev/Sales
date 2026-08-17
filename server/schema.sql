@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS deals (
   hist_qty        REAL,   -- 実績の数量合計（法人×品目・期間全体）
   master_qty      REAL,   -- マスタ登録側の数量合計（法人×品目に集約したもの）
   master_avg_price REAL,  -- マスタ登録側の出荷単価の加重平均（整合確認用）
+  survey_price    REAL,   -- 価格調査（7月実績）の単価。取込は今後追加、それまでは空
+  survey_qty      REAL,   -- 価格調査（7月実績）の数量。同上
   hist_batch      TEXT,   -- 出荷実績の取込回。今回に含まれない行を消すための印
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
