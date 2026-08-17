@@ -42,7 +42,11 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
   const grid: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
   if (grid.length < 3) throw new Error('シートにデータがありません');
 
-  const months = (grid[0] ?? []).map((v) => String(v ?? '')).filter((v) => /^\d{4}\/\d{2}$/.test(v));
+  // 月の見出しは同じ月が複数列（平均単価と売上数など）に付くため、重複を除いて数える。
+  // そのまま数えると月数が2倍になり、「月あたり」の金額が半分に出てしまう
+  const months = [...new Set(
+    (grid[0] ?? []).map((v) => String(v ?? '')).filter((v) => /^\d{4}\/\d{2}$/.test(v))
+  )].sort();
   const row0 = (grid[0] ?? []).map((v) => String(v ?? ''));
   const heads = (grid[1] ?? []).map((v) => String(v ?? ''));
   const cd = heads.findIndex((h) => h === 'i_ent_gr_cd');

@@ -1247,8 +1247,19 @@ async function dashboardData(query, user) {
   // まとまりごとに丸めがズレる。倍精度に上げてから足す
   // （FLOAT は PostgreSQL では倍精度、SQLite では通常の実数）。
   const f = (c) => `CAST(${c} AS FLOAT)`;
+  const months = await histMonths();
+  const mMonths = await masterMonths();
+
+  // 実績の基準。マスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ）。
+  // 数量は期間の長さが行ごとに違うため、月平均 × 対象月数（months）に換算して揃える。
+  // こうすると「合計して ÷months で月あたりを出す」これまでの作りのまま正しい値になる。
+  const effPrice = `CASE WHEN master_avg_price IS NOT NULL
+                         THEN ${f('master_avg_price')} ELSE ${f('hist_avg_price')} END`;
+  const effQty = `CASE WHEN master_avg_price IS NOT NULL
+                       THEN ${f('master_qty')} / ${mMonths} * ${months} ELSE ${f('hist_qty')} END`;
+
   const aCol = (n) =>
-    `CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${f('hist_avg_price')} END * hist_qty`;
+    `(CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${effPrice} END) * (${effQty})`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -1265,32 +1276,31 @@ async function dashboardData(query, user) {
   const planRate = 'COALESCE(pe.pe_rate, pc.pc_rate, 100)';
   const bsimUnit = `CASE WHEN b_price IS NOT NULL THEN ${f('b_price')}
                          WHEN a_price_m3 > 0 THEN ${f('a_price_m3')} * ${planRate} / 100
-                         ELSE ${f('hist_avg_price')} END`;
+                         ELSE ${effPrice} END`;
 
   const ab = `
     COUNT(*) AS deals,
-    SUM(${f('hist_qty')}) AS qty,
-    SUM(${f('hist_avg_price')} * hist_qty) AS base_amt,
+    SUM(${effQty}) AS qty,
+    SUM((${effPrice}) * (${effQty})) AS base_amt,
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
-    SUM((${bsimUnit}) * hist_qty) AS bsim_amt,
+    SUM((${bsimUnit}) * (${effQty})) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
-  const abCond = 'a_price_m3 IS NOT NULL AND hist_avg_price IS NOT NULL AND hist_qty > 0';
-  const months = await histMonths();
+  const abCond = `a_price_m3 IS NOT NULL AND (${effPrice}) IS NOT NULL AND (${effQty}) > 0`;
 
   // 月別のマスタ登録（A基準）。当月〜3か月後それぞれで、
   // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
   // 承認日などの絞り込み（dealFilters）はここにも効く。
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN a_price_m${n} > 0 THEN 1 ELSE 0 END) AS cnt_m${n},
-    SUM(CASE WHEN a_price_m${n} > 0 AND hist_avg_price IS NOT NULL
-         THEN (${f(`a_price_m${n}`)} - ${f('hist_avg_price')}) * COALESCE(hist_qty, 0) END) AS raise_m${n}`)
+    SUM(CASE WHEN a_price_m${n} > 0 AND (${effPrice}) IS NOT NULL
+         THEN (${f(`a_price_m${n}`)} - (${effPrice})) * COALESCE(${effQty}, 0) END) AS raise_m${n}`)
     .join(',')
     // 想定B基準（法人ごとの妥結見通し）にした場合の値上げ額。A基準との比較に使う
     + `,
-    SUM(CASE WHEN a_price_m3 > 0 AND hist_avg_price IS NOT NULL
-         THEN ((${bsimUnit}) - ${f('hist_avg_price')}) * COALESCE(hist_qty, 0) END) AS raise_bsim,
+    SUM(CASE WHEN a_price_m3 > 0 AND (${effPrice}) IS NOT NULL
+         THEN ((${bsimUnit}) - (${effPrice})) * COALESCE(${effQty}, 0) END) AS raise_bsim,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
@@ -1310,11 +1320,11 @@ async function dashboardData(query, user) {
             FROM deal_calc ${planJoin} ${where}`, p),
     db.get(`SELECT ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}`, p),
     db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
-             GROUP BY equip_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC`, p),
+             GROUP BY equip_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch`, p),
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM(${f('hist_avg_price')} * hist_qty) DESC LIMIT 30`, p),
+             GROUP BY corp_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC LIMIT 30`, p),
     db.get("SELECT value FROM settings WHERE key = 'agg_meta'"),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
@@ -1642,13 +1652,16 @@ async function histMonths() {
   const row = await db.get("SELECT value FROM settings WHERE key = 'hist_meta'");
   let meta = null;
   try { meta = row ? JSON.parse(row.value) : null; } catch { /* 壊れていたら既定値 */ }
-  const n = Number(meta?.months);
-  if (Number.isFinite(n) && n > 0) return n;
+  // 期間の文字（2025/07〜2026/06）から数えるのを最優先にする。
+  // 保存してある月数は、旧版の取込が月見出しの列数を重複して数えていて
+  // 実際の2倍（24など）になっていることがあるため、期間が読めないときだけ使う
   const m = /^(\d{4})\/(\d{2}).*?(\d{4})\/(\d{2})$/.exec(String(meta?.period ?? ''));
   if (m) {
     const span = (Number(m[3]) - Number(m[1])) * 12 + (Number(m[4]) - Number(m[2])) + 1;
     if (span > 0) return span;
   }
+  const n = Number(meta?.months);
+  if (Number.isFinite(n) && n > 0) return n;
   return 12;
 }
 
