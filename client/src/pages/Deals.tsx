@@ -247,8 +247,9 @@ export default function Deals() {
     if (ok) setMsg({ kind: 'ok', text: '適用年月を保存しました' });
   };
 
-  // 実績はマスタ登録の1~3月出荷実績だけを使う（マスタ登録に無い行は空欄）。
-  // 売上数は3か月の合計なので、月数で割って月平均を出す。
+  // 実績はマスタ登録の単価を優先し、無い品目は出荷実績（1~3月）の値で補う。
+  // 数量は期間の合計なので、それぞれの月数で割って月平均を出す。
+  const months = data?.months || 3;
   const mMonths = data?.masterMonths || 3;
   const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
   // 価格調査（当月の前の月の実績）。取込ができるまでは枠だけ出す
@@ -258,11 +259,15 @@ export default function Deals() {
     const n = Number(m[2]) - 1;
     return `${n >= 1 ? n : 12}月`;
   })();
-  /** 実績の平均単価（マスタ登録の1~3月） */
-  const effPrice = (d: Deal) => d.master_avg_price ?? null;
-  /** 月平均の数量（1~3月の合計 ÷ 月数） */
-  const monthlyQty = (d: Deal) =>
-    (d.master_qty == null ? null : Number(d.master_qty) / mMonths);
+  /** 実績の平均単価（マスタ登録を優先。無い品目は出荷実績の値） */
+  const effPrice = (d: Deal) => d.master_avg_price ?? d.hist_avg_price ?? null;
+  /** 月平均の数量（期間の合計 ÷ その実績の月数） */
+  const monthlyQty = (d: Deal) => {
+    if (d.master_avg_price != null) {
+      return d.master_qty == null ? null : Number(d.master_qty) / mMonths;
+    }
+    return d.hist_qty == null ? null : Number(d.hist_qty) / months;
+  };
 
   /**
    * A基準の1マス。申請単価と、その単価の承認日（マスタ登録の登録日）を重ねて出す。
@@ -324,8 +329,8 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>出荷実績の法人×品目</strong>を土台に、価格を比較します。
-        実績は<strong>マスタ登録の{basePeriod}出荷実績</strong>（平均単価と数量）で、
-        マスタ登録に無い行は空欄になります。
+        実績は<strong>{basePeriod}の出荷実績</strong>（平均単価と数量）で、
+        マスタ登録の単価を優先し、マスタ登録に無い品目は出荷実績取込の値を表示します。
         A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
         B基準は実際の決定単価（営業企画・管理者が入力）です。
         A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
@@ -517,9 +522,9 @@ export default function Deals() {
             <tr>
               <th colSpan={7} className="grp">基本情報</th>
               <th colSpan={3} className="grp sep"
-                  title={`マスタ登録の${basePeriod}出荷実績を表示します（マスタ登録に無い行は空欄）。`
+                  title={`${basePeriod}の出荷実績。マスタ登録の単価を優先し、マスタ登録に無い品目は出荷実績取込の値を表示します。`
                     + `${surveyLabel}実績は価格調査データの取込に対応したら入ります`}>
-                出荷実績<small>（マスタ登録 {basePeriod}）</small>
+                出荷実績<small>（{basePeriod}）</small>
               </th>
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
               <th className="num grp sep">B基準</th>

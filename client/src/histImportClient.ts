@@ -56,8 +56,21 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
   const prodName = heads.findIndex((h) => h === 'i_product_name');
   const totalAvg = row0.findIndex((h) => h.includes('全体') && h.includes('平均単価'));
   const totalQty = row0.findIndex((h) => h.includes('全体') && h.includes('売上数'));
-  if (cd < 0 || nameCol < 0 || prod < 0 || totalAvg < 0 || totalQty < 0) {
-    throw new Error('見出しが見つかりません。i_ent_gr_cd・i_product_cd・「全体の 平均単価」「全体の 売上数」のあるファイルが必要です');
+
+  // 「全体」の列が無い形式（月ごとの 平均単価・売上数 のペアだけ）にも対応する。
+  // その場合は月ごとの値から、数量の合計と数量で重み付けした平均単価を計算する
+  const monthPairs: { price: number; qty: number }[] = [];
+  if (totalAvg < 0 || totalQty < 0) {
+    for (let i = 0; i < heads.length - 1; i++) {
+      if (!/^\d{4}\/\d{2}$/.test(row0[i] ?? '')) continue;
+      if (heads[i] === '平均単価' && heads[i + 1] === '売上数') {
+        monthPairs.push({ price: i, qty: i + 1 });
+      }
+    }
+  }
+  if (cd < 0 || nameCol < 0 || prod < 0 || ((totalAvg < 0 || totalQty < 0) && !monthPairs.length)) {
+    throw new Error('見出しが見つかりません。i_ent_gr_cd・i_product_cd と、'
+      + '「全体の 平均単価/売上数」または月ごとの「平均単価/売上数」のあるファイルが必要です');
   }
 
   const corps = new Map<string, string>();
@@ -76,14 +89,40 @@ export async function parseHistFile(file: File): Promise<HistParsed> {
     const key = `${code}|${product}`;
     if (seen.has(key)) continue;   // 同じ法人×品目が重複していたら最初の行を使う
     seen.add(key);
+
+    // 実績（平均単価・数量）。「全体」列があればそのまま、
+    // 無い形式では月ごとの値から合計と加重平均を計算する
+    let avgPrice: unknown;
+    let qty: unknown;
+    if (totalAvg >= 0 && totalQty >= 0) {
+      avgPrice = r[totalAvg];
+      qty = r[totalQty];
+    } else {
+      let qtySum = 0;        // 数量の合計（単価の無い月の数量も含める）
+      let weightedQty = 0;   // 加重平均の分母（単価と数量が揃っている月だけ）
+      let amount = 0;        // Σ 単価×数量
+      let has = false;
+      for (const mp of monthPairs) {
+        const q = Number(r[mp.qty] ?? NaN);
+        const p = Number(r[mp.price] ?? NaN);
+        if (Number.isFinite(q) && q !== 0) {
+          qtySum += q;
+          has = true;
+          if (Number.isFinite(p)) { weightedQty += q; amount += p * q; }
+        }
+      }
+      qty = has ? qtySum : null;
+      avgPrice = weightedQty > 0 ? amount / weightedQty : null;
+    }
+
     rows.push({
       ent_cd: code,
       corp_name: corpName,
       model_code: product,
       model_name: String(r[prodName] ?? '').trim(),
       equip_name: equipCol >= 0 ? String(r[equipCol] ?? '').trim() : '',
-      avg_price: r[totalAvg],
-      qty: r[totalQty],
+      avg_price: avgPrice,
+      qty,
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');

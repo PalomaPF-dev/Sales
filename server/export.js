@@ -36,11 +36,15 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
 
-  // 実績はマスタ登録の1~3月出荷実績だけを使う（案件一覧と同じ基準。無い行は空欄）。
-  // 売上数は3か月の合計のため、月数で割って月平均にする
-  const effPrice = (r) => (r.master_avg_price ?? null);
-  const monthlyQty = (r) =>
-    (r.master_qty == null ? null : Number(r.master_qty) / masterMonths);
+  // 実績はマスタ登録の単価を優先し、無い品目は出荷実績（1~3月）で補う（案件一覧と同じ基準）。
+  // 数量は期間の合計のため、それぞれの月数で割って月平均にする
+  const effPrice = (r) => (r.master_avg_price ?? r.hist_avg_price ?? null);
+  const monthlyQty = (r) => {
+    if (r.master_avg_price != null) {
+      return r.master_qty == null ? null : Number(r.master_qty) / masterMonths;
+    }
+    return r.hist_qty == null ? null : Number(r.hist_qty) / months;
+  };
   const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';
   // 価格調査（当月の前の月の実績）。取込に対応するまでは空欄の枠だけ出す
   const surveyYm = (() => {
@@ -156,7 +160,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
   if ((opts.filters ?? []).length === 0) cond.push(['絞り込み', 'なし（全件）']);
   cond.push([]);
   cond.push(['表示範囲', data.scope?.label ?? '']);
-  cond.push(['対象品目（マスタ登録）の件数', n(data.aMonths?.covered)]);
+  cond.push(['出荷実績の品目件数', n(data.histTotals?.deals)]);
+  cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（月ごとに現状額・A基準額・値上げ額）
