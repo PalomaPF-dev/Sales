@@ -29,7 +29,7 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
  * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
-function buildColumns({ months, withCost, aggMeta }) {
+function buildColumns({ months, masterMonths = 3, withCost, aggMeta }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
   const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
@@ -37,11 +37,11 @@ function buildColumns({ months, withCost, aggMeta }) {
   const m3 = m('m3', '3か月後');
 
   // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う（案件一覧と同じ基準）。
-  // マスタ登録の売上数は月平均の値のためそのまま、月別履歴は期間合計を月数で割って月平均にする
+  // 数量はどちらも期間の合計のため、それぞれの月数で割って月平均にする
   const isMaster = (r) => r.master_avg_price != null;
   const effPrice = (r) => (isMaster(r) ? r.master_avg_price : r.hist_avg_price);
   const monthlyQty = (r) => {
-    if (isMaster(r)) return r.master_qty;
+    if (isMaster(r)) return r.master_qty == null ? null : Number(r.master_qty) / masterMonths;
     return r.hist_qty == null ? null : Number(r.hist_qty) / months;
   };
   const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';

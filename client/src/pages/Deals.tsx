@@ -17,7 +17,8 @@ interface DealsRes {
   };
   page: number;
   size: number;
-  months: number;   // 月別履歴の対象月数（数量の月平均に使う）
+  months: number;        // 月別履歴の対象月数（数量の月平均に使う）
+  masterMonths?: number; // マスタ登録の出荷実績（1~3月）の月数
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
@@ -247,16 +248,17 @@ export default function Deals() {
   };
 
   // 実績はマスタ登録の1~3月出荷実績を優先し、無い行は月別履歴で補う。
-  // マスタ登録の売上数は月平均の値なのでそのまま、月別履歴は期間合計を月数で割る。
+  // 数量はどちらも期間の合計なので、それぞれの月数（1~3月なら3）で割って月平均を出す。
   const months = data?.months || 12;
+  const mMonths = data?.masterMonths || 3;
   const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
   /** マスタ登録の実績がある行か */
   const isMaster = (d: Deal) => d.master_avg_price != null;
   /** 実績の平均単価（マスタ登録優先） */
   const effPrice = (d: Deal) => (isMaster(d) ? d.master_avg_price : d.hist_avg_price);
-  /** 月平均の数量 */
+  /** 月平均の数量（期間の合計 ÷ その実績の月数） */
   const monthlyQty = (d: Deal) => {
-    if (isMaster(d)) return d.master_qty ?? null;
+    if (isMaster(d)) return d.master_qty == null ? null : Number(d.master_qty) / mMonths;
     return d.hist_qty == null ? null : Number(d.hist_qty) / months;
   };
 
@@ -534,7 +536,7 @@ export default function Deals() {
               <Th col="sales_person">担当者</Th>
               <Th col="hist_avg_price" className="num sep">平均単価</Th>
               <Th col="hist_qty" className="num"
-                  title="1か月あたりの数量（マスタ登録は月平均の値そのまま、月別履歴は期間合計÷月数）">
+                  title="1か月あたりの数量（マスタ登録は1~3月の合計÷3、月別履歴は期間合計÷月数）">
                 数量<br /><small>月平均</small>
               </Th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
