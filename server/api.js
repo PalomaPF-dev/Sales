@@ -1299,14 +1299,15 @@ async function dashboardData(query, user) {
                          WHEN a_price_m3 > 0 THEN ${f('a_price_m3')} * ${planRate} / 100
                          ELSE ${effPrice} END`;
 
-  // 器具区分別などの表に出す「実績」。月ごとの内訳はまとめの表にあるので、
-  // ここは一番新しい月だけにして、集計を重くしない。
+  // 器具区分別などの表に出す「実績」。取り込んだ月ごとに出す
+  // （4月からの推移を、まとめの表と同じ粒度で見られるようにする）。
+  // 走査は既存の集計と同じ1回のままで、足し算だけが増える。
   const actSlot = (actualMeta?.months ?? []).length;
-  const abAct = actSlot > 0 ? `,
-    SUM(CASE WHEN act_price_${actSlot} > 0
-         THEN ${f(`act_price_${actSlot}`)} * (${effQty}) END) AS act_amt,
-    SUM(CASE WHEN act_price_${actSlot} > 0
-         THEN (${effPrice}) * (${effQty}) END) AS act_base` : '';
+  const abAct = Array.from({ length: actSlot }, (_, i) => `,
+    SUM(CASE WHEN act_price_${i + 1} > 0
+         THEN ${f(`act_price_${i + 1}`)} * (${effQty}) END) AS act_amt_${i + 1},
+    SUM(CASE WHEN act_price_${i + 1} > 0
+         THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1}`).join('');
 
   const ab = `
     COUNT(*) AS deals,
@@ -1371,7 +1372,8 @@ async function dashboardData(query, user) {
   // 全体の合計は器具区分別を足したもの（同じ条件のため一致する）。
   // 合計だけをもう一度数えると10万件の走査が1回増えるので、ここで足す
   const sumKeys = ['deals', 'qty', 'base_amt', 'a0_amt', 'a1_amt', 'a2_amt', 'a3_amt',
-    'bsim_amt', 'b_rows', ...(actSlot > 0 ? ['act_amt', 'act_base'] : [])];
+    'bsim_amt', 'b_rows',
+    ...Array.from({ length: actSlot }, (_, i) => [`act_amt_${i + 1}`, `act_base_${i + 1}`]).flat()];
   const abTotals = abByEquip.reduce((acc, r) => {
     for (const k of sumKeys) acc[k] = Number(acc[k] ?? 0) + Number(r[k] ?? 0);
     return acc;
@@ -1399,8 +1401,8 @@ async function dashboardData(query, user) {
     months,
     aggMeta,
     actuals,
-    // 集計表（器具区分別など）に出している実績の月。実単価が未取込なら null
-    abActYm: actSlot > 0 ? (actualMeta?.months ?? [])[actSlot - 1] : null,
+    // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
+    abActYms: actualMeta?.months ?? [],
   };
 }
 

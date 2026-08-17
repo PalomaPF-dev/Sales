@@ -20,9 +20,9 @@ interface AbRow {
   qty: number;
   base_amt: number;
   a0_amt: number;
-  /** 実績（価格調査の一番新しい月）。実単価が未取込のときは入らない */
-  act_amt?: number;
-  act_base?: number;
+  /** 実績（価格調査の月ごと）。act_amt_1 が4月ぶん…という並び。未取込なら入らない */
+  [key: `act_amt_${number}`]: number | undefined;
+  [key: `act_base_${number}`]: number | undefined;
   a1_amt: number;
   a2_amt: number;
   a3_amt: number;
@@ -46,8 +46,8 @@ interface DashboardRes {
   };
   /** 価格調査の実単価から出した月ごとの実績。実単価のある案件だけで集計する */
   actuals?: { ym: string; amount: number; base: number; deals: number }[];
-  /** 集計表に出している実績の月（実単価が未取込なら null） */
-  abActYm?: string | null;
+  /** 集計表に出している実績の月の並び（実単価が未取込なら空） */
+  abActYms?: string[];
   abTotals?: AbRow;
   abByEquip?: AbRow[];
   abByBranch?: AbRow[];
@@ -99,21 +99,27 @@ function AmtCell({ amt, base, months }: { amt: number; base?: number; months: nu
 
 // 集計表の並び替えの対象。月の列は「その月の値上げ額（A基準額−現状額）」で並べる
 // （A基準額そのものだと規模の大きい区分が常に上に来て、値上げの大小が見えないため）
-type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'act' | 'a0' | 'a1' | 'a2' | 'a3' | 'bsim';
+type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'a0' | 'a1' | 'a2' | 'a3' | 'bsim'
+  | `act${number}`;
 
 function sortValue(r: AbRow, col: SortCol): number | string {
+  // 実績（月ごと）。その月に実単価のあった品目だけで見るため、現状額もその分だけを引く
+  const act = /^act(\d+)$/.exec(col);
+  if (act) {
+    const n = Number(act[1]) + 1;
+    return num(r[`act_amt_${n}`]) - num(r[`act_base_${n}`]);
+  }
   switch (col) {
     case 'name': return r.name ?? '';
     case 'deals': return num(r.deals);
     case 'qty': return num(r.qty);
     case 'base': return num(r.base_amt);
-    // 実績は「その月に実単価のあった品目だけ」で見るため、現状額もその分だけを引く
-    case 'act': return num(r.act_amt) - num(r.act_base);
     case 'a0': return num(r.a0_amt) - num(r.base_amt);
     case 'a1': return num(r.a1_amt) - num(r.base_amt);
     case 'a2': return num(r.a2_amt) - num(r.base_amt);
     case 'a3': return num(r.a3_amt) - num(r.base_amt);
     case 'bsim': return num(r.bsim_amt) - num(r.base_amt);
+    default: return 0;
   }
 }
 
@@ -122,9 +128,9 @@ function sortValue(r: AbRow, col: SortCol): number | string {
  * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
  * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
  */
-function AbTable({ head, rows, total, months, actYm, m0, m1, m2, m3 }: {
+function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
   head: string; rows: AbRow[]; total?: AbRow;
-  months: number; actYm?: string | null; m0: string; m1: string; m2: string; m3: string;
+  months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
 }) {
   // 未指定のときはサーバーの並び（現状額の大きい順）のまま
   const [sort, setSort] = useState<{ col: SortCol; desc: boolean } | null>(null);
@@ -179,12 +185,12 @@ function AbTable({ head, rows, total, months, actYm, m0, m1, m2, m3 }: {
             <Th col="base" right title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
               現状額<br /><small>月あたり</small>
             </Th>
-            {actYm && (
-              <Th col="act" right
-                  title={`${actYm}の実単価で実際に上がった額。実単価のあった品目だけを集計しています（月ごとの内訳はまとめの表）`}>
-                {actYm} 実績<br /><small>実績額 / 値上げ額（率）</small>
+            {actYms.map((ym, i) => (
+              <Th key={ym} col={`act${i}`} right
+                  title={`${ym}の実単価で実際に上がった額。その月に実単価のあった品目だけを集計しています`}>
+                {ym} 実績<br /><small>実績額 / 値上げ額（率）</small>
               </Th>
-            )}
+            ))}
             <Th col="a0" right title={`${m0}（当月）の値上げ額で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></Th>
@@ -207,10 +213,12 @@ function AbTable({ head, rows, total, months, actYm, m0, m1, m2, m3 }: {
                   {(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </td>
                 <AmtCell amt={base} months={months} />
-                {actYm && (
-                  r.act_amt == null ? <td style={nums}>—</td>
-                    : <AmtCell amt={num(r.act_amt)} base={num(r.act_base)} months={months} />
-                )}
+                {actYms.map((ym, i) => (
+                  r[`act_amt_${i + 1}`] == null
+                    ? <td key={ym} style={nums}>—</td>
+                    : <AmtCell key={ym} amt={num(r[`act_amt_${i + 1}`])}
+                               base={num(r[`act_base_${i + 1}`])} months={months} />
+                ))}
                 <AmtCell amt={num(r.a0_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a2_amt)} base={base} months={months} />
@@ -393,7 +401,7 @@ export default function Dashboard() {
                ? `出荷実績の品目の ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
         {/* 実績（価格調査の実単価）。実際にいくら上がったかを、計画の隣に並べる */}
-        {(data.actuals ?? []).slice(-1).map((a) => {
+        {(data.actuals ?? []).map((a) => {
           const gain = (a.amount - a.base) / months;
           const rate = a.base > 0 ? Math.round(((a.amount - a.base) / a.base) * 1000) / 10 : null;
           return (
@@ -486,15 +494,15 @@ export default function Dashboard() {
       </Card>
 
       <Card title="器具区分別の値上げ額">
-        <AbTable head="器具区分" rows={data.abByEquip ?? []} total={t} months={months} actYm={data.abActYm} m0={m0} m1={m1} m2={m2} m3={m3} />
+        <AbTable head="器具区分" rows={data.abByEquip ?? []} total={t} months={months} actYms={data.abActYms} m0={m0} m1={m1} m2={m2} m3={m3} />
       </Card>
 
       <Card title="支店別の値上げ額">
-        <AbTable head="支店" rows={data.abByBranch ?? []} total={t} months={months} actYm={data.abActYm} m0={m0} m1={m1} m2={m2} m3={m3} />
+        <AbTable head="支店" rows={data.abByBranch ?? []} total={t} months={months} actYms={data.abActYms} m0={m0} m1={m1} m2={m2} m3={m3} />
       </Card>
 
       <Card title="法人別の値上げ額（現状額の上位30）">
-        <AbTable head="法人" rows={data.abByCorp ?? []} total={t} months={months} actYm={data.abActYm} m0={m0} m1={m1} m2={m2} m3={m3} />
+        <AbTable head="法人" rows={data.abByCorp ?? []} total={t} months={months} actYms={data.abActYms} m0={m0} m1={m1} m2={m2} m3={m3} />
       </Card>
     </div>
   );
