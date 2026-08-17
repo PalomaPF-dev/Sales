@@ -156,8 +156,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   if ((opts.filters ?? []).length === 0) cond.push(['絞り込み', 'なし（全件）']);
   cond.push([]);
   cond.push(['表示範囲', data.scope?.label ?? '']);
-  cond.push(['品目件数（母数）', n(data.histTotals?.deals)]);
-  cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
+  cond.push(['対象品目（マスタ登録）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（月ごとに現状額・A基準額・値上げ額）

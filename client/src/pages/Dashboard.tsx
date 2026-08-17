@@ -291,12 +291,12 @@ export default function Dashboard() {
         </button>
       </div>
       <p className="page-sub">
-        <strong>純粋な品目件数</strong>を母数に、
-        マスタ登録（A基準）の件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績単価)×数量）を出します。
-        実績単価と数量は<strong>マスタ登録の{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}出荷実績</strong>です。
+        マスタ登録の品目件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績単価)×数量）を出します。
+        実績単価と数量は<strong>マスタ登録の{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}出荷実績</strong>で、
+        マスタ登録が{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}に出荷実績のあった品目の全数です。
         <strong>承認日</strong>は既定で<strong>当月以降に承認された単価だけ</strong>を見ています
         （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
-        絞り込みでマスタ登録件数と値上げ額が変わります（出荷実績の母数は変わりません）。
+        絞り込みで件数と値上げ額が変わります。
         下の表の<strong>現状額</strong>は実績単価×数量で、値上げしなかった場合の金額です。
         各月の<strong>A基準額</strong>はA基準前提で数量を固定した金額で、その差が値上げ額、
         現状額に対する割合が<strong>値上げ率</strong>です。
@@ -368,13 +368,10 @@ export default function Dashboard() {
         承認日の絞り込みを変えると、ここもその条件で数え直される。
       */}
       <div className="tiles">
-        <Kpi label="品目件数（案件の母数）"
-             value={`${num(data.histTotals?.deals).toLocaleString()}件`} />
-        <Kpi label="マスタ登録（A基準あり）"
-             value={`${num(data.aMonths?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
-             sub={num(data.histTotals?.deals) > 0
-               ? `品目ベースの ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
-               : undefined} />
+        {/* マスタ登録＝1~3月に出荷実績のあった品目の全数、という扱い */}
+        <Kpi label="対象品目（マスタ登録）"
+             value={`${num(data.aMonths?.covered).toLocaleString()}件`}
+             sub={`${meta?.aggMeta?.basePeriod?.trim() || '1~3月'}に出荷実績のあった品目`} />
         {([
           [m0, data.aMonths?.raise_m0],
           [m1, data.aMonths?.raise_m1],
