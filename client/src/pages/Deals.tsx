@@ -600,7 +600,7 @@ export default function Deals() {
         <table className="tbl deals">
           <thead>
             <tr>
-              <th colSpan={7} className="grp">基本情報</th>
+              <th colSpan={8} className="grp">基本情報</th>
               <th colSpan={7} className="grp sep"
                   title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}のマスタ単価までが、実際に上がった分。`
                     + `実単価は 金額÷数量 で、見積ぶんが混ざるとマスタ単価より下がります`}>
@@ -619,6 +619,9 @@ export default function Deals() {
               <Th col="corp_name">法人</Th>
               <Th col="customer_name">得意先 / 納入先</Th>
               <Th col="model_name">器種名</Th>
+              <Th col="product_name" title="価格調査の商品名。下段は規格（ガス種）">
+                商品名 / 規格
+              </Th>
               <Th col="equip_name">器具区分</Th>
               <Th col="branch">支店</Th>
               <Th col="office">営業所</Th>
@@ -689,9 +692,12 @@ export default function Deals() {
                         <a href={`/deals/${d.id}`} onClick={(e) => { e.preventDefault(); navigate(`/deals/${d.id}`); }}>
                           {d.model_name}
                         </a>
-                        {d.gas_type && <><br /><small style={{ color: 'var(--muted)' }}>{d.gas_type}</small></>}
                       </>
                     )}
+                  </td>
+                  <td title={d.model_code || ''}>
+                    {d.product_name || '—'}
+                    {d.gas_type && <><br /><small style={{ color: 'var(--muted)' }}>{d.gas_type}</small></>}
                   </td>
                   <td>{isEditing && isDev ? baseCell(d, 'equip_name') : d.equip_name}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'branch') : (d.branch || '—')}</td>

@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS deals (
   model_code      TEXT,   -- U  器種コード
   gas_code        TEXT,   -- V  ガスコード
   model_name      TEXT,   -- W  器種名
-  gas_type        TEXT,   -- X  ガス種
+  gas_type        TEXT,   -- X  ガス種（価格調査の「規格」もここに入る）
+  product_name    TEXT,   -- 商品名（価格調査の「商品名」。器種名は品目階層名）
   qty             REAL,   -- 出荷数量（マスタ登録の売上数）
   list_price      REAL,   -- Z  定価
   rate            REAL,   -- AA 掛け率
@@ -264,6 +265,8 @@ CREATE TABLE IF NOT EXISTS act_staging (
   industry      TEXT,
   delivery_name TEXT,
   model_name    TEXT,
+  product_name  TEXT,
+  spec          TEXT,
   equip_name    TEXT,
   category_name TEXT,
   top_qty       REAL,

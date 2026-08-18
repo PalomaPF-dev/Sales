@@ -32,6 +32,10 @@ export interface Deal {
   equip_name: string | null;
   category_name: string | null;
   model_name: string | null;
+  /** 商品コード（価格調査の「商品コード」） */
+  model_code?: string | null;
+  /** 商品名（価格調査の「商品名」。器種名は品目階層名） */
+  product_name?: string | null;
   gas_type: string | null;
   list_price: number | null;
   rate: number | null;

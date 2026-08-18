@@ -26,6 +26,8 @@ export interface SurveyRow {
   delivery_name: string;
   model_code: string;
   model_name: string;
+  product_name: string;   // 商品名（器種名は品目階層名）
+  spec: string;           // 規格（LP・P など。ガス種として持つ）
   equip_name: string;
   category_name: string;
   list_price: unknown;     // 標準単価
@@ -147,6 +149,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     industry: find('業種名'),
     delivery_name: find('納入先名'),
     model_name: findLike('品目階層名') >= 0 ? findLike('品目階層名') : find('器種名'),
+    product_name: find('商品名'),
+    spec: find('規格'),
     equip_name: find('器具区分名'),
     category_name: findLike('カテゴリー名'),
     list_price: find('標準単価'),
@@ -174,6 +178,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       delivery_name: txt(r, at.delivery_name),
       model_code: model,
       model_name: txt(r, at.model_name),
+      product_name: txt(r, at.product_name),
+      spec: txt(r, at.spec),
       equip_name: txt(r, at.equip_name),
       category_name: txt(r, at.category_name),
       list_price: at.list_price >= 0 ? r[at.list_price] : null,

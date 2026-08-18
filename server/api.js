@@ -1668,6 +1668,7 @@ const SORTABLE = new Map([
   ['corp_name', 'corp_name'],
   ['customer_name', 'customer_name'],
   ['model_name', 'model_name'],
+  ['product_name', 'product_name'],
   ['equip_name', 'equip_name'],
   ['branch', 'branch'],
   ['office', 'office'],
@@ -1726,7 +1727,7 @@ function aDateCond(q) {
 /** 文字での検索の対象。名前だけでなくコードや区分も「含む」で引けるようにする */
 const SEARCH_COLS = [
   'corp_name', 'corp_code', 'customer_name', 'customer_code', 'delivery_name',
-  'model_name', 'model_code', 'equip_name', 'category_name', 'industry',
+  'model_name', 'model_code', 'product_name', 'gas_type', 'equip_name', 'category_name', 'industry',
   'branch', 'office', 'sales_person',
 ];
 
@@ -2814,7 +2815,7 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
       past_amt: 0, past_wgt: 0, past_date: null,
       list_amt: 0, list_wgt: 0,
       customer_name: null, corp_group: null, industry: null,
-      delivery_name: null, model_name: null,
+      delivery_name: null, model_name: null, product_name: null, spec: null,
       equip_name: null, category_name: null, top: Number.NEGATIVE_INFINITY,
     };
     const qty = num(r.qty);
@@ -2851,6 +2852,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
       a.industry = txt(r.industry);
       a.delivery_name = txt(r.delivery_name);
       a.model_name = txt(r.model_name);
+      a.product_name = txt(r.product_name);
+      a.spec = txt(r.spec);
       a.equip_name = txt(r.equip_name);
       a.category_name = txt(r.category_name);
     }
@@ -2858,7 +2861,7 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   }
 
   const REP = ['customer_name', 'corp_group', 'industry', 'delivery_name',
-    'model_name', 'equip_name', 'category_name'];
+    'model_name', 'product_name', 'spec', 'equip_name', 'category_name'];
   const vals = [...acc.values()].map((a) => [
     a.cust, a.model, a.qty, a.money, a.amt, a.wgt, a.mp_amt, a.mp_wgt,
     a.plan_qty, a.plan_money, a.past_amt, a.past_wgt, a.past_date,
@@ -2895,7 +2898,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   // 既にある案件は上書き（決定単価など画面で入れた値は触らないので残る）、
   // 無いものは追加する。突き合わせは 得意先コード×商品コード。
   const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_code', 'customer_name',
-    'industry', 'delivery_name', 'model_code', 'model_name', 'equip_name', 'category_name',
+    'industry', 'delivery_name', 'model_code', 'model_name', 'product_name', 'gas_type',
+    'equip_name', 'category_name',
     'list_price', 'master_avg_price', 'master_price', 'master_qty', 'master_amount',
     'plan_qty', 'plan_amount', 'past_price', 'past_date', 'hist_batch', 'updated_at'];
   // 法人は企業グループ名。グループ名がそのまま法人のコードになる
@@ -2906,7 +2910,7 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   const sel = `
     SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, ${corpCode}, ${corpName},
            s.ent_cd, s.customer_name, s.industry, s.delivery_name,
-           s.model_code, s.model_name, s.equip_name, s.category_name,
+           s.model_code, s.model_name, s.product_name, s.spec, s.equip_name, s.category_name,
            CASE WHEN s.list_wgt > 0 THEN s.list_amt / s.list_wgt END,
            CASE WHEN s.qty_sum > 0 THEN s.money_sum / s.qty_sum
                 WHEN s.price_wgt > 0 THEN s.price_amt / s.price_wgt END,

@@ -86,6 +86,15 @@ interface DashboardRes {
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string } | null;
 }
 
+/**
+ * 集計表に出す内容の切り替え。実績と計画を全部並べると横に長くなり、
+ * スクロールしないと端まで見えないため、タブで出し分けて1画面に収める。
+ */
+const VIEWS = [
+  { key: 'act' as const, label: '実績（売上改善額）' },
+  { key: 'plan' as const, label: '計画（A基準）' },
+];
+
 /** 集計表の切り替え。列が多いので縦に並べず、タブで出し分ける */
 const TABS = [
   { key: 'equip' as const, label: '器具区分別', head: '器具区分', title: '器具区分別の値上げ額' },
@@ -180,11 +189,15 @@ function sortValue(r: AbRow, col: SortCol): number | string {
  * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
  * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
  */
-function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link }: {
+function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link, view, withBsim }: {
   head: string; rows: AbRow[]; total?: AbRow;
   months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
   /** その行の品目を、売上改善額の向きで絞った案件一覧のURL（合計行は渡らない） */
   link?: (name: string | null | undefined, kind: 'plus' | 'minus') => string;
+  /** 出す内容。act=実績（売上改善額）、plan=計画（A基準） */
+  view: 'act' | 'plan';
+  /** 想定B基準を出すか。法人ごとに決める値なので法人別のときだけ出す */
+  withBsim?: boolean;
 }) {
   // 未指定のときはサーバーの並び（現状額の大きい順）のまま
   const [sort, setSort] = useState<{ col: SortCol; desc: boolean } | null>(null);
@@ -240,11 +253,13 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link 
                 title="当月の金額（合計）そのもの。A基準の値上げ幅はここへ足します（1か月あたり）">
               現状額（合計）<br /><small>月あたり</small>
             </Th>
-            <Th col="mp" right
-                title="当月の金額（マスタ）。値決めどおりに出た分（1か月あたり）">
-              うちマスタ<br /><small>月あたり</small>
-            </Th>
-            {actYms.flatMap((ym, i) => [
+            {view === 'act' && (
+              <Th col="mp" right
+                  title="当月の金額（マスタ）。値決めどおりに出た分（1か月あたり）">
+                うちマスタ<br /><small>月あたり</small>
+              </Th>
+            )}
+            {view === 'act' && actYms.flatMap((ym, i) => [
               <Th key={ym} col={`act${i}`} right
                   title={`${ym}の金額（合計）と、値上げ前当初との差（売上改善額）`}>
                 {ym} 実績<br /><small>金額 / 売上改善額（率）</small>
@@ -258,14 +273,20 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link 
                 {ym} マイナス<br /><small>下がった品目</small>
               </Th>,
             ])}
-            <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
-            <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></Th>
-            <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></Th>
-            <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額（率）</small></Th>
-            <Th col="bsim" right
-                title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価。想定の値上げ額で並びます">
-              想定B基準<br /><small>想定額 / 値上げ額（率）</small>
-            </Th>
+            {view === 'plan' && (
+              <>
+                <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>A基準額 / 値上げ額</small></Th>
+                <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額</small></Th>
+                <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額</small></Th>
+                <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額</small></Th>
+                {withBsim && (
+                  <Th col="bsim" right
+                      title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価。想定の値上げ額で並びます">
+                    想定B基準<br /><small>想定額 / 値上げ額</small>
+                  </Th>
+                )}
+              </>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -277,14 +298,17 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link 
             const pre = base - (num(r.gain_plus_1) + num(r.gain_minus_1));
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
-                <td>{r.name || '—'}</td>
+                {/* 法人名は長いものがあるため、幅を決めて折り返す（表が横に伸びないように） */}
+                <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                  {r.name || '—'}
+                </td>
                 <td style={nums}>{num(r.deals).toLocaleString()}</td>
                 <td style={nums}>
                   {(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </td>
                 <AmtCell amt={base} months={months} />
-                <AmtCell amt={num(r.mp_amt)} months={months} />
-                {actYms.flatMap((ym, i) => {
+                {view === 'act' && <AmtCell amt={num(r.mp_amt)} months={months} />}
+                {view === 'act' && actYms.flatMap((ym, i) => {
                   // 実績は「値上げ前当初 → 当月の金額（合計）」。差が売上改善額になる
                   const gp = num(r[`gain_plus_${i + 1}`]);
                   const gm = num(r[`gain_minus_${i + 1}`]);
@@ -323,11 +347,15 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link 
                   ];
                 })}
                 {/* A基準（計画）は値上げ前当初と比べる */}
-                <AmtCell amt={num(r.a0_amt)} base={pre} months={months} />
-                <AmtCell amt={num(r.a1_amt)} base={pre} months={months} />
-                <AmtCell amt={num(r.a2_amt)} base={pre} months={months} />
-                <AmtCell amt={num(r.a3_amt)} base={pre} months={months} />
-                <AmtCell amt={num(r.bsim_amt)} base={pre} months={months} />
+                {view === 'plan' && (
+                  <>
+                    <AmtCell amt={num(r.a0_amt)} base={pre} months={months} />
+                    <AmtCell amt={num(r.a1_amt)} base={pre} months={months} />
+                    <AmtCell amt={num(r.a2_amt)} base={pre} months={months} />
+                    <AmtCell amt={num(r.a3_amt)} base={pre} months={months} />
+                    {withBsim && <AmtCell amt={num(r.bsim_amt)} base={pre} months={months} />}
+                  </>
+                )}
               </tr>
             );
           })}
@@ -429,6 +457,8 @@ export default function Dashboard() {
   // 表の切り替え。既定は器具区分別（URLの tab で切り替える）
   const tab = (['equip', 'branch', 'corp'] as const).includes(get('tab') as never)
     ? (get('tab') as 'equip' | 'branch' | 'corp') : 'equip';
+  // 出す内容（実績 / 計画）。既定は実績。選んだ内容はURLに残る
+  const view: 'act' | 'plan' = get('view') === 'plan' ? 'plan' : 'act';
   const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
     (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
@@ -727,6 +757,15 @@ export default function Dashboard() {
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
           <h3 style={{ margin: 0 }}>{TABS.find((x) => x.key === tab)?.title}</h3>
+          {/* 出す内容の切り替え。実績と計画を分けて、横スクロールせずに端まで見えるようにする */}
+          <div className="seg">
+            {VIEWS.map((v) => (
+              <button key={v.key} className={view === v.key ? 'on' : ''}
+                      onClick={() => setParam('view', v.key === 'act' ? '' : v.key)}>
+                {v.label}
+              </button>
+            ))}
+          </div>
           <div className="seg" style={{ marginLeft: 'auto' }}>
             {TABS.map((x) => (
               <button key={x.key} className={tab === x.key ? 'on' : ''}
@@ -739,7 +778,7 @@ export default function Dashboard() {
         </div>
         <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
                  total={t} months={months} actYms={data.abActYms}
-                 m0={m0} m1={m1} m2={m2} m3={m3}
+                 m0={m0} m1={m1} m2={m2} m3={m3} view={view} withBsim={tab === 'corp'}
                  link={(name, kind) => dealsLink(kind, { [tab]: name ?? '' })} />
       </div>
     </div>
