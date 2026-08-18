@@ -15,6 +15,8 @@ interface DealsRes {
     // 値上げ額（1か月あたり）の合計。当月・翌月・翌々月・3か月後のA基準それぞれ
     raise_m0: number | null;
     raise_m1: number | null; raise_m2: number | null; raise_m3: number | null;
+    /** 売上改善額（過去最新単価 → 当月のマスタ単価）。上がった品目ぶん / 下がった品目ぶん */
+    gain_plus: number | null; gain_minus: number | null;
   };
   page: number;
   size: number;
@@ -22,7 +24,7 @@ interface DealsRes {
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'r2State', 'aState', 'aDateYm', 'aDateOp'] as const;
+  'r2State', 'aState', 'aDateYm', 'aDateOp', 'gain'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -289,6 +291,18 @@ export default function Deals() {
   };
 
   /**
+   * 売上改善額 =（当月のマスタ単価 − 過去最新単価）× マスタ分の数量。
+   * ダッシュボードのプラス・マイナスの内訳は、これを足し合わせたもの。
+   */
+  const gainAmt = (d: Deal) => {
+    const now = mPrice(d);
+    const past = d.past_price;
+    const qty = planQty(d);
+    if (now == null || past == null || qty == null) return null;
+    return (Number(now) - Number(past)) * Number(qty);
+  };
+
+  /**
    * 値上げ前（過去最新単価）から当月のマスタ単価までに、実際に上がった幅。
    * どちらも値決めの単価なので、そのまま比べられる。
    * どちらかが無い行は出さない（比べる相手が無いため）。
@@ -459,6 +473,17 @@ export default function Deals() {
           </div>
         </label>
         <label className="fld">
+          売上改善額
+          <select value={get('gain')} onChange={(e) => setParam('gain', e.target.value)}
+                  title={`過去最新単価と${actLabel}のマスタ単価を比べた向きで絞り込みます`}>
+            <option value="">すべて</option>
+            <option value="plus">プラス（上がった）</option>
+            <option value="minus">マイナス（下がった）</option>
+            <option value="same">変わらず</option>
+            <option value="none">比較なし（過去単価なし）</option>
+          </select>
+        </label>
+        <label className="fld">
           状態
           <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
             <option value="">すべて</option>
@@ -473,6 +498,23 @@ export default function Deals() {
             <b>{data.totals.count.toLocaleString()}</b>件
             {' ・ '}完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
             {/* 絞り込んだ全件の値上げ額（1か月あたり）。月ごとに単価が変わるので3つ出す */}
+            {/* 売上改善額（過去→当月）。絞り込んだ全件の合計をプラス・マイナスで出す */}
+            <span title={`（${actLabel}のマスタ単価 − 過去最新単価）× マスタ分の数量 を、絞り込んだ全件で合計した金額`}>
+              {' ・ '}売上改善額{' '}
+              {(() => {
+                const gp = Math.round(Number(data.totals.gain_plus ?? 0));
+                const gm = Math.round(Number(data.totals.gain_minus ?? 0));
+                const g = gp + gm;
+                return (
+                  <>
+                    <b className={g < 0 ? 'shortfall' : 'surplus'}>
+                      {g < 0 ? '−' : '＋'}¥{yen(Math.abs(g))}
+                    </b>
+                    {'（＋¥'}{yen(gp)}{' / −¥'}{yen(Math.abs(gm))}{'）'}
+                  </>
+                );
+              })()}
+            </span>
             <span title={`値上げ幅（A基準−${actLabel}のマスタ単価）× ${actLabel}の数量 を、絞り込んだ全件で合計した金額`}>
               {' ・ '}値上げ額（月）合計{' '}
               {([['m0', data.totals.raise_m0], ['m1', data.totals.raise_m1],
@@ -559,7 +601,7 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={7} className="grp">基本情報</th>
-              <th colSpan={6} className="grp sep"
+              <th colSpan={7} className="grp sep"
                   title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}のマスタ単価までが、実際に上がった分。`
                     + `実単価は 金額÷数量 で、見積ぶんが混ざるとマスタ単価より下がります`}>
                 実績<small>（価格調査 {actLabel}）</small>
@@ -590,6 +632,9 @@ export default function Deals() {
               </Th>
               <th className="num" title={`${actLabel}のマスタ単価 − 過去最新単価。実際に上がった幅`}>
                 上がり幅<br /><small>過去→{actLabel}</small>
+              </th>
+              <th className="num" title="上がり幅 × マスタ分の数量。ダッシュボードの内訳はこれを足したものです">
+                売上改善額<br /><small>幅×マスタ数量</small>
               </th>
               <Th col="hist_avg_price" className="num"
                   title={`${actLabel}の実単価（金額÷数量）。実績の正`}>
@@ -662,6 +707,16 @@ export default function Deals() {
                   </td>
                   <td className="num">{d.master_price == null ? '—' : yen(d.master_price)}</td>
                   <td className="num">{actDiff(d)}</td>
+                  <td className="num">
+                    {gainAmt(d) == null ? '—' : (
+                      <span style={Number(gainAmt(d)) < 0
+                        ? { color: '#c2410c', fontWeight: 700 }
+                        : Number(gainAmt(d)) > 0 ? { fontWeight: 700 } : undefined}>
+                        {Number(gainAmt(d)) === 0 ? '0'
+                          : `${Number(gainAmt(d)) < 0 ? '−' : '＋'}${yen(Math.abs(Number(gainAmt(d))))}`}
+                      </span>
+                    )}
+                  </td>
                   <td className="num">{effPrice(d) == null ? '—' : yen(effPrice(d))}</td>
                   <td className="num">
                     {monthlyQty(d) == null ? '—'

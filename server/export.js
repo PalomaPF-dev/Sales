@@ -215,9 +215,10 @@ export function buildDashboardWorkbook(data, opts = {}) {
       ym: `${actYm}（マスタ）`, kind: '参考',
       deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
     }] : []),
-    // 計画。比較のもとは当月の金額（合計）
+    // 計画。比較のもとは値上げ前当初（当初からA基準までの上がり幅が値上げ額）
     ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
-      ym, kind: '計画', deals: n(t.deals), b: base, amt, up: '', same: '',
+      ym, kind: '計画', deals: n(t.deals), b: gain == null ? base : base - gain,
+      amt, up: '', same: '',
     })),
   ];
   for (const r of summaryRows) {
@@ -243,9 +244,9 @@ export function buildDashboardWorkbook(data, opts = {}) {
     '現状額 合計（月あたり）',
     'うちマスタ（月あたり）',
     ...abActYms.flatMap((ym) => [
-      `${ym} 実績額（月あたり）`, `${ym} 実績の現状額（月あたり）`,
-      `${ym} 値上げ額（月あたり）`, `${ym} 値上げ率`,
-      `${ym} 上がった件数`, `${ym} 単価同じ件数`,
+      `${ym} 実績額（月あたり）`, `${ym} 値上げ前当初（月あたり）`,
+      `${ym} 売上改善額（月あたり）`, `${ym} 改善率`,
+      `${ym} 上がった件数`, `${ym} 下がった件数`,
     ]),
     `${m0} A基準額（月あたり）`, `${m0} 値上げ額（月あたり）`, `${m0} 値上げ率`,
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
@@ -254,27 +255,28 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ...(withBsim ? ['想定B基準（月あたり）'] : []),
   ];
   const line = (r, withBsim) => {
-    // 比較のもとは当月の金額（合計）。A基準の値上げ幅はここへ足す
+    // 現状額は当月の金額（合計）。A基準（計画）は値上げ前当初と比べる
     const b = n(r.base_amt);
-    const rate = (amt) => (b > 0 ? round(((amt - b) / b) * 100, 1) / 100 : '');
+    const g = n(r.gain_plus_1) + n(r.gain_minus_1);
+    const pre = b - g;
+    const rate = (amt) => (pre > 0 ? round(((amt - pre) / pre) * 100, 1) / 100 : '');
     return [
       r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
       round(b / months),
       round(n(r.mp_amt) / months),
       ...abActYms.flatMap((_, i) => {
-        const amt = r[`act_amt_${i + 1}`];
-        if (amt == null) return ['', '', '', '', '', ''];   // その月の実績が無い
-        const ab = n(r[`act_base_${i + 1}`]);
+        if (r[`act_amt_${i + 1}`] == null) return ['', '', '', '', '', ''];   // その月の実績が無い
+        // 実績は「値上げ前当初 → 当月の金額（合計）」。差が売上改善額
         return [
-          round(n(amt) / months), round(ab / months), round((n(amt) - ab) / months),
-          ab > 0 ? round(((n(amt) - ab) / ab) * 100, 1) / 100 : '',
-          n(r[`act_up_${i + 1}`]), n(r[`act_same_${i + 1}`]),
+          round(b / months), round(pre / months), round(g / months),
+          pre > 0 ? round((g / pre) * 100, 1) / 100 : '',
+          n(r[`act_up_${i + 1}`]), n(r[`act_down_${i + 1}`]),
         ];
       }),
-      round(n(r.a0_amt) / months), round((n(r.a0_amt) - b) / months), rate(n(r.a0_amt)),
-      round(n(r.a1_amt) / months), round((n(r.a1_amt) - b) / months), rate(n(r.a1_amt)),
-      round(n(r.a2_amt) / months), round((n(r.a2_amt) - b) / months), rate(n(r.a2_amt)),
-      round(n(r.a3_amt) / months), round((n(r.a3_amt) - b) / months), rate(n(r.a3_amt)),
+      round(n(r.a0_amt) / months), round((n(r.a0_amt) - pre) / months), rate(n(r.a0_amt)),
+      round(n(r.a1_amt) / months), round((n(r.a1_amt) - pre) / months), rate(n(r.a1_amt)),
+      round(n(r.a2_amt) / months), round((n(r.a2_amt) - pre) / months), rate(n(r.a2_amt)),
+      round(n(r.a3_amt) / months), round((n(r.a3_amt) - pre) / months), rate(n(r.a3_amt)),
       ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };

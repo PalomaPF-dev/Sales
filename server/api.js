@@ -1768,6 +1768,16 @@ function dealFilters(q, user) {
   if (q.aState === 'has') where.push('a_price_m3 IS NOT NULL');
   else if (q.aState === 'none') where.push('a_price_m3 IS NULL');
 
+  // 売上改善額の向き。過去最新単価と当月のマスタ単価を比べて、
+  // 上がった品目（プラス）・下がった品目（マイナス）・変わらない品目に分ける。
+  // ダッシュボードの内訳から、その中身をこの一覧で開けるようにするための絞り込み。
+  const gainHas = `past_price > 0 AND ${MASTER_PRICE} IS NOT NULL`;
+  const gainDiff = `(${MASTER_PRICE} - CAST(past_price AS FLOAT))`;
+  if (q.gain === 'plus') where.push(`${gainHas} AND ${gainDiff} >= 0.5`);
+  else if (q.gain === 'minus') where.push(`${gainHas} AND ${gainDiff} <= -0.5`);
+  else if (q.gain === 'same') where.push(`${gainHas} AND ABS(${gainDiff}) < 0.5`);
+  else if (q.gain === 'none') where.push(`NOT (${gainHas})`);
+
   // 承認日は案件を減らす絞り込みには使わない（土台の品目はそのまま残す）。
   // ダッシュボードでは aDateCond() で「計画を充てるかどうか」の条件に使い、
   // 案件一覧では aState と同じように a_date_m3 で絞る用途だけに残す。
@@ -1902,6 +1912,14 @@ api.get('/deals', wrap(async (req, res) => {
     db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
+             SUM(CASE WHEN past_price > 0 AND ${MASTER_PRICE} IS NOT NULL
+                       AND ${MASTER_PRICE} - CAST(past_price AS FLOAT) >= 0.5
+                      THEN (${MASTER_PRICE} - CAST(past_price AS FLOAT))
+                           * (${planMonthlyQty()}) ELSE 0 END) AS gain_plus,
+             SUM(CASE WHEN past_price > 0 AND ${MASTER_PRICE} IS NOT NULL
+                       AND ${MASTER_PRICE} - CAST(past_price AS FLOAT) <= -0.5
+                      THEN (${MASTER_PRICE} - CAST(past_price AS FLOAT))
+                           * (${planMonthlyQty()}) ELSE 0 END) AS gain_minus,
              ${[0, 1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${MASTER_PRICE} IS NOT NULL
                        THEN (CAST(a_price_m${n} AS FLOAT) - ${MASTER_PRICE})

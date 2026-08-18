@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card } from '../components/ui';
 import type { Meta } from '../types';
@@ -153,18 +153,19 @@ function sortValue(r: AbRow, col: SortCol): number | string {
     const n = Number(act[1]) + 1;
     return num(r[`gain_plus_${n}`]) + num(r[`gain_minus_${n}`]);
   }
+  // 値上げ額の大きい順に並べるため、A基準の列は値上げ前当初との差で比べる
+  const pre = num(r.base_amt) - (num(r.gain_plus_1) + num(r.gain_minus_1));
   switch (col) {
     case 'name': return r.name ?? '';
     case 'deals': return num(r.deals);
     case 'qty': return num(r.qty);
     case 'base': return num(r.base_amt);
     case 'mp': return num(r.mp_amt);
-    // 値上げ額の大きい順。比較のもとは当月の金額（合計）
-    case 'a0': return num(r.a0_amt) - num(r.base_amt);
-    case 'a1': return num(r.a1_amt) - num(r.base_amt);
-    case 'a2': return num(r.a2_amt) - num(r.base_amt);
-    case 'a3': return num(r.a3_amt) - num(r.base_amt);
-    case 'bsim': return num(r.bsim_amt) - num(r.base_amt);
+    case 'a0': return num(r.a0_amt) - pre;
+    case 'a1': return num(r.a1_amt) - pre;
+    case 'a2': return num(r.a2_amt) - pre;
+    case 'a3': return num(r.a3_amt) - pre;
+    case 'bsim': return num(r.bsim_amt) - pre;
     default: return 0;
   }
 }
@@ -242,7 +243,7 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
                 {ym} 実績<br /><small>金額 / 売上改善額（率）</small>
               </Th>
             ))}
-            <Th col="a0" right title={`${m0}（当月）の値上げ額で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
+            <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額（率）</small></Th>
@@ -255,8 +256,10 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
         <tbody>
           {[...sorted, ...(total ? [{ ...total, name: '合計' }] : [])].map((r, i) => {
             const last = i === sorted.length;
-            // 比較のもとは当月の金額（合計）。A基準の値上げ幅はここへ足す
+            // 現状額は当月の金額（合計）。A基準（計画）は値上げ前当初と比べるため、
+            // 売上改善額を引いた額をその比較のもとにする
             const base = num(r.base_amt);
+            const pre = base - (num(r.gain_plus_1) + num(r.gain_minus_1));
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
                 <td>{r.name || '—'}</td>
@@ -280,11 +283,12 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
                                  + `（−${yen(Math.abs(num(r[`gain_minus_${i + 1}`])) / months)}）`
                                  + ` / 単価が変わっていない ${num(r[`act_same_${i + 1}`]).toLocaleString()}件`} />;
                 })}
-                <AmtCell amt={num(r.a0_amt)} base={base} months={months} />
-                <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
-                <AmtCell amt={num(r.a2_amt)} base={base} months={months} />
-                <AmtCell amt={num(r.a3_amt)} base={base} months={months} />
-                <AmtCell amt={num(r.bsim_amt)} base={base} months={months} />
+                {/* A基準（計画）は値上げ前当初と比べる */}
+                <AmtCell amt={num(r.a0_amt)} base={pre} months={months} />
+                <AmtCell amt={num(r.a1_amt)} base={pre} months={months} />
+                <AmtCell amt={num(r.a2_amt)} base={pre} months={months} />
+                <AmtCell amt={num(r.a3_amt)} base={pre} months={months} />
+                <AmtCell amt={num(r.bsim_amt)} base={pre} months={months} />
               </tr>
             );
           })}
@@ -314,6 +318,14 @@ export default function Dashboard() {
     setParams(next, { replace: true });
   };
   const setParam = (key: string, value: string) => setMany({ [key]: value });
+
+  /** いまの絞り込みを引き継いで、案件一覧の「売上改善額」で絞ったURLを作る */
+  const dealsLink = (gainKind: 'plus' | 'minus' | 'same') => {
+    const q = new URLSearchParams();
+    for (const k of FILTER_KEYS) if (get(k)) q.set(k, get(k));
+    q.set('gain', gainKind);
+    return `/deals?${q.toString()}`;
+  };
 
   // 承認日の初期値を入れ終えるまで集計を呼ばない（無駄な1回を避ける）
   const [ready, setReady] = useState(false);
@@ -480,16 +492,31 @@ export default function Dashboard() {
         {gain != null && (
           <Kpi label={`${actLabel} 値上げ前当初`}
                value={yen((num(t?.base_amt) - gain) / months)}
-               sub={`金額の合計から売上改善額 ${yen(gain / months)} を引いた額`} />
+               sub={`金額の合計から売上改善額 ${yen(gain / months)} を引いた額`
+                 + ' ・ A基準はこれと比べます'} />
         )}
         <Kpi label={`${actLabel}金額の合計（実績）`}
              value={yen(num(t?.base_amt) / months)}
-             sub={`${num(t?.deals).toLocaleString()}件 ・ A基準はこれと比べます`} />
+             sub={`${num(t?.deals).toLocaleString()}件 ・ 取り込んだ金額そのもの`} />
         {gain != null && (
-          <Kpi label="売上改善額（過去→当月）"
-               value={`${gain >= 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
-               sub={`上がった ＋${yen(gainPlus / months)}（${num(act?.up).toLocaleString()}件）`
-                 + ` / 下がった −${yen(Math.abs(gainMinus) / months)}（${num(act?.down).toLocaleString()}件）`} />
+          <div className="tile">
+            <div className="label">売上改善額（過去→当月）</div>
+            <div className="value">{gain >= 0 ? '＋' : '−'}{yen(Math.abs(gain) / months)}</div>
+            {/* プラス・マイナスそれぞれの中身を、案件一覧の絞り込みで開けるようにする */}
+            <div className="delta">
+              <Link to={dealsLink('plus')} title="上がった品目を案件一覧で見る">
+                上がった ＋{yen(gainPlus / months)}（{num(act?.up).toLocaleString()}件）
+              </Link>
+              {' / '}
+              <Link to={dealsLink('minus')} title="下がった品目を案件一覧で見る">
+                下がった −{yen(Math.abs(gainMinus) / months)}（{num(act?.down).toLocaleString()}件）
+              </Link>
+              {' / '}
+              <Link to={dealsLink('same')} title="単価が変わっていない品目を案件一覧で見る">
+                変わらず {num(act?.same).toLocaleString()}件
+              </Link>
+            </div>
+          </div>
         )}
         <Kpi label={`${actLabel}金額（マスタ）の合計`}
              value={yen(num(t?.mp_amt) / months)}
@@ -512,15 +539,15 @@ export default function Dashboard() {
           [m3, data.aMonths?.raise_m3],
         ] as [string, number | null | undefined][]).map(([label, raise]) => {
           const r = num(raise) / months;
-          // 当月の金額（合計。A基準の比較のもと）に対して何%の値上げになるか
-          const base = num(t?.base_amt);
+          // 値上げ前当初（A基準の比較のもと）に対して何%の値上げになるか
+          const base = gain == null ? num(t?.base_amt) : num(t?.base_amt) - gain;
           const rate = base > 0 ? Math.round((num(raise) / base) * 1000) / 10 : null;
           return (
             <Kpi key={label}
                  label={`値上げ額（月あたり） ${label}`}
                  value={`${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}`}
                  sub={rate == null ? undefined
-                   : `${actLabel}金額の合計に対して ${rate > 0 ? '+' : ''}${rate}%`} />
+                   : `値上げ前当初に対して ${rate > 0 ? '+' : ''}${rate}%`} />
           );
         })}
       </div>
@@ -532,7 +559,8 @@ export default function Dashboard() {
           引いたものです。上がった品目のプラスと、下がった品目のマイナスを合わせた額を引いています。
           <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
           <strong>計画</strong>は、この{actLabel}の金額（合計）へ
-          「A基準 − {actLabel}のマスタ単価」×マスタ分の数量を足したものです。
+          「A基準 − {actLabel}のマスタ単価」×マスタ分の数量を足したもので、
+          <strong>値上げ前当初と比べます</strong>（当初からA基準までの上がり幅が値上げ額）。
           <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
           実績との差が見積ぶんなどにあたります。
           どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
@@ -551,7 +579,7 @@ export default function Dashboard() {
                 内訳<br /><small>上がった / 同じ</small>
               </th>
               <th style={nums}
-                  title="実績の行は値上げ前当初の金額、計画の行は当月の金額（合計）">
+                  title="実績・計画とも値上げ前当初の金額と比べます">
                 比較のもと<br /><small>月あたり</small>
               </th>
               <th style={nums}>金額<br /><small>月あたり</small></th>
@@ -592,8 +620,10 @@ export default function Dashboard() {
               ...([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
                 .map(([label, amt]) => ({
                   key: `plan-${label}`, ym: label, kind: '計画' as const,
-                  deals: num(t?.deals), base: num(t?.base_amt) as number | null, amt,
-                  up: null, same: null,
+                  deals: num(t?.deals),
+                  // 比較のもとは値上げ前当初。当初からA基準までの上がり幅が値上げ額になる
+                  base: (gain == null ? num(t?.base_amt) : num(t?.base_amt) - gain) as number | null,
+                  amt, up: null, same: null,
                 })),
             ]
               .map((row) => {
