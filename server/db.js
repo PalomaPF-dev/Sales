@@ -603,8 +603,10 @@ async function beforeSchema() {
   // マスタ登録の列追加で deal_calc の列構成が変わる。CREATE OR REPLACE では
   // 途中への列の挿入ができないため、旧構成のビューだけ一度落として作り直す
   // （新しい列がまだビューに無い＝旧構成、のときだけ落とす）。
+  // 列を1つでも足したら、その列を並びに含めた形へ作り直す必要がある。
+  // 一番あとに足した列がビューに無ければ、旧構成とみなして落とす。
   try {
-    await db.get('SELECT act_price_12 FROM deal_calc LIMIT 1');
+    await db.get('SELECT past_price, past_date FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }
