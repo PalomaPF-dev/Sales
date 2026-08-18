@@ -1364,7 +1364,7 @@ async function dashboardData(query, user) {
   const [pureTotals, aMonths, abByEquip, abByBranch, abByCorp] = await Promise.all([
     // 品目件数・数量と、月ごとの実単価は同じ絞り込みなので1文にまとめる
     // （案件は10万件あり、走査の回数がそのまま待ち時間になるため）
-    db.get(`SELECT COUNT(*) AS deals, SUM(${f('hist_qty')}) AS qty, ${actAmt}
+    db.get(`SELECT COUNT(*) AS deals, SUM(${effQty}) AS qty, ${actAmt}
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
     db.get(`SELECT ${monthAgg},
@@ -2877,131 +2877,8 @@ function isBlankCorp(s) {
   return !t || BLANK_CORP_RE.test(t);
 }
 
-api.post('/hist-import/start', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['admin'])) return;
-  const corps = Array.isArray(req.body?.corps) ? req.body.corps : [];
-  if (!corps.length) return res.status(400).json({ error: '法人の一覧がありません' });
-
-  // 法人名 → 法人グループコードの対応表を作り直す。
-  // マスタ登録を法人×品目へ集約するときに、得意先名からこの表を引く。
-  await db.run('DELETE FROM corp_map');
-  const stamp = new Date().toISOString();
-  // 1行1文だとDBとの往復が法人数だけ発生し、遠隔のDBでは時間切れになる。
-  // まとめて1文（複数行VALUES）で入れる。
-  const entries = corps
-    .filter(([cd, name]) => !isBlankCorp(name) && !isBlankCorp(cd))
-    .map(([cd, name]) => [normCorpName(name), String(cd), String(name ?? '')])
-    .filter(([k]) => k);
-  const seenKey = new Set();
-  const uniq = entries.filter(([k]) => (seenKey.has(k) ? false : (seenKey.add(k), true)));
-  for (let i = 0; i < uniq.length; i += 300) {
-    const part = uniq.slice(i, i + 300);
-    await db.run(
-      `INSERT INTO corp_map (name_key, ent_cd, corp_name)
-       VALUES ${part.map(() => '(?,?,?)').join(',')}
-       ON CONFLICT (name_key) DO UPDATE SET ent_cd = excluded.ent_cd, corp_name = excluded.corp_name`,
-      part.flat()
-    );
-  }
-
-  const batch = `hist-${Date.now()}`;
-  await db.run(
-    `INSERT INTO settings (key, value) VALUES ('hist_meta', ?)
-       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-    [JSON.stringify({ filename: String(req.body?.filename ?? ''),
-      period: String(req.body?.period ?? ''),
-      // 数量は期間全体の合計。月平均を出すため、対象の月数も控えておく
-      months: Number(req.body?.months) > 0 ? Number(req.body.months) : null,
-      batch, updatedAt: stamp })]
-  );
-  res.json({ batch, corps: corps.length });
-}));
-
-api.post('/hist-import/chunk', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['admin'])) return;
-  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
-  const batch = String(req.body?.batch ?? '');
-  if (!rows.length || !batch) return res.status(400).json({ error: '取り込む行がありません' });
-  if (rows.length > 500) return res.status(400).json({ error: '一度に送れるのは500行までです' });
-
-  const num = (v) => {
-    if (v === null || v === undefined || String(v).trim() === '') return null;
-    const n = Number(String(v).replace(/[,¥\s]/g, ''));
-    return Number.isFinite(n) ? n : null;
-  };
-  const txt = (v) => {
-    const s = String(v ?? '').trim();
-    return s && s !== '－' && s !== '-' ? s : null;
-  };
-
-  const stamp = now();
-
-  const cols = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_name', 'model_code',
-    'model_name', 'equip_name', 'hist_avg_price', 'hist_qty', 'base_price', 'qty',
-    'hist_batch', 'r2_done', 'updated_at'];
-  const seen = new Set();
-  const values = [];
-  let skipped = 0;
-  for (const r of rows) {
-    const key = `${String(r.ent_cd).trim()}|${String(r.model_code).trim()}`;
-    if (seen.has(key)) continue;
-    // 法人名が空・「(空白)」の行は取り込まない（一覧で行き先の分からない行になるため）
-    if (!txt(r.corp_name) || isBlankCorp(r.corp_name) || isBlankCorp(r.ent_cd)) {
-      skipped += 1;
-      continue;
-    }
-    seen.add(key);
-    values.push([
-      key, String(r.ent_cd).trim(), String(r.ent_cd).trim(), txt(r.corp_name), txt(r.corp_name),
-      String(r.model_code).trim(), txt(r.model_name), txt(r.equip_name),
-      num(r.avg_price), num(r.qty), num(r.avg_price), num(r.qty),
-      batch, 0, stamp,
-    ]);
-  }
-  // まとめて1文で入れ替える（1行1文だと数百回の往復になり、遠隔のDBでは時間切れになる）。
-  // 決定単価（B基準）など画面で入れた値は列に触れないので残る。
-  const upd = cols.filter((c) => c !== 'agg_key' && c !== 'r2_done')
-    .map((c) => `${c} = excluded.${c}`).join(', ');
-  if (values.length) {
-    await db.run(
-      `INSERT INTO deals (${cols.join(',')})
-       VALUES ${values.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
-       ON CONFLICT (agg_key) WHERE agg_key IS NOT NULL DO UPDATE SET ${upd}`,
-      values.flat()
-    );
-  }
-  res.json({ rows: values.length, skipped });
-}));
-
-api.post('/hist-import/finish', wrap(async (req, res) => {
-  if (!requireRole(req, res, ['admin'])) return;
-  const batch = String(req.body?.batch ?? '');
-  let removed = 0;
-  if (batch) {
-    // 今回の実績に無い行は落とす（案件一覧は実績にある法人×品目だけにする）
-    for (const sql of [
-      'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE hist_batch IS DISTINCT FROM ?)',
-      'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE hist_batch IS DISTINCT FROM ?)',
-    ]) {
-      try { await db.run(sql, [batch]); } catch { /* 無ければ何もしない */ }
-    }
-    const r = await db.run('DELETE FROM deals WHERE hist_batch IS DISTINCT FROM ?', [batch]);
-    removed = Number(r?.changes ?? 0);
-  }
-  // 法人名が空の行は残さない（過去の取込で入り込んだものも含めて掃除する）
-  for (const sql of [
-    `DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE ${BLANK_CORP_WHERE})`,
-    `DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE ${BLANK_CORP_WHERE})`,
-  ]) {
-    try { await db.run(sql); } catch { /* 無ければ何もしない */ }
-  }
-  const blank = await db.run(`DELETE FROM deals WHERE ${BLANK_CORP_WHERE}`);
-  removed += Number(blank?.changes ?? 0);
-  const { total } = await db.get('SELECT COUNT(*) AS total FROM deals');
-  try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
-  invalidateMetaCache();
-  res.json({ removed, total: Number(total) });
-}));
+// 出荷実績（月別履歴）の取込は廃止した。
+// 案件の土台は価格調査（実単価）の取込が作る（法人コード×品目）。
 
 api.get('/import/fields', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;

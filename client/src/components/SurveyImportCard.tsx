@@ -67,7 +67,7 @@ export default function SurveyImportCard({ anchorYm, onDone }:
   };
 
   return (
-    <Card title="価格調査（実単価）の取込">
+    <Card title="① 価格調査（実単価）の取込">
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>

@@ -4,7 +4,6 @@ import { api } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
 import AggImportCard from '../components/AggImportCard';
-import HistImportCard from '../components/HistImportCard';
 import SurveyImportCard from '../components/SurveyImportCard';
 import type { Meta } from '../types';
 
@@ -62,20 +61,19 @@ export default function ImportPage() {
     <div>
       <h1 className="page-title">Excel取込</h1>
       <p className="page-sub">
-        <strong>①出荷実績</strong>（法人×品目の平均出荷単価と数量）で案件の土台を作り、
-        <strong>②マスタ登録</strong>のA基準単価を法人×品目へ集約して重ねます。
-        A基準は毎日更新されるため、②は毎日の取り込み直しを前提にしています。
-        <strong>③価格調査</strong>を取り込むと、月ごとの実際の単価が入り、
+        <strong>①価格調査</strong>で案件の土台を作ります
+        （法人×品目に集約し、1-3月出荷単価・売上数と、月ごとの実際の単価が入ります）。
+        続けて<strong>②マスタ登録</strong>のA基準単価を重ねると、
         計画（A基準）と実績を月の流れで比べられます。
+        A基準は毎日更新されるため、②は毎日の取り込み直しを前提にしています。
         決定単価（B基準）など画面で入れた値は残ります。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       {canCheck ? (
         <>
-          <HistImportCard />
-          <AggImportCard onDone={load} />
           <SurveyImportCard anchorYm={meta?.aggMeta?.m0} onDone={load} />
+          <AggImportCard onDone={load} />
         </>
       ) : (
         <Card title="マスタ登録の取込">
@@ -93,7 +91,7 @@ export default function ImportPage() {
           </div>
           <p className="pt-note" style={{ marginTop: 0 }}>
             過去の取込で入り込んだ行です。今の取込では法人名が空の行は入りません。
-            下のボタンで今すぐ消せます（出荷実績の取り込み直しでも消えます）。
+            下のボタンで今すぐ消せます（価格調査の取り込み直しでも消えます）。
           </p>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn danger" onClick={cleanBlank} disabled={cleaning}>

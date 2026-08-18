@@ -352,7 +352,7 @@ export default function Dashboard() {
         </button>
       </div>
       <p className="page-sub">
-        出荷実績{meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}の<strong>品目件数</strong>を母数に、
+        出荷実績（{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}）の<strong>品目件数</strong>を母数に、
         マスタ登録（A基準）との突合件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績単価)×数量）を出します。
         実績単価と数量は<strong>{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}の出荷実績</strong>
         （マスタ登録の単価を優先。無い品目は出荷実績取込の値）です。
@@ -431,7 +431,7 @@ export default function Dashboard() {
       */}
       <div className="tiles">
         {/* 出荷実績（1~3月）の品目全数と、マスタ登録に載っている品目の突合 */}
-        <Kpi label={`出荷実績${meta?.histMeta?.period ? `（${meta.histMeta.period}）` : ''}`}
+        <Kpi label={`出荷実績（${meta?.aggMeta?.basePeriod?.trim() || '1~3月'}）`}
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 月平均 ${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}`} />
         <Kpi label="マスタ登録（A基準あり）"

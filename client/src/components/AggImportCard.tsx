@@ -67,7 +67,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   };
 
   return (
-    <Card title="マスタ登録（値上げ結果の集約表）の取込">
+    <Card title="② マスタ登録（A基準）の取込">
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
