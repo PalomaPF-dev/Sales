@@ -1331,10 +1331,12 @@ async function dashboardData(query, user) {
   // 実績は「過去最新単価（値上げ前）→ 当月のマスタ単価」。どちらも値決めの単価なので
   // そのまま比べられる（ファイルの「売上改善額」と同じ見方）。
   // 単価は円単位なので、0.5円未満のズレは「単価同じ」とみなす。
-  // 実績の対象は「過去最新単価のある品目」だけ。金額はその品目ぶんの
-  // 金額（マスタ）そのものを足す（単価×数量で戻すと端数がずれるため。
-  // マスタ単価は値決めの単価で、実際に立った金額とは必ずしも一致しない）。
-  // 比べる相手は「過去最新単価 × マスタ分の数量」＝ 値上げ前の単価で出たとした場合の金額。
+  // 実績の対象は「過去最新単価のある品目」だけ。
+  // 金額はその品目ぶんの 金額（合計）そのもの（単価×数量で戻すと端数がずれる）で、
+  // 比べる相手は「過去最新単価 × 数量（合計）」＝ 値上げ前の単価で出たとした場合の金額。
+  // 見積ぶんも含めた、実際の売上としての値上がりを表す。
+  // 参考として、値決め分だけで見た場合（金額（マスタ）とマスタ分の数量）と、
+  // 単価どうしで見た場合（マスタ単価 × マスタ分の数量）も一緒に返す。
   const hasPast = 'past_price > 0';
   // 上がった／単価同じ の判別と、単価で戻した参考の金額は、
   // 当月の単価が出る品目だけが対象（返品だけの品目などは単価が出ない）
@@ -1342,8 +1344,10 @@ async function dashboardData(query, user) {
   const actUp = `${hasBoth} AND (${mPrice}) - ${f('past_price')} >= 0.5`;
   const actSame = `${hasBoth} AND ABS((${mPrice}) - ${f('past_price')}) < 0.5`;
   const actAgg = `
-    SUM(CASE WHEN ${hasPast} THEN ${planAmt} END) AS act_amt_1,
-    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${planQty}) END) AS act_base_1,
+    SUM(CASE WHEN ${hasPast} THEN ${effAmt} END) AS act_amt_1,
+    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${effQty}) END) AS act_base_1,
+    SUM(CASE WHEN ${hasPast} THEN ${planAmt} END) AS act_mst_1,
+    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${planQty}) END) AS act_mstbase_1,
     SUM(CASE WHEN ${hasBoth} THEN (${mPrice}) * (${planQty}) END) AS act_mp_1,
     SUM(CASE WHEN ${hasPast} THEN 1 ELSE 0 END) AS act_cnt_1,
     SUM(CASE WHEN ${actUp} THEN 1 ELSE 0 END) AS act_up_1,
@@ -1425,7 +1429,8 @@ async function dashboardData(query, user) {
     'a0_amt', 'a1_amt', 'a2_amt', 'a3_amt',
     'bsim_amt', 'b_rows',
     ...Array.from({ length: actSlot }, (_, i) =>
-      [`act_amt_${i + 1}`, `act_base_${i + 1}`, `act_mp_${i + 1}`, `act_cnt_${i + 1}`,
+      [`act_amt_${i + 1}`, `act_base_${i + 1}`, `act_mst_${i + 1}`, `act_mstbase_${i + 1}`,
+        `act_mp_${i + 1}`, `act_cnt_${i + 1}`,
         `act_up_${i + 1}`, `act_same_${i + 1}`]).flat()];
   const abTotals = abByEquip.reduce((acc, r) => {
     for (const k of sumKeys) acc[k] = Number(acc[k] ?? 0) + Number(r[k] ?? 0);
@@ -1440,10 +1445,13 @@ async function dashboardData(query, user) {
   // 実績は1つ（過去最新単価 → 当月）。計画（A基準）と同じ形で並べられるようにする
   const actuals = actualMeta?.ym ? [{
     ym: actualMeta.ym,
-    // 金額（マスタ）のうち、過去最新単価のある品目ぶんの合計
+    // 金額（合計）のうち、過去最新単価のある品目ぶんの合計と、その比較のもと
     amount: Number(actMonths?.act_amt_1 ?? 0),
     base: Number(actMonths?.act_base_1 ?? 0),
-    // 参考。同じ品目を「マスタ単価 × 数量」で戻した金額（値決めどうしの比較）
+    // 参考1。値決め分だけで見た場合（金額（マスタ）とマスタ分の数量）
+    mstAmount: Number(actMonths?.act_mst_1 ?? 0),
+    mstBase: Number(actMonths?.act_mstbase_1 ?? 0),
+    // 参考2。同じ品目を「マスタ単価 × 数量」で戻した金額（単価どうしの比較）
     mpAmount: Number(actMonths?.act_mp_1 ?? 0),
     deals: Number(actMonths?.act_cnt_1 ?? 0),
     // 内訳。値上げがまだ反映されていない（単価同じ）も件数で分かるようにする

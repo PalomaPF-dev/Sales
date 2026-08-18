@@ -177,7 +177,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
   cond.push(['当月の金額（マスタ）＝A基準の比較のもと', round(mpAmt)]);
   cond.push(['見積ぶんなど（合計−マスタ）', round(base - mpAmt)]);
   if (n(data.actuals?.[0]?.amount) > 0) {
-    cond.push(['うち過去最新単価のある品目の金額（マスタ）', round(n(data.actuals[0].amount))]);
+    cond.push(['うち過去最新単価のある品目の金額（合計）', round(n(data.actuals[0].amount))]);
+    cond.push(['同 金額（マスタ）', round(n(data.actuals[0].mstAmount))]);
   }
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
@@ -196,16 +197,20 @@ export function buildDashboardWorkbook(data, opts = {}) {
       ym: `${String(data.actuals?.[0]?.ym ?? '当月')}（マスタ）`, kind: 'マスタ',
       deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
     }] : []),
-    // 実績。過去最新単価（値上げ前）→ 当月。過去単価のある品目だけが対象で、
-    // 金額は「金額（マスタ）のうちその品目ぶん」
+    // 実績。過去単価のある品目だけが対象で、金額は「金額（合計）のうちその品目ぶん」
     ...(data.actuals ?? []).map((a) => ({
       ym: `過去→${String(a.ym).slice(5)}`, kind: '実績', deals: n(a.deals),
       b: n(a.base), amt: n(a.amount), up: n(a.up), same: n(a.same),
     })),
-    // 参考。同じ品目を「マスタ単価 × 数量」で戻した場合（値決めどうしの比較）
+    // 参考1。値決め分だけで見た場合（金額（マスタ）とマスタ分の数量）
+    ...(data.actuals ?? []).filter((a) => n(a.mstAmount) > 0).map((a) => ({
+      ym: `過去→${String(a.ym).slice(5)}（マスタ）`, kind: '参考', deals: n(a.deals),
+      b: n(a.mstBase), amt: n(a.mstAmount), up: n(a.up), same: n(a.same),
+    })),
+    // 参考2。同じ品目を「マスタ単価 × 数量」で戻した場合（単価どうしの比較）
     ...(data.actuals ?? []).filter((a) => n(a.mpAmount) > 0).map((a) => ({
       ym: `過去→${String(a.ym).slice(5)}（単価）`, kind: '参考', deals: n(a.deals),
-      b: n(a.base), amt: n(a.mpAmount), up: n(a.up), same: n(a.same),
+      b: n(a.mstBase), amt: n(a.mpAmount), up: n(a.up), same: n(a.same),
     })),
     // A基準（計画）
     // 計画。比較のもとはマスタ分の金額（A基準はここに対して当てる）
