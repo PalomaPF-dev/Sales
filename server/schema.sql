@@ -133,6 +133,10 @@ CREATE TABLE IF NOT EXISTS deals (
   -- 当月のマスタ単価（値決めの単価）。実単価（master_avg_price）は実際に出た単価で、
   -- 見積ぶんが混ざると下がる。A基準（今後の計画）はこのマスタ単価と比べる
   master_price    REAL,
+  -- マスタ分（値決めどおりに出た分）の数量と金額。合計には見積ぶんも入るが、
+  -- A基準（今後の計画）はマスタ分に対して当てるため、分けて持つ
+  plan_qty        REAL,
+  plan_amount     REAL,
   past_price      REAL,   -- 過去最新単価（値上げ前。価格調査の比較用）
   past_date       TEXT,   -- 過去最新受注日（過去最新単価が出た日）
   act_price_1  REAL,   -- 価格調査の実単価（1番目の月。月の並びは settings の actual_meta）
@@ -239,6 +243,9 @@ CREATE TABLE IF NOT EXISTS act_staging (
   -- 当月のマスタ単価（値決めの単価。A基準はこれと比べる）
   mp_amt     REAL NOT NULL DEFAULT 0,
   mp_wgt     REAL NOT NULL DEFAULT 0,
+  -- マスタ分（値決めどおりに出た分）の数量と金額。A基準はこれに対して当てる
+  plan_qty_sum   REAL NOT NULL DEFAULT 0,
+  plan_money_sum REAL NOT NULL DEFAULT 0,
   -- 過去最新単価（値上げ前）と、その受注日（まとまりの中で一番新しい日）
   past_amt   REAL NOT NULL DEFAULT 0,
   past_wgt   REAL NOT NULL DEFAULT 0,

@@ -255,8 +255,11 @@ export default function Deals() {
   const effPrice = (d: Deal) => d.master_avg_price ?? null;
   /** 当月のマスタ単価（値決めの単価）。A基準はこれと比べる。無い行は実単価で代用 */
   const mPrice = (d: Deal) => d.master_price ?? d.master_avg_price ?? null;
-  /** 当月の数量 */
+  /** 当月の数量（合計） */
   const monthlyQty = (d: Deal) => (d.master_qty == null ? null : Number(d.master_qty));
+  /** マスタ分の数量（値決めどおりに出た分）。A基準の値上げ額はこれに対して出す */
+  const planQty = (d: Deal) =>
+    (d.plan_qty ?? d.master_qty) == null ? null : Number(d.plan_qty ?? d.master_qty);
 
   /**
    * 差額を「＋1,000 / +2.5%」の形で出す小さな部品。
@@ -367,6 +370,7 @@ export default function Deals() {
         B基準は実際の決定単価（営業企画・管理者が入力）です。
         A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
         <strong>値上げ幅</strong>は<strong>{actLabel}のマスタ単価</strong>を比べるもとにした差額で、
+        <strong>値上げ額はマスタ分の数量</strong>（値決めどおりに出た分）に対して出します。
         月ごとに単価が変わるため当月から4か月分を並べ、
         値上げ額（幅×月平均の数量）は絞り込んだ全件の合計を上に出します。
       </p>
@@ -591,7 +595,11 @@ export default function Deals() {
                   title={`${actLabel}の実単価（金額÷数量）。実績の正`}>
                 {actLabel}実単価
               </Th>
-              <Th col="hist_qty" className="num" title={`${actLabel}の数量`}>数量</Th>
+              <Th col="hist_qty" className="num"
+                  title={`${actLabel}の数量（合計）。下段はマスタ分（値決めどおりに出た分）で、`
+                    + 'A基準の値上げ額はこちらに対して出します'}>
+                数量<br /><small>合計 / マスタ</small>
+              </Th>
               <th className="num" title={`${actLabel}の実単価 − ${actLabel}のマスタ単価。見積ぶんで下がった分`}>
                 実勢差<br /><small>実−マスタ</small>
               </th>
@@ -658,6 +666,11 @@ export default function Deals() {
                   <td className="num">
                     {monthlyQty(d) == null ? '—'
                       : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                    {planQty(d) != null && planQty(d) !== monthlyQty(d) && (
+                      <div className="sub">
+                        {Number(planQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                      </div>
+                    )}
                   </td>
                   <td className="num">{mpDiff(d)}</td>
 

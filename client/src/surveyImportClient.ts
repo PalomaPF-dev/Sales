@@ -9,6 +9,7 @@ import { api } from './api';
  * ・実単価     … 金額（合計）÷ 数量（合計）。実際に出た単価で、見積ぶんが
  *                混ざるとマスタ単価より下がる。こちらが実績の正
  * ・金額（合計）… 実績そのもの。合計が売上と一致するようにそのまま持つ
+ * ・金額（マスタ）… 値決めどおりに出た分。A基準はこの金額・数量に対して当てる
  * 「過去最新単価」からマスタ単価までが、これまでに上がった分になる。
  *
  * 「７月数量」「７月単価」だけの古い形式でも取り込める（その場合は
@@ -30,6 +31,8 @@ export interface SurveyRow {
   price: unknown;          // 当月の実単価（金額÷数量。数量0のときはマスタ単価）
   amount: unknown;         // 当月の金額（合計を実績と合わせるためそのまま送る）
   master_price: unknown;   // 当月のマスタ単価（値決めの単価。A基準はこれと比べる）
+  plan_qty: unknown;       // マスタ分の数量（A基準はこれに対して当てる）
+  plan_amount: unknown;    // マスタ分の金額（A基準の比較のもと）
   past_price: unknown;     // 過去最新単価（値上げ前）
   past_date: string | null;// 過去最新受注日（過去最新売上日）
 }
@@ -106,6 +109,10 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const amountAt = pick('金額', '\\(合計\\)', '', '\\(マスタ\\)');
   // マスタ単価は値決めの単価。古い形式では種別なしの「7月単価」がこれにあたる
   const mPriceAt = pick('単価', '\\(マスタ\\)', '');
+  // マスタ分（値決めどおりに出た分）の数量・金額。A基準はここに対して当てる。
+  // 種別の無い古い形式では合計＝マスタ分として扱う
+  const planQtyAt = pick('数量', '\\(マスタ\\)', '');
+  const planAmountAt = pick('金額', '\\(マスタ\\)', '');
   if (qtyAt < 0 || mPriceAt < 0) {
     throw new Error('「7月数量」「7月単価」のような当月の列がありません。'
       + '価格調査（当月実績）のファイルをお使いください');
@@ -172,6 +179,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       })(),
       amount: amountAt >= 0 ? r[amountAt] : null,
       master_price: mPriceAt >= 0 ? r[mPriceAt] : null,
+      plan_qty: planQtyAt >= 0 ? r[planQtyAt] : null,
+      plan_amount: planAmountAt >= 0 ? r[planAmountAt] : null,
       past_price: pastPriceAt >= 0 ? r[pastPriceAt] : null,
       past_date: pastDateAt >= 0 ? toYmd(r[pastDateAt]) : null,
     });

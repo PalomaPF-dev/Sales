@@ -1286,17 +1286,23 @@ async function dashboardData(query, user) {
   // 現状額は当月の金額そのもの（単価×数量で戻すと端数がずれ、実績の合計と合わなくなる）
   const effAmt = `COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)`;
 
+  // マスタ分（値決めどおりに出た分）の数量と金額。A基準はここに対して当てる。
+  // 合計には見積ぶんも入っており、そこへ値上げを当てると計画が過大になる。
+  // 種別の分かれていない古い取込では合計と同じ値になる。
+  const planQty = `COALESCE(${f('plan_qty')}, ${f('master_qty')}, 0)`;
+  const planAmt = `COALESCE(${f('plan_amount')}, ${effAmt})`;
+
   // A基準（計画）は、マスタ承認のある品目にだけ充てる。
   // 承認の無い品目は現状のまま（値上げ0）として、土台の金額はそのまま残す。
   //
-  // 値上げ幅は「A基準 − マスタ単価」。値決めどうしの比較なので、
-  // 実単価（見積ぶんで下がる）と混ざらない。その幅を現状額に足すことで、
-  // 土台の金額（＝実績そのもの）を崩さずに計画額を出せる。
+  // 値上げ幅は「A基準 − マスタ単価」× マスタ分の数量。値決めどうしの比較なので、
+  // 実単価（見積ぶんで下がる）と混ざらない。その幅をマスタ分の金額に足すことで、
+  // 比較のもと（金額（マスタ）の合計）を崩さずに計画額を出せる。
   const approved = aDateCond(query);
-  const aGain = (n) => `(${f(`a_price_m${n}`)} - (${mPrice})) * (${effQty})`;
+  const aGain = (n) => `(${f(`a_price_m${n}`)} - (${mPrice})) * (${planQty})`;
   const aCol = (n) =>
     `CASE WHEN a_price_m${n} > 0${approved ? ` AND ${approved}` : ''}
-          THEN ${effAmt} + ${aGain(n)} ELSE ${effAmt} END`;
+          THEN ${planAmt} + ${aGain(n)} ELSE ${planAmt} END`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -1314,8 +1320,8 @@ async function dashboardData(query, user) {
   const bsimUnit = `CASE WHEN b_price IS NOT NULL THEN ${f('b_price')}
                          WHEN a_price_m3 > 0 THEN ${f('a_price_m3')} * ${planRate} / 100
                          ELSE ${mPrice} END`;
-  // 想定B基準にした場合の値上げ幅（A基準と同じくマスタ単価が起点）
-  const bsimGain = `((${bsimUnit}) - (${mPrice})) * (${effQty})`;
+  // 想定B基準にした場合の値上げ幅（A基準と同じくマスタ単価が起点・マスタ分の数量）
+  const bsimGain = `((${bsimUnit}) - (${mPrice})) * (${planQty})`;
 
   // 器具区分別などの表に出す「実績」。取り込んだ月ごとに出す
   // （4月からの推移を、まとめの表と同じ粒度で見られるようにする）。
@@ -1329,22 +1335,23 @@ async function dashboardData(query, user) {
   const actUp = `${hasPast} AND (${mPrice}) - ${f('past_price')} >= 0.5`;
   const actSame = `${hasPast} AND ABS((${mPrice}) - ${f('past_price')}) < 0.5`;
   const actAgg = `
-    SUM(CASE WHEN ${hasPast} THEN (${mPrice}) * (${effQty}) END) AS act_amt_1,
-    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${effQty}) END) AS act_base_1,
+    SUM(CASE WHEN ${hasPast} THEN (${mPrice}) * (${planQty}) END) AS act_amt_1,
+    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${planQty}) END) AS act_base_1,
     SUM(CASE WHEN ${hasPast} THEN 1 ELSE 0 END) AS act_cnt_1,
     SUM(CASE WHEN ${actUp} THEN 1 ELSE 0 END) AS act_up_1,
     SUM(CASE WHEN ${actSame} THEN 1 ELSE 0 END) AS act_same_1`;
   const abAct = actSlot > 0 ? `,${actAgg}` : '';
 
-  // マスタ単価どおりに出た場合の金額と、実単価がマスタ単価を下回った件数。
-  // 実績（金額そのもの）との差が、見積などで目減りした分になる
+  // マスタ分（値決めどおりに出た分）の金額と数量。A基準の比較のもとになる。
+  // 合計（土台）との差が、見積などで値決めどおりに出なかった分にあたる。
   const mpBelow = `master_qty > 0 AND master_price > 0 AND ${effPrice} - (${mPrice}) <= -0.5`;
   const mpSame = `master_qty > 0 AND master_price > 0 AND ABS(${effPrice} - (${mPrice})) < 0.5`;
   const ab = `
     COUNT(*) AS deals,
     SUM(${effQty}) AS qty,
     SUM(${effAmt}) AS base_amt,
-    SUM((${mPrice}) * (${effQty})) AS mp_amt,
+    SUM(${planAmt}) AS mp_amt,
+    SUM(${planQty}) AS plan_qty,
     SUM(CASE WHEN ${mpSame} THEN 1 ELSE 0 END) AS mp_same,
     SUM(CASE WHEN ${mpBelow} THEN 1 ELSE 0 END) AS mp_below,
     SUM(${aCol(0)}) AS a0_amt,
@@ -1406,7 +1413,7 @@ async function dashboardData(query, user) {
 
   // 全体の合計は器具区分別を足したもの（同じ条件のため一致する）。
   // 合計だけをもう一度数えると10万件の走査が1回増えるので、ここで足す
-  const sumKeys = ['deals', 'qty', 'base_amt', 'mp_amt', 'mp_same', 'mp_below',
+  const sumKeys = ['deals', 'qty', 'base_amt', 'mp_amt', 'plan_qty', 'mp_same', 'mp_below',
     'a0_amt', 'a1_amt', 'a2_amt', 'a3_amt',
     'bsim_amt', 'b_rows',
     ...Array.from({ length: actSlot }, (_, i) =>
@@ -1846,6 +1853,8 @@ const EFF_PRICE = 'master_avg_price';
 /** マスタ単価（値決めの単価）。A基準はこれと比べる。無ければ実単価で代用する */
 const MASTER_PRICE = 'COALESCE(CAST(master_price AS FLOAT), CAST(master_avg_price AS FLOAT))';
 const effMonthlyQty = () => 'COALESCE(CAST(master_qty AS FLOAT), 0)';
+/** マスタ分（値決めどおりに出た分）の数量。A基準の値上げ額はこれに対して出す */
+const planMonthlyQty = () => 'COALESCE(CAST(plan_qty AS FLOAT), CAST(master_qty AS FLOAT), 0)';
 
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
@@ -1854,7 +1863,7 @@ api.get('/deals', wrap(async (req, res) => {
   const { months, masterMonths: mMonths } = await loadImportMeta();
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
-    // 値上げ幅は「その月のA基準 − 当月のマスタ単価」× 当月の数量。
+    // 値上げ幅は「その月のA基準 − 当月のマスタ単価」× マスタ分の数量。
     // 値決めどうしの比較なので、実単価（見積ぶんで下がる）とは混ぜない。
     db.get(`
       SELECT COUNT(*) AS count,
@@ -1862,7 +1871,7 @@ api.get('/deals', wrap(async (req, res) => {
              ${[0, 1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${MASTER_PRICE} IS NOT NULL
                        THEN (CAST(a_price_m${n} AS FLOAT) - ${MASTER_PRICE})
-                            * (${effMonthlyQty()})
+                            * (${planMonthlyQty()})
                   END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -2749,6 +2758,7 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     const key = `${cust}|${model}`;
     const a = acc.get(key) ?? {
       cust, model, qty: 0, money: 0, amt: 0, wgt: 0, mp_amt: 0, mp_wgt: 0,
+      plan_qty: 0, plan_money: 0,
       past_amt: 0, past_wgt: 0, past_date: null,
       list_amt: 0, list_wgt: 0,
       customer_name: null, delivery_name: null, model_name: null,
@@ -2766,6 +2776,12 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     // 返品などで金額がマイナスの行もそのまま足す（0やマイナスを捨てると
     // 合計が実績より大きくなる）。金額の列が無いファイルのときだけ単価×数量で補う
     a.money += filled(r.amount) ? num(r.amount) : price * qty;
+    // マスタ分（値決めどおりに出た分）。A基準はここに対して当てる。
+    // 種別の分かれていないファイルでは合計と同じ値が来る
+    a.plan_qty += filled(r.plan_qty) ? num(r.plan_qty) : qty;
+    a.plan_money += filled(r.plan_amount)
+      ? num(r.plan_amount)
+      : (filled(r.amount) ? num(r.amount) : price * qty);
     if (price > 0) { a.amt += price * w; a.wgt += w; }
     // マスタ単価（値決めの単価）。A基準はこれと比べるので実単価とは別に持つ
     if (mprice > 0) { a.mp_amt += mprice * w; a.mp_wgt += w; }
@@ -2789,12 +2805,12 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   const REP = ['customer_name', 'delivery_name', 'model_name', 'equip_name', 'category_name'];
   const vals = [...acc.values()].map((a) => [
     a.cust, a.model, a.qty, a.money, a.amt, a.wgt, a.mp_amt, a.mp_wgt,
-    a.past_amt, a.past_wgt, a.past_date,
+    a.plan_qty, a.plan_money, a.past_amt, a.past_wgt, a.past_date,
     a.list_amt, a.list_wgt, ...REP.map((k) => a[k]), Number.isFinite(a.top) ? a.top : 0,
   ]);
   if (vals.length) {
     const sumCols = ['qty_sum', 'money_sum', 'price_amt', 'price_wgt', 'mp_amt', 'mp_wgt',
-      'past_amt', 'past_wgt'];
+      'plan_qty_sum', 'plan_money_sum', 'past_amt', 'past_wgt'];
     const cols = ['ent_cd', 'model_code', ...sumCols, 'past_date',
       'list_amt', 'list_wgt', ...REP, 'top_qty'];
     // 送りが分かれても、数量の一番多い行の内容と、一番新しい受注日が残るようにする
@@ -2825,7 +2841,7 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_code', 'customer_name',
     'delivery_name', 'model_code', 'model_name', 'equip_name', 'category_name', 'list_price',
     'master_avg_price', 'master_price', 'master_qty', 'master_amount',
-    'past_price', 'past_date', 'hist_batch', 'updated_at'];
+    'plan_qty', 'plan_amount', 'past_price', 'past_date', 'hist_batch', 'updated_at'];
   const sel = `
     SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, s.ent_cd, s.customer_name,
            s.ent_cd, s.customer_name, s.delivery_name,
@@ -2835,6 +2851,7 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
                 WHEN s.price_wgt > 0 THEN s.price_amt / s.price_wgt END,
            CASE WHEN s.mp_wgt > 0 THEN s.mp_amt / s.mp_wgt END,
            s.qty_sum, s.money_sum,
+           s.plan_qty_sum, s.plan_money_sum,
            CASE WHEN s.past_wgt > 0 THEN s.past_amt / s.past_wgt END,
            s.past_date,
            ${batch ? '?' : 'NULL'}, ?

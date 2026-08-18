@@ -60,7 +60,9 @@ export interface Deal {
   master_avg_price?: number | null; // 当月の実単価（価格調査。金額÷数量。見積ぶんで下がる）
   master_price?: number | null;     // 当月のマスタ単価（値決めの単価。A基準はこれと比べる）
   master_qty?: number | null;       // 当月の数量（価格調査）
-  master_amount?: number | null;    // 当月の金額（合計が実績と合うようにそのまま持つ）
+  master_amount?: number | null;    // 当月の金額（合計。実績と合うようにそのまま持つ）
+  plan_qty?: number | null;         // マスタ分の数量（A基準はこれに対して当てる）
+  plan_amount?: number | null;      // マスタ分の金額（A基準の比較のもと）
   past_price?: number | null;       // 過去最新単価（値上げ前）
   past_date?: string | null;        // 過去最新受注日
   /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */

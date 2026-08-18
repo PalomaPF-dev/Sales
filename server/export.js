@@ -41,6 +41,11 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
   /** マスタ単価（値決めの単価）。A基準はこれと比べる。無い行は実単価で代用 */
   const mPrice = (r) => (r.master_price ?? r.master_avg_price ?? null);
   const monthlyQty = (r) => (r.master_qty == null ? null : Number(r.master_qty));
+  /** マスタ分の数量（値決めどおりに出た分）。A基準の値上げ額はこれに対して出す */
+  const planQty = (r) => {
+    const v = r.plan_qty ?? r.master_qty;
+    return v == null ? null : Number(v);
+  };
   const actYm = String(actualMeta?.ym ?? '');
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
 
@@ -74,8 +79,10 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
       return round(Number(mPrice(r)) - Number(r.past_price));
     }],
     [`実単価（${actLabel}）`, (r) => round(effPrice(r))],
-    [`数量（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
-    [`金額（${actLabel}）`, (r) => round(r.master_amount)],
+    [`数量 合計（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
+    [`金額 合計（${actLabel}）`, (r) => round(r.master_amount)],
+    [`数量 マスタ（${actLabel}）`, (r) => (planQty(r) == null ? '' : round(Number(planQty(r)), 2))],
+    [`金額 マスタ（${actLabel}）`, (r) => round(r.plan_amount)],
     ['実勢差（実単価−マスタ単価）', (r) => {
       if (effPrice(r) == null || r.master_price == null) return '';
       return round(Number(effPrice(r)) - Number(r.master_price));
@@ -105,8 +112,8 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     [`値上げ幅 ${m3}`, diff('a_price_m3')],
     [`値上げ額（月あたり）${m3}`, (r) => {
       const a = Number(r.a_price_m3);
-      if (!(a > 0) || mPrice(r) == null || monthlyQty(r) == null) return '';
-      return round((a - Number(mPrice(r))) * Number(monthlyQty(r)));
+      if (!(a > 0) || mPrice(r) == null || planQty(r) == null) return '';
+      return round((a - Number(mPrice(r))) * Number(planQty(r)));
     }],
 
     // 交渉
@@ -146,7 +153,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const t = data.abTotals ?? {};
   // 当月の金額そのもの（土台）。条件シートとまとめシートの両方で使う
   const base = n(t.base_amt);
-  // マスタ単価（値決めの単価）どおりに出た場合の金額。実績との差が目減りした分
+  // マスタ分（値決めどおりに出た分）の金額。A基準の比較のもと。合計との差が見積ぶん
   const mpAmt = n(t.mp_amt);
 
   const wb = XLSX.utils.book_new();
@@ -167,7 +174,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
   cond.push(['表示範囲', data.scope?.label ?? '']);
   cond.push(['品目件数（価格調査）', n(data.histTotals?.deals)]);
   cond.push(['当月実績の金額（土台）', round(base)]);
-  cond.push(['当月のマスタ単価どおりの金額', round(mpAmt)]);
+  cond.push(['当月の金額（マスタ）＝A基準の比較のもと', round(mpAmt)]);
+  cond.push(['見積ぶんなど（合計−マスタ）', round(base - mpAmt)]);
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
@@ -180,10 +188,10 @@ export function buildDashboardWorkbook(data, opts = {}) {
     // 土台。取り込んだ当月の金額そのもの（全品目）。比べる相手は無い
     { ym: String(data.actuals?.[0]?.ym ?? '当月'), kind: '土台',
       deals: n(t.deals), b: '', amt: base, up: '', same: '' },
-    // 実勢。マスタ単価どおりに出た場合（比較のもと）と、実際の金額の差
+    // マスタ分。値決めどおりに出た分で、A基準の比較のもとになる
     ...(mpAmt > 0 ? [{
-      ym: `${String(data.actuals?.[0]?.ym ?? '当月')} 実勢`, kind: '実勢',
-      deals: n(t.deals), b: mpAmt, amt: base, up: '', same: n(t.mp_same),
+      ym: `${String(data.actuals?.[0]?.ym ?? '当月')}（マスタ）`, kind: 'マスタ',
+      deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
     }] : []),
     // 実績。過去最新単価（値上げ前）→ 当月のマスタ単価。過去単価のある品目だけが対象
     ...(data.actuals ?? []).map((a) => ({
@@ -191,8 +199,9 @@ export function buildDashboardWorkbook(data, opts = {}) {
       b: n(a.base), amt: n(a.amount), up: n(a.up), same: n(a.same),
     })),
     // A基準（計画）
+    // 計画。比較のもとはマスタ分の金額（A基準はここに対して当てる）
     ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
-      ym, kind: '計画', deals: n(t.deals), b: base, amt, up: '', same: '',
+      ym, kind: '計画', deals: n(t.deals), b: mpAmt || base, amt, up: '', same: '',
     })),
   ];
   for (const r of summaryRows) {
@@ -215,7 +224,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const abActYms = Array.isArray(data.abActYms) ? data.abActYms : [];
   const head = (first, withBsim) => [
     first, '件数', '数量（月平均）',
-    '現状額（月あたり）',
+    '金額 合計（月あたり）',
+    '現状額 マスタ（月あたり）',
     ...abActYms.flatMap((ym) => [
       `${ym} 実績額（月あたり）`, `${ym} 実績の現状額（月あたり）`,
       `${ym} 値上げ額（月あたり）`, `${ym} 値上げ率`,
@@ -228,10 +238,12 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ...(withBsim ? ['想定B基準（月あたり）'] : []),
   ];
   const line = (r, withBsim) => {
-    const b = n(r.base_amt);
+    // 比較のもとはマスタ分（値決めどおりに出た分）。A基準はここに対して当てる
+    const b = n(r.mp_amt);
     const rate = (amt) => (b > 0 ? round(((amt - b) / b) * 100, 1) / 100 : '');
     return [
       r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
+      round(n(r.base_amt) / months),
       round(b / months),
       ...abActYms.flatMap((_, i) => {
         const amt = r[`act_amt_${i + 1}`];
@@ -250,7 +262,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
       ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };
-  const widths = [22, 8, 12, 18,
+  const widths = [22, 8, 12, 18, 20,
     ...abActYms.flatMap(() => [18, 20, 18, 10, 12, 12]),
     18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
   for (const [sheet, label, rows, withBsim] of [
