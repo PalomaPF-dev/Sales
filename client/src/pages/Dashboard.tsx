@@ -441,6 +441,23 @@ export default function Dashboard() {
         <Kpi label={`実績（${actLabel}）`}
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 月平均 ${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}`} />
+        {/*
+          金額の土台を2つ並べる。左が実績（取り込んだ金額の合計）、
+          右がマスタ単価（値決めの単価）どおりに出た場合。
+          A基準はマスタ単価と比べるため、その起点をここで見えるようにする。
+        */}
+        <Kpi label={`${actLabel}金額の合計（実績）`}
+             value={`¥${yen(num(t?.base_amt) / months)}`}
+             sub={`${num(t?.deals).toLocaleString()}件 ・ 取り込んだ金額そのもの`} />
+        <Kpi label={`${actLabel}マスタ単価の合計`}
+             value={`¥${yen(num(t?.mp_amt) / months)}`}
+             sub={(() => {
+               const mp = num(t?.mp_amt);
+               if (!(mp > 0)) return 'マスタ単価×数量。A基準はこの単価と比べます';
+               const gap = num(t?.base_amt) - mp;
+               return `実績との差 ${gap < 0 ? '−' : '＋'}¥${yen(Math.abs(gap) / months)}`
+                 + `（${Math.round((gap / mp) * 1000) / 10}%）・ A基準はこの単価と比べます`;
+             })()} />
         <Kpi label="マスタ登録（A基準あり）"
              value={`${num(data.aMonths?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={num(data.histTotals?.deals) > 0

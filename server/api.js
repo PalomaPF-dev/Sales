@@ -2730,6 +2730,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     return Number.isFinite(n) ? n : 0;
   };
   const txt = (v) => (String(v ?? '').trim() || null);
+  /** 値が入っているか。0やマイナスも「入っている」として扱う */
+  const filled = (v) => v !== null && v !== undefined && String(v).trim() !== '';
 
   // 得意先×商品ごとに、数量と「単価×数量」を足し込む（加重平均のため）。
   // 数量が0の行は重み1として扱い、全行0のまとまりでも単純平均になるようにする。
@@ -2760,8 +2762,10 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     const list = num(r.list_price);
     a.qty += qty;
     // 金額はファイルの値をそのまま足す。単価×数量で戻すと端数がずれて、
-    // 全体の合計が実績と合わなくなるため
-    a.money += num(r.amount) > 0 ? num(r.amount) : price * qty;
+    // 全体の合計が実績と合わなくなるため。
+    // 返品などで金額がマイナスの行もそのまま足す（0やマイナスを捨てると
+    // 合計が実績より大きくなる）。金額の列が無いファイルのときだけ単価×数量で補う
+    a.money += filled(r.amount) ? num(r.amount) : price * qty;
     if (price > 0) { a.amt += price * w; a.wgt += w; }
     // マスタ単価（値決めの単価）。A基準はこれと比べるので実単価とは別に持つ
     if (mprice > 0) { a.mp_amt += mprice * w; a.mp_wgt += w; }
