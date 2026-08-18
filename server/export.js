@@ -246,7 +246,9 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ...abActYms.flatMap((ym) => [
       `${ym} 実績額（月あたり）`, `${ym} 値上げ前当初（月あたり）`,
       `${ym} 売上改善額（月あたり）`, `${ym} 改善率`,
-      `${ym} 上がった件数`, `${ym} 下がった件数`,
+      `${ym} 改善額 プラス（月あたり）`, `${ym} 上がった件数`,
+      `${ym} 改善額 マイナス（月あたり）`, `${ym} 下がった件数`,
+      `${ym} 単価同じ件数`,
     ]),
     `${m0} A基準額（月あたり）`, `${m0} 値上げ額（月あたり）`, `${m0} 値上げ率`,
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
@@ -265,12 +267,16 @@ export function buildDashboardWorkbook(data, opts = {}) {
       round(b / months),
       round(n(r.mp_amt) / months),
       ...abActYms.flatMap((_, i) => {
-        if (r[`act_amt_${i + 1}`] == null) return ['', '', '', '', '', ''];   // その月の実績が無い
-        // 実績は「値上げ前当初 → 当月の金額（合計）」。差が売上改善額
+        // その月の実績が無ければ空欄（列数は揃える）
+        if (r[`act_amt_${i + 1}`] == null) return ['', '', '', '', '', '', '', '', ''];
+        // 実績は「値上げ前当初 → 当月の金額（合計）」。差が売上改善額。
+        // その中身を、上がった品目ぶん（プラス）と下がった品目ぶん（マイナス）に分ける
         return [
           round(b / months), round(pre / months), round(g / months),
           pre > 0 ? round((g / pre) * 100, 1) / 100 : '',
-          n(r[`act_up_${i + 1}`]), n(r[`act_down_${i + 1}`]),
+          round(n(r[`gain_plus_${i + 1}`]) / months), n(r[`act_up_${i + 1}`]),
+          round(n(r[`gain_minus_${i + 1}`]) / months), n(r[`act_down_${i + 1}`]),
+          n(r[`act_same_${i + 1}`]),
         ];
       }),
       round(n(r.a0_amt) / months), round((n(r.a0_amt) - pre) / months), rate(n(r.a0_amt)),
@@ -281,7 +287,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ];
   };
   const widths = [22, 8, 12, 18, 20,
-    ...abActYms.flatMap(() => [18, 20, 18, 10, 12, 12]),
+    ...abActYms.flatMap(() => [18, 20, 18, 10, 20, 12, 20, 12, 12]),
     18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
   for (const [sheet, label, rows, withBsim] of [
     ['器具区分別', '器具区分', data.abByEquip ?? [], false],

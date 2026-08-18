@@ -144,7 +144,7 @@ function AmtCell({ amt, base, months, note, noteTitle }: {
 // 集計表の並び替えの対象。月の列は「その月の値上げ額（A基準額−現状額）」で並べる
 // （A基準額そのものだと規模の大きい区分が常に上に来て、値上げの大小が見えないため）
 type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'mp' | 'a0' | 'a1' | 'a2' | 'a3' | 'bsim'
-  | `act${number}`;
+  | `act${number}` | `gp${number}` | `gm${number}`;
 
 function sortValue(r: AbRow, col: SortCol): number | string {
   // 実績（月ごと）。その月に実単価のあった品目だけで見るため、現状額もその分だけを引く
@@ -153,6 +153,11 @@ function sortValue(r: AbRow, col: SortCol): number | string {
     const n = Number(act[1]) + 1;
     return num(r[`gain_plus_${n}`]) + num(r[`gain_minus_${n}`]);
   }
+  // 売上改善額のプラス側・マイナス側。マイナスは絶対値の大きい順で見たい
+  const gp = /^gp(\d+)$/.exec(col);
+  if (gp) return num(r[`gain_plus_${Number(gp[1]) + 1}`]);
+  const gm = /^gm(\d+)$/.exec(col);
+  if (gm) return -num(r[`gain_minus_${Number(gm[1]) + 1}`]);
   // 値上げ額の大きい順に並べるため、A基準の列は値上げ前当初との差で比べる
   const pre = num(r.base_amt) - (num(r.gain_plus_1) + num(r.gain_minus_1));
   switch (col) {
@@ -175,9 +180,11 @@ function sortValue(r: AbRow, col: SortCol): number | string {
  * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
  * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
  */
-function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
+function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link }: {
   head: string; rows: AbRow[]; total?: AbRow;
   months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
+  /** その行の品目を、売上改善額の向きで絞った案件一覧のURL（合計行は渡らない） */
+  link?: (name: string | null | undefined, kind: 'plus' | 'minus') => string;
 }) {
   // 未指定のときはサーバーの並び（現状額の大きい順）のまま
   const [sort, setSort] = useState<{ col: SortCol; desc: boolean } | null>(null);
@@ -237,12 +244,20 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
                 title="当月の金額（マスタ）。値決めどおりに出た分（1か月あたり）">
               うちマスタ<br /><small>月あたり</small>
             </Th>
-            {actYms.map((ym, i) => (
+            {actYms.flatMap((ym, i) => [
               <Th key={ym} col={`act${i}`} right
-                  title={`${ym}の金額（合計）と、値上げ前当初との差（売上改善額）。上がった／下がった件数つき`}>
+                  title={`${ym}の金額（合計）と、値上げ前当初との差（売上改善額）`}>
                 {ym} 実績<br /><small>金額 / 売上改善額（率）</small>
-              </Th>
-            ))}
+              </Th>,
+              <Th key={`${ym}-gp`} col={`gp${i}`} right
+                  title={`${ym}に単価が上がった品目ぶんの売上改善額。押すとその品目を案件一覧で見られます`}>
+                {ym} プラス<br /><small>上がった品目</small>
+              </Th>,
+              <Th key={`${ym}-gm`} col={`gm${i}`} right
+                  title={`${ym}に単価が下がった品目ぶんの売上改善額。押すとその品目を案件一覧で見られます`}>
+                {ym} マイナス<br /><small>下がった品目</small>
+              </Th>,
+            ])}
             <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額（率）</small></Th>
             <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額（率）</small></Th>
@@ -269,19 +284,43 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
                 </td>
                 <AmtCell amt={base} months={months} />
                 <AmtCell amt={num(r.mp_amt)} months={months} />
-                {actYms.map((ym, i) => {
+                {actYms.flatMap((ym, i) => {
                   // 実績は「値上げ前当初 → 当月の金額（合計）」。差が売上改善額になる
-                  const g = num(r[`gain_plus_${i + 1}`]) + num(r[`gain_minus_${i + 1}`]);
-                  return r[`act_amt_${i + 1}`] == null
-                    ? <td key={ym} style={nums}>—</td>
-                    : <AmtCell key={ym} amt={base} base={base - g} months={months}
-                               note={`↑${num(r[`act_up_${i + 1}`]).toLocaleString()}`
-                                 + ` / ↓${num(r[`act_down_${i + 1}`]).toLocaleString()}`}
-                               noteTitle={`${ym}: 上がった ${num(r[`act_up_${i + 1}`]).toLocaleString()}件`
-                                 + `（＋${yen(num(r[`gain_plus_${i + 1}`]) / months)}）`
-                                 + ` / 下がった ${num(r[`act_down_${i + 1}`]).toLocaleString()}件`
-                                 + `（−${yen(Math.abs(num(r[`gain_minus_${i + 1}`])) / months)}）`
-                                 + ` / 単価が変わっていない ${num(r[`act_same_${i + 1}`]).toLocaleString()}件`} />;
+                  const gp = num(r[`gain_plus_${i + 1}`]);
+                  const gm = num(r[`gain_minus_${i + 1}`]);
+                  if (r[`act_amt_${i + 1}`] == null) {
+                    return [<td key={ym} style={nums}>—</td>,
+                      <td key={`${ym}-gp`} style={nums}>—</td>,
+                      <td key={`${ym}-gm`} style={nums}>—</td>];
+                  }
+                  // プラス側・マイナス側は、その中身を案件一覧で開けるようにする
+                  const cell = (kind: 'plus' | 'minus', amt: number, cnt: number) => {
+                    const body = (
+                      <>
+                        {amt === 0 ? '—' : `${kind === 'plus' ? '＋' : '−'}${yen(Math.abs(amt) / months)}`}
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+                          {cnt.toLocaleString()}件
+                        </div>
+                      </>
+                    );
+                    const to = last || !link ? null : link(r.name, kind);
+                    return (
+                      <td key={`${ym}-${kind === 'plus' ? 'gp' : 'gm'}`}
+                          style={{ ...nums, fontWeight: 700,
+                                   color: amt === 0 ? 'var(--muted)' : kind === 'plus' ? '#15803d' : '#c2410c' }}>
+                        {to ? <Link to={to} style={{ color: 'inherit' }}>{body}</Link> : body}
+                      </td>
+                    );
+                  };
+                  return [
+                    <AmtCell key={ym} amt={base} base={base - (gp + gm)} months={months}
+                             note={`↑${num(r[`act_up_${i + 1}`]).toLocaleString()}`
+                               + ` / ↓${num(r[`act_down_${i + 1}`]).toLocaleString()}`}
+                             noteTitle={`${ym}: 単価が変わっていない `
+                               + `${num(r[`act_same_${i + 1}`]).toLocaleString()}件`} />,
+                    cell('plus', gp, num(r[`act_up_${i + 1}`])),
+                    cell('minus', gm, num(r[`act_down_${i + 1}`])),
+                  ];
                 })}
                 {/* A基準（計画）は値上げ前当初と比べる */}
                 <AmtCell amt={num(r.a0_amt)} base={pre} months={months} />
@@ -319,10 +358,19 @@ export default function Dashboard() {
   };
   const setParam = (key: string, value: string) => setMany({ [key]: value });
 
-  /** いまの絞り込みを引き継いで、案件一覧の「売上改善額」で絞ったURLを作る */
-  const dealsLink = (gainKind: 'plus' | 'minus' | 'same') => {
+  /**
+   * いまの絞り込みを引き継いで、案件一覧の「売上改善額」で絞ったURLを作る。
+   * extra を渡すと、その器具区分・支店・法人にも絞る（集計表のマスから開くとき）。
+   */
+  const dealsLink = (
+    gainKind: 'plus' | 'minus' | 'same',
+    extra?: Record<string, string>
+  ) => {
     const q = new URLSearchParams();
     for (const k of FILTER_KEYS) if (get(k)) q.set(k, get(k));
+    for (const [k, v] of Object.entries(extra ?? {})) {
+      if (v) q.set(k, v); else q.delete(k);
+    }
     q.set('gain', gainKind);
     return `/deals?${q.toString()}`;
   };
@@ -691,7 +739,8 @@ export default function Dashboard() {
         </div>
         <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
                  total={t} months={months} actYms={data.abActYms}
-                 m0={m0} m1={m1} m2={m2} m3={m3} />
+                 m0={m0} m1={m1} m2={m2} m3={m3}
+                 link={(name, kind) => dealsLink(kind, { [tab]: name ?? '' })} />
       </div>
     </div>
   );
