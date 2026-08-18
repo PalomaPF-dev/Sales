@@ -37,6 +37,10 @@ interface AbRow {
   [key: `act_cnt_${number}`]: number | undefined;
   [key: `act_up_${number}`]: number | undefined;
   [key: `act_same_${number}`]: number | undefined;
+  [key: `act_down_${number}`]: number | undefined;
+  /** 売上改善額。上がった品目ぶん / 下がった品目ぶん */
+  [key: `gain_plus_${number}`]: number | undefined;
+  [key: `gain_minus_${number}`]: number | undefined;
   a1_amt: number;
   a2_amt: number;
   a3_amt: number;
@@ -147,7 +151,7 @@ function sortValue(r: AbRow, col: SortCol): number | string {
   const act = /^act(\d+)$/.exec(col);
   if (act) {
     const n = Number(act[1]) + 1;
-    return num(r[`act_amt_${n}`]) - num(r[`act_base_${n}`]);
+    return num(r[`gain_plus_${n}`]) + num(r[`gain_minus_${n}`]);
   }
   switch (col) {
     case 'name': return r.name ?? '';
@@ -155,12 +159,12 @@ function sortValue(r: AbRow, col: SortCol): number | string {
     case 'qty': return num(r.qty);
     case 'base': return num(r.base_amt);
     case 'mp': return num(r.mp_amt);
-    // 値上げ額の大きい順。比較のもとはマスタ分（値決めどおりに出た分）
-    case 'a0': return num(r.a0_amt) - num(r.mp_amt);
-    case 'a1': return num(r.a1_amt) - num(r.mp_amt);
-    case 'a2': return num(r.a2_amt) - num(r.mp_amt);
-    case 'a3': return num(r.a3_amt) - num(r.mp_amt);
-    case 'bsim': return num(r.bsim_amt) - num(r.mp_amt);
+    // 値上げ額の大きい順。比較のもとは当月の金額（合計）
+    case 'a0': return num(r.a0_amt) - num(r.base_amt);
+    case 'a1': return num(r.a1_amt) - num(r.base_amt);
+    case 'a2': return num(r.a2_amt) - num(r.base_amt);
+    case 'a3': return num(r.a3_amt) - num(r.base_amt);
+    case 'bsim': return num(r.bsim_amt) - num(r.base_amt);
     default: return 0;
   }
 }
@@ -224,17 +228,18 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
             <Th col="qty" right title="1か月あたりの数量">
               数量<br /><small>月平均</small>
             </Th>
-            <Th col="base" right title="当月の金額（合計）そのもの。実績の総額（1か月あたり）">
-              金額（合計）<br /><small>月あたり</small>
+            <Th col="base" right
+                title="当月の金額（合計）そのもの。A基準の値上げ幅はここへ足します（1か月あたり）">
+              現状額（合計）<br /><small>月あたり</small>
             </Th>
             <Th col="mp" right
-                title="当月の金額（マスタ）。値決めどおりに出た分で、A基準・実績はこれと比べます（1か月あたり）">
-              現状額（マスタ）<br /><small>月あたり</small>
+                title="当月の金額（マスタ）。値決めどおりに出た分（1か月あたり）">
+              うちマスタ<br /><small>月あたり</small>
             </Th>
             {actYms.map((ym, i) => (
               <Th key={ym} col={`act${i}`} right
-                  title={`${ym}の実単価で実際に上がった額。その月に実単価のあった品目だけを集計しています`}>
-                {ym} 実績<br /><small>実績額 / 値上げ額（率）</small>
+                  title={`${ym}の金額（合計）と、値上げ前当初との差（売上改善額）。上がった／下がった件数つき`}>
+                {ym} 実績<br /><small>金額 / 売上改善額（率）</small>
               </Th>
             ))}
             <Th col="a0" right title={`${m0}（当月）の値上げ額で並びます`}>{m0}<br /><small>A基準額 / 値上げ額（率）</small></Th>
@@ -250,8 +255,8 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
         <tbody>
           {[...sorted, ...(total ? [{ ...total, name: '合計' }] : [])].map((r, i) => {
             const last = i === sorted.length;
-            // 比較のもとはマスタ分（値決めどおりに出た分）。A基準はここに当てる
-            const base = num(r.mp_amt);
+            // 比較のもとは当月の金額（合計）。A基準の値上げ幅はここへ足す
+            const base = num(r.base_amt);
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
                 <td>{r.name || '—'}</td>
@@ -259,19 +264,22 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
                 <td style={nums}>
                   {(num(r.qty) / months).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </td>
-                <AmtCell amt={num(r.base_amt)} months={months} />
                 <AmtCell amt={base} months={months} />
-                {actYms.map((ym, i) => (
-                  r[`act_amt_${i + 1}`] == null
+                <AmtCell amt={num(r.mp_amt)} months={months} />
+                {actYms.map((ym, i) => {
+                  // 実績は「値上げ前当初 → 当月の金額（合計）」。差が売上改善額になる
+                  const g = num(r[`gain_plus_${i + 1}`]) + num(r[`gain_minus_${i + 1}`]);
+                  return r[`act_amt_${i + 1}`] == null
                     ? <td key={ym} style={nums}>—</td>
-                    : <AmtCell key={ym} amt={num(r[`act_amt_${i + 1}`])}
-                               base={num(r[`act_base_${i + 1}`])} months={months}
+                    : <AmtCell key={ym} amt={base} base={base - g} months={months}
                                note={`↑${num(r[`act_up_${i + 1}`]).toLocaleString()}`
-                                 + ` / ${num(r[`act_cnt_${i + 1}`]).toLocaleString()}件`}
+                                 + ` / ↓${num(r[`act_down_${i + 1}`]).toLocaleString()}`}
                                noteTitle={`${ym}: 上がった ${num(r[`act_up_${i + 1}`]).toLocaleString()}件`
-                                 + ` / 単価が変わっていない ${num(r[`act_same_${i + 1}`]).toLocaleString()}件`
-                                 + `（実単価のあった ${num(r[`act_cnt_${i + 1}`]).toLocaleString()}件）`} />
-                ))}
+                                 + `（＋${yen(num(r[`gain_plus_${i + 1}`]) / months)}）`
+                                 + ` / 下がった ${num(r[`act_down_${i + 1}`]).toLocaleString()}件`
+                                 + `（−${yen(Math.abs(num(r[`gain_minus_${i + 1}`])) / months)}）`
+                                 + ` / 単価が変わっていない ${num(r[`act_same_${i + 1}`]).toLocaleString()}件`} />;
+                })}
                 <AmtCell amt={num(r.a0_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a1_amt)} base={base} months={months} />
                 <AmtCell amt={num(r.a2_amt)} base={base} months={months} />
@@ -466,44 +474,37 @@ export default function Dashboard() {
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 月平均 ${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}`} />
         {/*
-          金額の土台を2つ並べる。左が実績（取り込んだ金額の合計）、
-          右がマスタ単価（値決めの単価）どおりに出た場合。
-          A基準はマスタ単価と比べるため、その起点をここで見えるようにする。
+          金額の並び。値上げ前当初 → 当月の金額（合計）が実績で、
+          その差が売上改善額。A基準（計画）は当月の金額（合計）と比べる。
         */}
+        {gain != null && (
+          <Kpi label={`${actLabel} 値上げ前当初`}
+               value={yen((num(t?.base_amt) - gain) / months)}
+               sub={`金額の合計から売上改善額 ${yen(gain / months)} を引いた額`} />
+        )}
         <Kpi label={`${actLabel}金額の合計（実績）`}
-             value={`¥${yen(num(t?.base_amt) / months)}`}
-             sub={`${num(t?.deals).toLocaleString()}件 ・ 取り込んだ金額そのもの`} />
+             value={yen(num(t?.base_amt) / months)}
+             sub={`${num(t?.deals).toLocaleString()}件 ・ A基準はこれと比べます`} />
+        {gain != null && (
+          <Kpi label="売上改善額（過去→当月）"
+               value={`${gain >= 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
+               sub={`上がった ＋${yen(gainPlus / months)}（${num(act?.up).toLocaleString()}件）`
+                 + ` / 下がった −${yen(Math.abs(gainMinus) / months)}（${num(act?.down).toLocaleString()}件）`} />
+        )}
         <Kpi label={`${actLabel}金額（マスタ）の合計`}
-             value={`¥${yen(num(t?.mp_amt) / months)}`}
+             value={yen(num(t?.mp_amt) / months)}
              sub={(() => {
                const mp = num(t?.mp_amt);
-               if (!(mp > 0)) return '値決めどおりに出た分。A基準はこれと比べます';
+               if (!(mp > 0)) return '値決めどおりに出た分';
                const gap = num(t?.base_amt) - mp;
-               return `見積ぶんなど ¥${yen(Math.abs(gap) / months)}`
-                 + ` ・ 数量 ${Math.round(num(t?.plan_qty) / months).toLocaleString()}`
-                 + ` ・ A基準はこれと比べます`;
+               return `値決めどおりに出た分 ・ 見積ぶんなど ${yen(Math.abs(gap) / months)}`
+                 + ` ・ 数量 ${Math.round(num(t?.plan_qty) / months).toLocaleString()}`;
              })()} />
         <Kpi label="マスタ登録（A基準あり）"
              value={`${num(data.aMonths?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={num(data.histTotals?.deals) > 0
                ? `出荷実績の品目の ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
-        {/* 実績（過去最新単価 → 当月のマスタ単価）。実際にいくら上がったかを計画の隣に並べる */}
-        {(data.actuals ?? []).map((a) => {
-          const gain = (a.amount - a.base) / months;
-          const rate = a.base > 0 ? Math.round(((a.amount - a.base) / a.base) * 1000) / 10 : null;
-          // 上がった件数と、単価が変わっていない件数。
-          // 差が出ない月も「まだ動いていない」と読めるようにする
-          const up = num(a.up);
-          const same = num(a.same);
-          return (
-            <Kpi key={`act-${a.ym}`}
-                 label={`値上げ額（月あたり） ${a.ym} 実績`}
-                 value={`${gain >= 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
-                 sub={`上がった ${up.toLocaleString()}件 / 単価同じ ${same.toLocaleString()}件`
-                   + `（過去単価のある ${a.deals.toLocaleString()}件${rate == null ? '' : `・${rate > 0 ? '+' : ''}${rate}%`}）`} />
-          );
-        })}
         {([
           [m0, data.aMonths?.raise_m0],
           [m1, data.aMonths?.raise_m1],
@@ -511,15 +512,15 @@ export default function Dashboard() {
           [m3, data.aMonths?.raise_m3],
         ] as [string, number | null | undefined][]).map(([label, raise]) => {
           const r = num(raise) / months;
-          // マスタ分の金額（A基準の比較のもと）に対して何%の値上げになるか
-          const base = num(t?.mp_amt);
+          // 当月の金額（合計。A基準の比較のもと）に対して何%の値上げになるか
+          const base = num(t?.base_amt);
           const rate = base > 0 ? Math.round((num(raise) / base) * 1000) / 10 : null;
           return (
             <Kpi key={label}
                  label={`値上げ額（月あたり） ${label}`}
                  value={`${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}`}
                  sub={rate == null ? undefined
-                   : `金額（マスタ）に対して ${rate > 0 ? '+' : ''}${rate}%`} />
+                   : `${actLabel}金額の合計に対して ${rate > 0 ? '+' : ''}${rate}%`} />
           );
         })}
       </div>
