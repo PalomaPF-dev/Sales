@@ -118,63 +118,106 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
-/** グラフの1本ぶん */
+/** 滝チャートの1本ぶん */
 interface FlowBar {
-  label: string;                       // 下に出す名前（当初 / 7月 実績 / 8月 計画 …）
-  kind: '当初' | '実績' | '計画';
-  amt: number;                         // 金額（月あたり）
-  gain: number | null;                 // 値上げ前当初との差。当初の本は null
-  sub?: string;                        // 件数など、名前の下に添える一行
+  label: string;                        // 下に出す名前
+  sub?: string;                         // 件数など、名前の下に添える一行
+  kind: '当初' | '実績' | '計画' | 'プラス' | 'マイナス';
+  /** 全体の本（0から立てる）。step と どちらか片方だけ入れる */
+  total?: number;
+  /** 途中の増減（宙に浮く本）。実績→当初 の向きに足し引きする */
+  step?: number;
+  /** 上に出す文字。省略すると total を億で出す */
+  show?: string;
+  /** 値上げ前当初との差（計画の本に出す） */
+  gain?: number | null;
 }
 
-/** まとめの表と同じ数字を、当初 → 実績 → 計画 の棒グラフで出す */
+/**
+ * まとめの表と同じ数字を滝チャートで出す。
+ * 7月実績 → プラスを除き → マイナスを戻し → 値上げ前当初 → 計画 の流れ。
+ * 途中の増減は宙に浮く本で、全体の本（実績・当初・計画）だけ0から立てる。
+ */
 function FlowChart({ bars }: { bars: FlowBar[] }) {
-  // 色はまとめの表のバッジと同じ意味（灰=当初・参考、緑=実績、青=計画）
-  const COLOR = { 当初: '#9ca3af', 実績: '#15803d', 計画: '#2563eb' } as const;
+  const COLOR = {
+    当初: '#9ca3af', 実績: '#15803d', 計画: '#2563eb',
+    プラス: '#15803d', マイナス: '#c2410c',
+  } as const;
   const W = 900;
-  const H = 250;
-  const top = 44;                      // 金額と値上げ額のラベルぶん
-  const bottom = 40;                   // 月名と件数ぶん
-  const max = Math.max(...bars.map((b) => b.amt), 1);
-  const bw = Math.min(88, (W - 40) / bars.length - 24);
+  const H = 260;
+  const top = 44;
+  const bottom = 40;
+  const max = Math.max(...bars.map((b) => b.total ?? 0), 1);
+  const scale = (H - top - bottom) / max;
   const step = (W - 40) / bars.length;
+  const bw = Math.min(88, step - 24);
   const oku = (v: number) =>
     Math.abs(v) >= 1e8 ? `${(v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 1 })}億`
       : `${Math.round(v / 1e4).toLocaleString()}万`;
+
+  // 位置を先に計算する。running は「いまの高さ」（実績から当初へ下る途中の水位）
+  let running = 0;
+  const placed = bars.map((b, i) => {
+    const x = 20 + step * i + (step - bw) / 2;
+    let y0: number;                     // 本の下端（金額）
+    let y1: number;                     // 本の上端（金額）
+    if (b.total != null) {
+      y0 = 0; y1 = b.total; running = b.total;
+    } else {
+      const next = running + (b.step ?? 0);
+      y0 = Math.min(running, next); y1 = Math.max(running, next); running = next;
+    }
+    return { ...b, x, y0, y1, level: running };
+  });
+  const yOf = (v: number) => H - bottom - v * scale;
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="値上げ前当初から計画までの金額の推移"
+    <svg viewBox={`0 0 ${W} ${H}`} role="img"
+         aria-label="7月実績から値上げ前当初、計画までの金額の流れ"
          style={{ width: '100%', height: 'auto', display: 'block' }}>
-      {bars.map((b, i) => {
-        const h = Math.max(2, ((H - top - bottom) * b.amt) / max);
-        const x = 20 + step * i + (step - bw) / 2;
-        const y = H - bottom - h;
+      {placed.map((b, i) => {
+        // 途中の増減は小さくて見えなくなるため、最低4pxは描く
+        const h = Math.max(b.total != null ? 2 : 4, (b.y1 - b.y0) * scale);
+        const y = b.total != null ? yOf(b.y1) : Math.min(yOf(b.y0) - 4, yOf(b.y1));
+        const show = b.show ?? oku(b.total ?? 0);
         return (
-          <g key={b.label}>
+          <g key={`${b.label}-${i}`}>
             <title>
-              {`${b.label}: ¥${Math.round(b.amt).toLocaleString()}`
-                + (b.gain == null ? '' : `
-値上げ前当初との差 ${b.gain >= 0 ? '＋' : '−'}¥${Math.round(Math.abs(b.gain)).toLocaleString()}`)}
+              {`${b.label}: ${b.total != null
+                ? `¥${Math.round(b.total).toLocaleString()}`
+                : `${(b.step ?? 0) >= 0 ? '＋' : '−'}¥${Math.round(Math.abs(b.step ?? 0)).toLocaleString()}`}`
+                + (b.gain == null ? '' : `\n値上げ前当初との差 ${b.gain >= 0 ? '＋' : '−'}¥${Math.round(Math.abs(b.gain)).toLocaleString()}`)}
             </title>
-            <rect x={x} y={y} width={bw} height={h} rx={4} fill={COLOR[b.kind]} />
-            {/* 角丸は上だけ。下は台形にならないよう塗り足す */}
-            <rect x={x} y={Math.max(y, H - bottom - 4)} width={bw} height={Math.min(4, h)} fill={COLOR[b.kind]} />
-            <text x={x + bw / 2} y={y - 24} textAnchor="middle"
-                  style={{ font: '700 15px sans-serif', fill: 'var(--fg, #111827)' }}>
-              {oku(b.amt)}
+            {/* 前の本からの水位のつなぎ線 */}
+            {i > 0 && (
+              <line x1={placed[i - 1].x + bw} x2={b.x}
+                    y1={yOf(placed[i - 1].level)} y2={yOf(placed[i - 1].level)}
+                    stroke="#9ca3af" strokeWidth={1} strokeDasharray="3 3" />
+            )}
+            <rect x={b.x} y={y} width={bw} height={h} rx={b.total != null ? 4 : 2}
+                  fill={COLOR[b.kind]} />
+            {b.total != null && (
+              <rect x={b.x} y={Math.max(y, H - bottom - 4)} width={bw}
+                    height={Math.min(4, h)} fill={COLOR[b.kind]} />
+            )}
+            <text x={b.x + bw / 2} y={y - (b.gain != null ? 24 : 8)} textAnchor="middle"
+                  style={{ font: b.total != null ? '700 15px sans-serif' : '700 12px sans-serif',
+                           fill: b.total != null ? 'var(--fg, #111827)' : COLOR[b.kind] }}>
+              {show}
             </text>
             {b.gain != null && (
-              <text x={x + bw / 2} y={y - 8} textAnchor="middle"
+              <text x={b.x + bw / 2} y={y - 8} textAnchor="middle"
                     style={{ font: '600 11px sans-serif',
                              fill: b.gain < 0 ? '#c2410c' : b.gain > 0 ? '#15803d' : '#6b7280' }}>
-                {b.gain === 0 ? '±0' : `${b.gain > 0 ? '＋' : '−'}${oku(Math.abs(b.gain))}`}
+                当初比 {b.gain === 0 ? '±0' : `${b.gain > 0 ? '＋' : '−'}${oku(Math.abs(b.gain))}`}
               </text>
             )}
-            <text x={x + bw / 2} y={H - bottom + 16} textAnchor="middle"
+            <text x={b.x + bw / 2} y={H - bottom + 16} textAnchor="middle"
                   style={{ font: '600 12px sans-serif', fill: 'var(--fg, #111827)' }}>
               {b.label}
             </text>
             {b.sub && (
-              <text x={x + bw / 2} y={H - bottom + 31} textAnchor="middle"
+              <text x={b.x + bw / 2} y={H - bottom + 31} textAnchor="middle"
                     style={{ font: '11px sans-serif', fill: '#6b7280' }}>
                 {b.sub}
               </text>
@@ -182,7 +225,6 @@ function FlowChart({ bars }: { bars: FlowBar[] }) {
           </g>
         );
       })}
-      {/* 基線 */}
       <line x1={16} x2={W - 16} y1={H - bottom} y2={H - bottom} stroke="#d1d5db" strokeWidth={1} />
     </svg>
   );
@@ -684,23 +726,37 @@ export default function Dashboard() {
         */}
         {(() => {
           const pre = gain == null ? null : num(t?.base_amt) - gain;
+          const oku = (v: number) =>
+            Math.abs(v) >= 1e8
+              ? `${(v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 1 })}億`
+              : `${Math.round(v / 1e4).toLocaleString()}万`;
+          // 7月実績 → プラスを除く → マイナスを戻す → 値上げ前当初 → 計画（8月・9月）
           const bars: FlowBar[] = [
-            ...(pre != null ? [{
-              label: `${actLabel} 当初`, kind: '当初' as const, amt: pre / months, gain: null,
-              sub: `${num(t?.deals).toLocaleString()}件`,
-            }] : []),
             {
-              label: `${actLabel} 実績`, kind: '実績' as const, amt: num(t?.base_amt) / months,
-              gain: pre == null ? null : gain! / months,
-              sub: gain == null ? `${num(t?.deals).toLocaleString()}件`
-                : `↑${num(act?.up).toLocaleString()} / ↓${num(act?.down).toLocaleString()}`,
+              label: `${actLabel} 実績`, kind: '実績', total: num(t?.base_amt) / months,
+              sub: `${num(t?.deals).toLocaleString()}件`,
             },
+            ...(pre != null ? [
+              {
+                label: '改善額 プラス', kind: 'プラス' as const, step: -gainPlus / months,
+                show: `＋${oku(gainPlus / months)}`,
+                sub: `上がった ${num(act?.up).toLocaleString()}件`,
+              },
+              {
+                label: '改善額 マイナス', kind: 'マイナス' as const, step: -gainMinus / months,
+                show: `−${oku(Math.abs(gainMinus) / months)}`,
+                sub: `下がった ${num(act?.down).toLocaleString()}件`,
+              },
+              {
+                label: `${actLabel} 当初`, kind: '当初' as const, total: pre / months,
+                sub: `${num(t?.deals).toLocaleString()}件`,
+              },
+            ] : []),
+            // 計画は当月（8月）と翌月（9月）だけ。先の月は下の表で見る
             ...([[m0, num(t?.a0_amt), num(data.aMonths?.cnt_m0)],
-                 [m1, num(t?.a1_amt), num(data.aMonths?.cnt_m1)],
-                 [m2, num(t?.a2_amt), num(data.aMonths?.cnt_m2)],
-                 [m3, num(t?.a3_amt), num(data.aMonths?.cnt_m3)]] as [string, number, number][])
+                 [m1, num(t?.a1_amt), num(data.aMonths?.cnt_m1)]] as [string, number, number][])
               .map(([label, amt, cnt]) => ({
-                label: `${label} 計画`, kind: '計画' as const, amt: amt / months,
+                label: `${label} 計画`, kind: '計画' as const, total: amt / months,
                 gain: pre == null ? null : (amt - pre) / months,
                 sub: `申請 ${cnt.toLocaleString()}件`,
               })),
