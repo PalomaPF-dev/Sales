@@ -101,6 +101,9 @@ export default function SurveyImportCard({ anchorYm, onDone }:
               {parsed.p.hasMasterPrice
                 ? ' ・ マスタ単価と実単価を分けて取り込みます'
                 : ' ・ マスタ単価の列が無いため、当月単価をマスタ単価として扱います'}
+              {parsed.p.hasCorpGroup
+                ? ' ・ 企業グループ名を法人として取り込みます'
+                : ' ・ 企業グループ名の列が無いため、得意先を法人として扱います'}
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>

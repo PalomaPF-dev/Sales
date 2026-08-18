@@ -1692,7 +1692,7 @@ function aDateCond(q) {
 /** 文字での検索の対象。名前だけでなくコードや区分も「含む」で引けるようにする */
 const SEARCH_COLS = [
   'corp_name', 'corp_code', 'customer_name', 'customer_code', 'delivery_name',
-  'model_name', 'model_code', 'equip_name', 'category_name',
+  'model_name', 'model_code', 'equip_name', 'category_name', 'industry',
   'branch', 'office', 'sales_person',
 ];
 
@@ -2512,10 +2512,10 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
 
 // ---- マスタ登録（集約表）の取込 ----
 //
-// 案件の土台は出荷実績（法人×品目）。マスタ登録は 得意先×納入先×商品 の
-// 細かい単位なので、法人×品目へ集約してからA基準として重ねる。
+// 案件の土台は価格調査（得意先×商品）。マスタ登録は 得意先×納入先×商品 の
+// 細かい単位なので、得意先×商品へ集約してからA基準として重ねる。
 // 単価は数量で加重平均する（Σ単価×数量 ÷ Σ数量）。
-// 法人は、出荷実績の取込で作った対応表（corp_map）で名前から引く。
+// 突き合わせは得意先コードなので、法人（企業グループ）の分け方は関係しない。
 
 api.post('/agg-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
@@ -2761,7 +2761,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
       plan_qty: 0, plan_money: 0,
       past_amt: 0, past_wgt: 0, past_date: null,
       list_amt: 0, list_wgt: 0,
-      customer_name: null, delivery_name: null, model_name: null,
+      customer_name: null, corp_group: null, industry: null,
+      delivery_name: null, model_name: null,
       equip_name: null, category_name: null, top: Number.NEGATIVE_INFINITY,
     };
     const qty = num(r.qty);
@@ -2794,6 +2795,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     if (qty > a.top) {
       a.top = qty;
       a.customer_name = txt(r.customer_name);
+      a.corp_group = txt(r.corp_group);
+      a.industry = txt(r.industry);
       a.delivery_name = txt(r.delivery_name);
       a.model_name = txt(r.model_name);
       a.equip_name = txt(r.equip_name);
@@ -2802,7 +2805,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     acc.set(key, a);
   }
 
-  const REP = ['customer_name', 'delivery_name', 'model_name', 'equip_name', 'category_name'];
+  const REP = ['customer_name', 'corp_group', 'industry', 'delivery_name',
+    'model_name', 'equip_name', 'category_name'];
   const vals = [...acc.values()].map((a) => [
     a.cust, a.model, a.qty, a.money, a.amt, a.wgt, a.mp_amt, a.mp_wgt,
     a.plan_qty, a.plan_money, a.past_amt, a.past_wgt, a.past_date,
@@ -2839,12 +2843,17 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   // 既にある案件は上書き（決定単価など画面で入れた値は触らないので残る）、
   // 無いものは追加する。突き合わせは 得意先コード×商品コード。
   const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_code', 'customer_name',
-    'delivery_name', 'model_code', 'model_name', 'equip_name', 'category_name', 'list_price',
-    'master_avg_price', 'master_price', 'master_qty', 'master_amount',
+    'industry', 'delivery_name', 'model_code', 'model_name', 'equip_name', 'category_name',
+    'list_price', 'master_avg_price', 'master_price', 'master_qty', 'master_amount',
     'plan_qty', 'plan_amount', 'past_price', 'past_date', 'hist_batch', 'updated_at'];
+  // 法人は企業グループ名。グループ名がそのまま法人のコードになる
+  // （ファイルにグループのコードが無く、名前が法人を一意に指すため）。
+  // グループ名の無いファイルでは、これまでどおり得意先が法人になる。
+  const corpCode = "COALESCE(NULLIF(s.corp_group, ''), s.ent_cd)";
+  const corpName = "COALESCE(NULLIF(s.corp_group, ''), s.customer_name)";
   const sel = `
-    SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, s.ent_cd, s.customer_name,
-           s.ent_cd, s.customer_name, s.delivery_name,
+    SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, ${corpCode}, ${corpName},
+           s.ent_cd, s.customer_name, s.industry, s.delivery_name,
            s.model_code, s.model_name, s.equip_name, s.category_name,
            CASE WHEN s.list_wgt > 0 THEN s.list_amt / s.list_wgt END,
            CASE WHEN s.qty_sum > 0 THEN s.money_sum / s.qty_sum

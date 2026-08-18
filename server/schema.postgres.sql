@@ -260,6 +260,8 @@ CREATE TABLE IF NOT EXISTS act_staging (
   list_wgt   REAL NOT NULL DEFAULT 0,
   -- 案件の行を作るための項目。数量の一番多い行を代表にする
   customer_name TEXT,
+  corp_group    TEXT,
+  industry      TEXT,
   delivery_name TEXT,
   model_name    TEXT,
   equip_name    TEXT,

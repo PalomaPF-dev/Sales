@@ -622,7 +622,7 @@ export default function Deals() {
               const isEditing = editing === d.id;
               return (
                 <tr key={d.id} className={isEditing ? 'editing' : ''}>
-                  <td title={d.corp_code || ''}>
+                  <td title={[d.corp_code, d.industry].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'corp_name') : (
                       <a href={`/corps/${d.corp_code}`}
                          onClick={(e) => { e.preventDefault(); if (d.corp_code) navigate(`/corps/${d.corp_code}`); }}>

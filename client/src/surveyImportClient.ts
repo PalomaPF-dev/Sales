@@ -21,6 +21,8 @@ import { api } from './api';
 export interface SurveyRow {
   customer_code: string;   // 得意先コード（案件のまとまりの単位）
   customer_name: string;
+  corp_group: string;      // 企業グループ名（法人。無いファイルでは空）
+  industry: string;        // 業種名
   delivery_name: string;
   model_code: string;
   model_name: string;
@@ -45,6 +47,7 @@ export interface SurveyParsed {
   monthLabel: string;      // 「7月」
   hasPast: boolean;        // 過去最新単価の列があるか
   hasMasterPrice: boolean; // マスタ単価の列があるか（新しい形式のファイル）
+  hasCorpGroup: boolean;   // 企業グループ名の列があるか（法人として使う）
 }
 
 /** 見出しの表記ゆれを吸収する（全角数字・全角かっこ・空白） */
@@ -139,6 +142,9 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
 
   const at = {
     customer_name: find('得意先名'),
+    // 企業グループ名があれば法人として使う（無いファイルでは得意先が法人になる）
+    corp_group: findLike('企業グループ名') >= 0 ? findLike('企業グループ名') : find('法人名'),
+    industry: find('業種名'),
     delivery_name: find('納入先名'),
     model_name: findLike('品目階層名') >= 0 ? findLike('品目階層名') : find('器種名'),
     equip_name: find('器具区分名'),
@@ -163,6 +169,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     rows.push({
       customer_code: cust,
       customer_name: txt(r, at.customer_name),
+      corp_group: txt(r, at.corp_group),
+      industry: txt(r, at.industry),
       delivery_name: txt(r, at.delivery_name),
       model_code: model,
       model_name: txt(r, at.model_name),
@@ -195,6 +203,7 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     monthLabel: `${month}月`,
     hasPast: pastPriceAt >= 0,
     hasMasterPrice,
+    hasCorpGroup: at.corp_group >= 0,
   };
 }
 
