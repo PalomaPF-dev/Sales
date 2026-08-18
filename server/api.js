@@ -1835,7 +1835,7 @@ api.get('/deals', wrap(async (req, res) => {
     db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
-             ${[1, 2, 3].map((n) => `
+             ${[0, 1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${EFF_PRICE} IS NOT NULL
                        THEN CAST(a_price_m${n} AS FLOAT) * (${effMonthlyQty()})
                             - COALESCE(CAST(master_amount AS FLOAT),

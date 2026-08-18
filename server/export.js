@@ -92,6 +92,7 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     ['決定単価（B基準）', (r) => round(r.b_price)],
 
     // 値上げ幅（A基準 − 実績）と、月あたりの値上げ額
+    [`値上げ幅 ${m0}`, diff('a_price_m0')],
     [`値上げ幅 ${m1}`, diff('a_price_m1')],
     [`値上げ幅 ${m2}`, diff('a_price_m2')],
     [`値上げ幅 ${m3}`, diff('a_price_m3')],

@@ -12,7 +12,8 @@ interface DealsRes {
   rows: Deal[];
   totals: {
     count: number; r2_done: number;
-    // 値上げ額（1か月あたり）の合計。翌月・翌々月・3か月後のA基準それぞれ
+    // 値上げ額（1か月あたり）の合計。当月・翌月・翌々月・3か月後のA基準それぞれ
+    raise_m0: number | null;
     raise_m1: number | null; raise_m2: number | null; raise_m3: number | null;
   };
   page: number;
@@ -340,7 +341,8 @@ export default function Deals() {
         A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
         B基準は実際の決定単価（営業企画・管理者が入力）です。
         A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
-        <strong>値上げ幅</strong>は月ごとに単価が変わるため3か月分を並べ、
+        <strong>値上げ幅</strong>は<strong>{actLabel}の実単価</strong>を比べるもとにした差額で、
+        月ごとに単価が変わるため当月から4か月分を並べ、
         値上げ額（幅×月平均の数量）は絞り込んだ全件の合計を上に出します。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
@@ -444,11 +446,12 @@ export default function Deals() {
             {/* 絞り込んだ全件の値上げ額（1か月あたり）。月ごとに単価が変わるので3つ出す */}
             <span title={`値上げ幅（A基準−${actLabel}の実単価）× ${actLabel}の数量 を、絞り込んだ全件で合計した金額`}>
               {' ・ '}値上げ額（月）合計{' '}
-              {([['m1', data.totals.raise_m1], ['m2', data.totals.raise_m2], ['m3', data.totals.raise_m3]] as const)
+              {([['m0', data.totals.raise_m0], ['m1', data.totals.raise_m1],
+                 ['m2', data.totals.raise_m2], ['m3', data.totals.raise_m3]] as const)
                 .map(([key, v], i) => (
                   <span key={key}>
                     {i > 0 && ' / '}
-                    {ymLabel(meta?.aggMeta?.[key], ['翌月', '翌々月', '3か月後'][i])}{' '}
+                    {ymLabel(meta?.aggMeta?.[key], ['当月', '翌月', '翌々月', '3か月後'][i])}{' '}
                     <b className={Number(v ?? 0) < 0 ? 'shortfall' : 'surplus'}>
                       {v == null ? '—' : `¥${yen(Math.round(Number(v)))}`}
                     </b>
@@ -533,7 +536,10 @@ export default function Deals() {
               </th>
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
               <th className="num grp sep">B基準</th>
-              <th colSpan={3} className="grp sep">値上げ幅（A基準−実績）</th>
+              <th colSpan={4} className="grp sep"
+                  title={`その月のA基準 − ${actLabel}の実単価（価格調査）。実績はいつも${actLabel}が比べるもとです`}>
+                値上げ幅（A基準−{actLabel}実績）
+              </th>
               <th colSpan={2} className="grp sep">値上げ交渉</th>
               <th className="grp"></th>
             </tr>
@@ -560,7 +566,8 @@ export default function Deals() {
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="b_price" className="num sep">決定単価</Th>
-              <th className="num sep">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
+              <th className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</th>
+              <th className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</th>
               <Th col="r2_applied_ym" className="num sep">適用年月</Th>
@@ -634,7 +641,8 @@ export default function Deals() {
                   </td>
 
                   {/* 値上げ幅 = その月のA基準 − 実績の平均出荷単価。単価は月ごとに変わる */}
-                  <td className="num sep">{aDiff(d, d.a_price_m1, ymLabel(meta?.aggMeta?.m1, '翌月'))}</td>
+                  <td className="num sep">{aDiff(d, d.a_price_m0, ymLabel(meta?.aggMeta?.m0, '当月'))}</td>
+                  <td className="num">{aDiff(d, d.a_price_m1, ymLabel(meta?.aggMeta?.m1, '翌月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
 
