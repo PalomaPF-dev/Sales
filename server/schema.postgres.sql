@@ -233,6 +233,17 @@ CREATE TABLE IF NOT EXISTS act_staging (
   -- 現状（1-3月出荷単価×売上数）と売上数の合計。現状単価もこのファイルから取り込む
   base_amt REAL NOT NULL DEFAULT 0,
   qty_sum  REAL NOT NULL DEFAULT 0,
+  cost_amt REAL NOT NULL DEFAULT 0,
+  -- 案件の行をこのファイルから作るための項目。数量の一番多い行を代表にする
+  corp_name    TEXT,
+  customer_name TEXT,
+  model_name   TEXT,
+  equip_name   TEXT,
+  gas_type     TEXT,
+  branch       TEXT,
+  office       TEXT,
+  sales_person TEXT,
+  top_qty      REAL,
   a1_amt   REAL NOT NULL DEFAULT 0,
   a2_amt   REAL NOT NULL DEFAULT 0,
   a3_amt   REAL NOT NULL DEFAULT 0,

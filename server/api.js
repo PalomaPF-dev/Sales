@@ -2649,6 +2649,12 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
 const ACT_SLOTS = 12;
 const actCols = (prefix) => Array.from({ length: ACT_SLOTS }, (_, i) => `${prefix}${i + 1}`);
 
+/**
+ * 価格調査（実単価）の取込。
+ *
+ * このファイルの法人コード・法人名で案件（法人×品目）を作り直す。
+ * 出荷実績（月別履歴）の法人グループは使わない。
+ */
 api.post('/survey-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const filename = String(req.body?.filename ?? '価格調査.xlsx');
@@ -2657,14 +2663,9 @@ api.post('/survey-import/start', wrap(async (req, res) => {
   if (months.length > ACT_SLOTS) {
     return res.status(400).json({ error: `実単価は${ACT_SLOTS}か月分までしか取り込めません` });
   }
-  const { c } = await db.get('SELECT COUNT(*) AS c FROM corp_map');
-  if (!Number(c)) {
-    return res.status(400).json({
-      error: '先に「出荷実績（月別履歴）」を取り込んでください。'
-        + '案件一覧は出荷実績の法人×品目が土台で、価格調査はそこへ重ねます',
-    });
-  }
   await db.run('DELETE FROM act_staging');
+  // 法人の対応表もこのファイルで作り直す（古い法人が残らないようにする）
+  await db.run('DELETE FROM corp_map');
   // 前回の取込の残りを消す。月の並びが変わったとき、古い月の値が残らないようにする
   await db.run(`UPDATE deals SET ${actCols('act_price_').map((c2) => `${c2} = NULL`).join(', ')}
                  WHERE ${actCols('act_price_').map((c2) => `${c2} IS NOT NULL`).join(' OR ')}`);
@@ -2673,7 +2674,8 @@ api.post('/survey-import/start', wrap(async (req, res) => {
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [JSON.stringify({ months, filename, updatedAt: new Date().toISOString() })]
   );
-  res.json({ ok: true });
+  // 今回の取込に含まれない案件を最後に落とすための印
+  res.json({ ok: true, batch: `act-${Date.now()}` });
 }));
 
 api.post('/survey-import/chunk', wrap(async (req, res) => {
@@ -2681,17 +2683,6 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
   if (rows.length > 500) return res.status(400).json({ error: '一度に送れるのは500行までです' });
-
-  // 得意先名 → 法人グループコード（出荷実績の取込で作った対応表）
-  const map = await db.all('SELECT name_key, ent_cd FROM corp_map');
-  const byNorm = new Map(map.map((m) => [m.name_key, m.ent_cd]));
-  const norms = [...byNorm.keys()].sort((a, b) => b.length - a.length);
-  const findEnt = (name) => {
-    const n = normCorpName(name);
-    if (byNorm.has(n)) return byNorm.get(n);
-    for (const cn of norms) if (cn.length >= 3 && n.startsWith(cn)) return byNorm.get(cn);
-    return null;
-  };
 
   const num = (v) => {
     if (v === null || v === undefined || String(v).trim() === '') return 0;
@@ -2705,15 +2696,20 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   const acc = new Map();
   let matched = 0;
   let unmatched = 0;
+  const txt = (v) => (String(v ?? '').trim() || null);
   for (const r of rows) {
-    const ent = findEnt(r.customer_name);
-    if (!ent) { unmatched += 1; continue; }
+    // 法人はファイルの法人コードで決める（法人グループの対応表は使わない）
+    const ent = String(r.corp_code ?? '').trim();
+    if (!ent || isBlankCorp(ent) || isBlankCorp(r.corp_name)) { unmatched += 1; continue; }
     matched += 1;
     const key = `${ent}|${String(r.model_code).trim()}`;
     const a = acc.get(key) ?? {
       ent, model: String(r.model_code).trim(),
       amt: Array(ACT_SLOTS).fill(0), wgt: Array(ACT_SLOTS).fill(0),
-      base: 0, qty: 0,
+      base: 0, qty: 0, cost: 0,
+      corp_name: null, customer_name: null, model_name: null, equip_name: null,
+      gas_type: null, branch: null, office: null, sales_person: null,
+      top: Number.NEGATIVE_INFINITY,
     };
     const qty = num(r.qty);
     const w = qty > 0 ? qty : 1;
@@ -2721,6 +2717,19 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     // 「実際いくらで出たか」と「元がいくらか」が必ず同じ土俵になる
     a.base += num(r.base_price) * qty;
     a.qty += qty;
+    a.cost += num(r.cost_price) * qty;
+    // 法人名・得意先名・支店などは、数量の一番多い行を代表にする
+    if (qty > a.top) {
+      a.top = qty;
+      a.corp_name = txt(r.corp_name);
+      a.customer_name = txt(r.customer_name);
+      a.model_name = txt(r.model_name);
+      a.equip_name = txt(r.equip_name);
+      a.gas_type = txt(r.gas_type);
+      a.branch = txt(r.branch);
+      a.office = txt(r.office);
+      a.sales_person = txt(r.sales_person);
+    }
     const prices = Array.isArray(r.prices) ? r.prices : [];
     for (let i = 0; i < Math.min(prices.length, ACT_SLOTS); i++) {
       const p = num(prices[i]);
@@ -2731,16 +2740,50 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     acc.set(key, a);
   }
 
-  const vals = [...acc.values()].map((a) => [a.ent, a.model, a.base, a.qty, ...a.amt, ...a.wgt]);
+  // 得意先名・法人名 → 法人コード の対応表も、このファイルから作る。
+  // マスタ登録（A基準）の取込は得意先名から法人を引くため、これが無いと重ねられない
+  // （出荷実績の取込に頼らずに済むようにする）。
+  const mapRows = [];
+  const seenKey = new Set();
+  for (const r of rows) {
+    const ent = String(r.corp_code ?? '').trim();
+    if (!ent || isBlankCorp(ent)) continue;
+    for (const name of [r.customer_name, r.corp_name]) {
+      const key = normCorpName(name);
+      if (!key || seenKey.has(key)) continue;
+      seenKey.add(key);
+      mapRows.push([key, ent, String(r.corp_name ?? '').trim()]);
+    }
+  }
+  for (let i = 0; i < mapRows.length; i += 300) {
+    const part = mapRows.slice(i, i + 300);
+    await db.run(
+      `INSERT INTO corp_map (name_key, ent_cd, corp_name)
+       VALUES ${part.map(() => '(?,?,?)').join(',')}
+       ON CONFLICT (name_key) DO UPDATE SET ent_cd = excluded.ent_cd, corp_name = excluded.corp_name`,
+      part.flat()
+    );
+  }
+
+  const REP = ['corp_name', 'customer_name', 'model_name', 'equip_name',
+    'gas_type', 'branch', 'office', 'sales_person'];
+  const vals = [...acc.values()].map((a) => [
+    a.ent, a.model, a.base, a.qty, a.cost, ...a.amt, ...a.wgt,
+    ...REP.map((k) => a[k]), Number.isFinite(a.top) ? a.top : 0,
+  ]);
   if (vals.length) {
-    const cols = ['ent_cd', 'model_code', 'base_amt', 'qty_sum',
-      ...actCols('a').map((c) => `${c}_amt`),
-      ...actCols('w').map((c) => `${c}_sum`)];
+    const sumCols = ['base_amt', 'qty_sum', 'cost_amt',
+      ...actCols('a').map((c) => `${c}_amt`), ...actCols('w').map((c) => `${c}_sum`)];
+    const cols = ['ent_cd', 'model_code', ...sumCols, ...REP, 'top_qty'];
+    // 送りが分かれても、数量の一番多い行の内容が残るようにする
+    const keepTop = (c) =>
+      `${c} = CASE WHEN excluded.top_qty > act_staging.top_qty THEN excluded.${c} ELSE act_staging.${c} END`;
     await db.run(
       `INSERT INTO act_staging (${cols.join(',')})
        VALUES ${vals.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
-         ${cols.slice(2).map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')}`,
+         ${sumCols.map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
+         ${[...REP, 'top_qty'].map(keepTop).join(', ')}`,
       vals.flat()
     );
   }
@@ -2753,17 +2796,47 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   const stamp = now();
   const sets = Array.from({ length: ACT_SLOTS }, (_, i) =>
     `act_price_${i + 1} = CASE WHEN s.w${i + 1}_sum > 0 THEN s.a${i + 1}_amt / s.w${i + 1}_sum END`);
-  // 実単価に加えて、現状（1-3月出荷単価・売上数）も同じファイルの値へ差し替える。
-  // 単価の列が無いファイル（旧形式）では現状はそのまま残す
-  await db.run(`
-    UPDATE deals SET ${sets.join(', ')},
-      master_avg_price = CASE WHEN s.qty_sum > 0 AND s.base_amt > 0
-                              THEN s.base_amt / s.qty_sum ELSE deals.master_avg_price END,
-      master_qty = CASE WHEN s.qty_sum > 0 AND s.base_amt > 0
-                        THEN s.qty_sum ELSE deals.master_qty END,
-      updated_at = ?
-    FROM act_staging s
-    WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
+  const batch = String(req.body?.batch ?? '');
+
+  // 案件（法人×品目）をこのファイルの内容で作り直す。
+  // 既にある行は上書き（決定単価など画面で入れた値は触らないので残る）、
+  // 無い行は追加する。突き合わせは 法人コード×品目コード。
+  const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_name',
+    'model_code', 'model_name', 'equip_name', 'gas_type', 'branch', 'office', 'sales_person',
+    'master_avg_price', 'master_qty', 'cost_price',
+    ...actCols('act_price_'), 'hist_batch', 'updated_at'];
+  const price = (i) => `CASE WHEN s.w${i}_sum > 0 THEN s.a${i}_amt / s.w${i}_sum END`;
+  const sel = `
+    SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, s.ent_cd, s.corp_name, s.customer_name,
+           s.model_code, s.model_name, s.equip_name, s.gas_type, s.branch, s.office, s.sales_person,
+           CASE WHEN s.qty_sum > 0 AND s.base_amt > 0 THEN s.base_amt / s.qty_sum END,
+           CASE WHEN s.qty_sum > 0 AND s.base_amt > 0 THEN s.qty_sum END,
+           CASE WHEN s.qty_sum > 0 AND s.cost_amt > 0 THEN s.cost_amt / s.qty_sum END,
+           ${Array.from({ length: ACT_SLOTS }, (_, i) => price(i + 1)).join(', ')},
+           ${batch ? '?' : 'NULL'}, ?
+      FROM act_staging s
+     WHERE true`;   // SQLiteは INSERT...SELECT の ON CONFLICT を JOIN の ON と読み違えるため、
+                    // 区切りとして WHERE を置く（PostgreSQLでも同じ意味になる）
+  // 上書きする列（agg_key は突き合わせのキーなので除く）
+  const upd = ins.filter((c) => c !== 'agg_key').map((c) => `${c} = excluded.${c}`).join(', ');
+  await db.run(
+    `INSERT INTO deals (${ins.join(',')}) ${sel}
+     ON CONFLICT (agg_key) WHERE agg_key IS NOT NULL DO UPDATE SET ${upd}`,
+    batch ? [batch, stamp] : [stamp]
+  );
+
+  // 今回のファイルに無い案件は落とす（価格調査を正として作り直すため）
+  let removed = 0;
+  if (batch) {
+    for (const sql of [
+      'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE hist_batch IS DISTINCT FROM ?)',
+      'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE hist_batch IS DISTINCT FROM ?)',
+    ]) {
+      try { await db.run(sql, [batch]); } catch { /* 無ければ何もしない */ }
+    }
+    const r = await db.run('DELETE FROM deals WHERE hist_batch IS DISTINCT FROM ?', [batch]);
+    removed = Number(r?.changes ?? 0);
+  }
 
   const anyAct = actCols('act_price_').map((c) => `${c} IS NOT NULL`).join(' OR ');
   const [{ covered }, { total }, { groups }] = await Promise.all([
@@ -2772,8 +2845,9 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     db.get('SELECT COUNT(*) AS groups FROM act_staging'),
   ]);
   await db.run('DELETE FROM act_staging');
+  try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
   invalidateMetaCache();
-  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups) });
+  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), removed });
 }));
 
 // ---- 出荷実績（月別履歴）の取込 ----

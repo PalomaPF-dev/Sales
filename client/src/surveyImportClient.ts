@@ -13,8 +13,17 @@ import { api } from './api';
  */
 
 export interface SurveyRow {
-  customer_name: string;    // 法人の照合に使う（得意先名 → 法人グループ）
+  corp_code: string;        // 法人コード（案件のまとまりの単位）
+  corp_name: string;        // 法人名
+  customer_name: string;    // 得意先名
   model_code: string;
+  model_name: string;
+  equip_name: string;
+  gas_type: string;
+  branch: string;
+  office: string;
+  sales_person: string;
+  cost_price: unknown;      // 実績原価（管理者だけが見る列）
   qty: unknown;             // 1~3月の売上数（3か月分の合計）。加重平均の重みにも使う
   base_price: unknown;      // 1-3月出荷単価（現状単価）。無ければ null
   /** 月ごとの実単価。meta.months と同じ並び。値の無い月は null */
@@ -67,15 +76,20 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
 
+  // 法人はこのファイルの法人コード・法人名で決める（法人グループは使わない）。
+  // 「法人グループコード」のような書き方でも拾えるようにしておく
+  const corpCodeAt = headers.findIndex((h) => h.includes('法人') && h.includes('コード'));
+  const corpNameAt = headers.findIndex((h) => h.includes('法人') && h.includes('名'));
   const col = {
-    customer_code: find('得意先コード'),
-    customer_name: find('得意先名'),
-    model_code: find('商品コード'),
+    法人コード: corpCodeAt,
+    法人名: corpNameAt,
+    得意先名: find('得意先名'),
+    商品コード: find('商品コード'),
   };
   const missing = Object.entries(col).filter(([, i]) => i < 0).map(([k]) => k);
   if (missing.length) {
-    throw new Error(`価格調査の見出しが見つかりません: ${missing.join(', ')}。`
-      + '「得意先コード」「得意先名」「商品コード」のあるシートが必要です');
+    throw new Error(`価格調査の見出しが見つかりません: ${missing.join('・')}。`
+      + '「法人コード」「法人名」「得意先名」「商品コード」のあるシートが必要です');
   }
 
   // 「売上単価4月」のような月ごとの実単価の列を集める
@@ -104,6 +118,19 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   // この列があれば、現状の単価・数量もこのファイルから取り込む
   const baseAt = headers.findIndex((h) => h.includes('出荷単価') && !h.includes('最新'));
 
+  // 案件の行（法人×品目）をこのファイルから作るための項目。
+  // 無い列は空のまま取り込む（一覧の表示が空欄になるだけで、集計には影響しない）
+  const at = {
+    model_name: find('器種名'),
+    equip_name: find('器具区分名'),
+    gas_type: find('ガス種'),
+    branch: find('得意先実績計上支店名'),
+    office: find('得意先実績計上地区名'),
+    sales_person: find('得意先担当者名'),
+    cost_price: find('実績原価'),
+  };
+  const txt = (r: unknown[], i: number) => (i >= 0 ? String(r[i] ?? '').trim() : '');
+
   const num = (v: unknown): number | null => {
     if (v === null || v === undefined || String(v).trim() === '') return null;
     const n = Number(String(v).replace(/[,¥\s]/g, ''));
@@ -114,21 +141,28 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   let skippedRows = 0;
   for (let i = 1; i < grid.length; i++) {
     const r = grid[i] ?? [];
-    const cust = String(r[col.customer_code] ?? '').trim();
-    const model = String(r[col.model_code] ?? '').trim();
-    if (!cust || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
+    const corp = String(r[col.法人コード] ?? '').trim();
+    const model = String(r[col.商品コード] ?? '').trim();
+    if (!corp || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
     const prices = sortedCols.map((mc) => num(r[mc.at]));
-    // 実単価が1つも無い行は送らない（送る量を減らす。集計にも影響しない）
-    if (prices.every((p) => p == null)) continue;
     rows.push({
-      customer_name: String(r[col.customer_name] ?? '').trim(),
+      corp_code: corp,
+      corp_name: String(r[col.法人名] ?? '').trim(),
+      customer_name: String(r[col.得意先名] ?? '').trim(),
       model_code: model,
+      model_name: txt(r, at.model_name),
+      equip_name: txt(r, at.equip_name),
+      gas_type: txt(r, at.gas_type),
+      branch: txt(r, at.branch),
+      office: txt(r, at.office),
+      sales_person: txt(r, at.sales_person),
+      cost_price: at.cost_price >= 0 ? r[at.cost_price] : null,
       qty: qtyAt >= 0 ? r[qtyAt] : null,
       base_price: baseAt >= 0 ? r[baseAt] : null,
       prices,
     });
   }
-  if (!rows.length) throw new Error('実単価の入った行がありません');
+  if (!rows.length) throw new Error('取り込める行がありません');
 
   return {
     rows,
@@ -158,7 +192,7 @@ export async function sendSurveyImport(
   filename: string,
   opts: { onProgress?: (done: number, total: number) => void }
 ): Promise<SurveyResult> {
-  await api('/survey-import/start', {
+  const started = await api<{ batch?: string }>('/survey-import/start', {
     method: 'POST',
     body: JSON.stringify({ filename, months: parsed.months }),
   });
@@ -173,8 +207,8 @@ export async function sendSurveyImport(
     unmatched += r.unmatched;
     opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
   }
-  const fin = await api<{ covered: number; total: number }>('/survey-import/finish', {
-    method: 'POST', body: JSON.stringify({}),
+  const fin = await api<{ covered: number; total: number; removed?: number }>('/survey-import/finish', {
+    method: 'POST', body: JSON.stringify({ batch: started.batch }),
   });
   return { matched, unmatched, covered: fin.covered, total: fin.total };
 }

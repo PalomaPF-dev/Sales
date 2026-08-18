@@ -80,10 +80,12 @@ export default function SurveyImportCard({ anchorYm, onDone }:
         <strong>月ごとの実際の単価</strong>（「売上単価4月」などの列）を取り込みます。
         A基準は<strong>値上げの計画</strong>、こちらは<strong>実際いくらで出たか</strong>なので、
         ダッシュボードの「まとめ」で計画と実績を月の流れで比べられます。
-        価格調査は 得意先×納入先×商品 の細かい単位なので、
-        <strong>法人×品目へ集約（数量で加重平均）して</strong>案件に重ねます。
+        価格調査は 得意先×納入先×商品 の細かい単位なので、ファイルの<strong>法人コード</strong>で
+        <strong>法人×品目へ集約（数量で加重平均）します</strong>。
+        <strong>この取込が案件一覧の土台</strong>で、ファイルに無い案件は削除されます
+        （決定単価（B基準）など画面で入れた値は、残る案件ではそのまま残ります）。
         取り込むたびに前回の実単価は入れ替わります（月を足したファイルをそのまま取り込めます）。
-        先に「出荷実績」を取り込んでおいてください。
+        <strong>この取込を先に行い、そのあとにマスタ登録（A基準）</strong>を重ねてください。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />

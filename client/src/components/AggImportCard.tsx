@@ -79,11 +79,12 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       <p className="pt-note" style={{ marginTop: 0 }}>
         <strong>A基準（向こう3か月の申請単価）</strong>を取り込みます。
         マスタ登録は 得意先×納入先×商品 の細かい単位なので、
-        <strong>法人×品目へ集約（数量で加重平均）して</strong>、出荷実績の案件に重ねます。
+        <strong>法人×品目へ集約（数量で加重平均）して</strong>、案件に重ねます。
         「登録日」のあるファイルなら、A基準それぞれの<strong>承認日</strong>も一緒に入ります
         （まとまりの中で一番新しい日）。「ＷＦ申請番号」の列があれば<strong>稟議No</strong>も入り、
         案件一覧のA基準にカーソルを合わせると見えます。
-        先に「出荷実績」を取り込んでおいてください。決定単価（B基準）など画面で入れた値は残ります。
+        先に「価格調査（実単価）」を取り込んでおいてください（案件の土台になります）。
+        決定単価（B基準）など画面で入れた値は残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />
