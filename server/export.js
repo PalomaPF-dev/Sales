@@ -174,11 +174,19 @@ export function buildDashboardWorkbook(data, opts = {}) {
   cond.push(['表示範囲', data.scope?.label ?? '']);
   cond.push(['品目件数（価格調査）', n(data.histTotals?.deals)]);
   cond.push(['当月実績の金額（土台）', round(base)]);
-  cond.push(['当月の金額（マスタ）＝A基準の比較のもと', round(mpAmt)]);
+  cond.push(['当月の金額（マスタ）', round(mpAmt)]);
   cond.push(['見積ぶんなど（合計−マスタ）', round(base - mpAmt)]);
-  if (n(data.actuals?.[0]?.amount) > 0) {
-    cond.push(['うち過去最新単価のある品目の金額（合計）', round(n(data.actuals[0].amount))]);
-    cond.push(['同 金額（マスタ）', round(n(data.actuals[0].mstAmount))]);
+  {
+    const a = data.actuals?.[0];
+    if (a) {
+      const g = n(a.gainPlus) + n(a.gainMinus);
+      cond.push(['値上げ前当初（金額（合計）−売上改善額）', round(base - g)]);
+      cond.push(['売上改善額 プラス', round(n(a.gainPlus))]);
+      cond.push(['売上改善額 マイナス', round(n(a.gainMinus))]);
+      cond.push(['売上改善額 合計', round(g)]);
+      cond.push(['うち過去最新単価のある品目の金額（合計）', round(n(a.amount))]);
+      cond.push(['同 金額（マスタ）', round(n(a.mstAmount))]);
+    }
   }
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
@@ -188,34 +196,28 @@ export function buildDashboardWorkbook(data, opts = {}) {
     '月', '区分', '件数', '上がった件数', '単価同じ件数',
     '比較のもと（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
   ]];
+  const act = data.actuals?.[0];
+  const actYm = String(act?.ym ?? '当月');
+  // 売上改善額（プラス・マイナスの合計）。金額（合計）から引くと値上げ前当初になる
+  const gain = act ? n(act.gainPlus) + n(act.gainMinus) : null;
   const summaryRows = [
-    // 土台。取り込んだ当月の金額そのもの（全品目）。比べる相手は無い
-    { ym: String(data.actuals?.[0]?.ym ?? '当月'), kind: '土台',
-      deals: n(t.deals), b: '', amt: base, up: '', same: '' },
-    // マスタ分。値決めどおりに出た分で、A基準の比較のもとになる
+    // 値上げ前当初。当月の金額（合計）から売上改善額を引いた額
+    ...(gain != null ? [{
+      ym: `${actYm} 値上げ前当初`, kind: '当初',
+      deals: n(t.deals), b: '', amt: base - gain, up: '', same: '',
+    }] : []),
+    // 実績。取り込んだ当月の金額そのもの。当初との差が売上改善額
+    { ym: actYm, kind: '実績', deals: n(t.deals),
+      b: gain == null ? '' : base - gain, amt: base,
+      up: gain == null ? '' : n(act.up), same: gain == null ? '' : n(act.same) },
+    // 参考。値決めどおりに出た分（実績との差が見積ぶんなど）
     ...(mpAmt > 0 ? [{
-      ym: `${String(data.actuals?.[0]?.ym ?? '当月')}（マスタ）`, kind: 'マスタ',
+      ym: `${actYm}（マスタ）`, kind: '参考',
       deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
     }] : []),
-    // 実績。過去単価のある品目だけが対象で、金額は「金額（合計）のうちその品目ぶん」
-    ...(data.actuals ?? []).map((a) => ({
-      ym: `過去→${String(a.ym).slice(5)}`, kind: '実績', deals: n(a.deals),
-      b: n(a.base), amt: n(a.amount), up: n(a.up), same: n(a.same),
-    })),
-    // 参考1。値決め分だけで見た場合（金額（マスタ）とマスタ分の数量）
-    ...(data.actuals ?? []).filter((a) => n(a.mstAmount) > 0).map((a) => ({
-      ym: `過去→${String(a.ym).slice(5)}（マスタ）`, kind: '参考', deals: n(a.deals),
-      b: n(a.mstBase), amt: n(a.mstAmount), up: n(a.up), same: n(a.same),
-    })),
-    // 参考2。同じ品目を「マスタ単価 × 数量」で戻した場合（単価どうしの比較）
-    ...(data.actuals ?? []).filter((a) => n(a.mpAmount) > 0).map((a) => ({
-      ym: `過去→${String(a.ym).slice(5)}（単価）`, kind: '参考', deals: n(a.deals),
-      b: n(a.mstBase), amt: n(a.mpAmount), up: n(a.up), same: n(a.same),
-    })),
-    // A基準（計画）
-    // 計画。比較のもとはマスタ分の金額（A基準はここに対して当てる）
+    // 計画。比較のもとは当月の金額（合計）
     ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
-      ym, kind: '計画', deals: n(t.deals), b: mpAmt || base, amt, up: '', same: '',
+      ym, kind: '計画', deals: n(t.deals), b: base, amt, up: '', same: '',
     })),
   ];
   for (const r of summaryRows) {
@@ -238,8 +240,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const abActYms = Array.isArray(data.abActYms) ? data.abActYms : [];
   const head = (first, withBsim) => [
     first, '件数', '数量（月平均）',
-    '金額 合計（月あたり）',
-    '現状額 マスタ（月あたり）',
+    '現状額 合計（月あたり）',
+    'うちマスタ（月あたり）',
     ...abActYms.flatMap((ym) => [
       `${ym} 実績額（月あたり）`, `${ym} 実績の現状額（月あたり）`,
       `${ym} 値上げ額（月あたり）`, `${ym} 値上げ率`,
@@ -252,13 +254,13 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ...(withBsim ? ['想定B基準（月あたり）'] : []),
   ];
   const line = (r, withBsim) => {
-    // 比較のもとはマスタ分（値決めどおりに出た分）。A基準はここに対して当てる
-    const b = n(r.mp_amt);
+    // 比較のもとは当月の金額（合計）。A基準の値上げ幅はここへ足す
+    const b = n(r.base_amt);
     const rate = (amt) => (b > 0 ? round(((amt - b) / b) * 100, 1) / 100 : '');
     return [
       r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
-      round(n(r.base_amt) / months),
       round(b / months),
+      round(n(r.mp_amt) / months),
       ...abActYms.flatMap((_, i) => {
         const amt = r[`act_amt_${i + 1}`];
         if (amt == null) return ['', '', '', '', '', ''];   // その月の実績が無い

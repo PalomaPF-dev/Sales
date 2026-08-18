@@ -1291,18 +1291,21 @@ async function dashboardData(query, user) {
   // 種別の分かれていない古い取込では合計と同じ値になる。
   const planQty = `COALESCE(${f('plan_qty')}, ${f('master_qty')}, 0)`;
   const planAmt = `COALESCE(${f('plan_amount')}, ${effAmt})`;
+  // 計画額の土台は 7月金額（合計）そのもの。値上げ幅（値決めどうしの差）を
+  // ここへ足す形にすることで、実績の金額と同じ土俵でA基準と比べられる。
+  const planBase = effAmt;
 
   // A基準（計画）は、マスタ承認のある品目にだけ充てる。
   // 承認の無い品目は現状のまま（値上げ0）として、土台の金額はそのまま残す。
   //
-  // 値上げ幅は「A基準 − マスタ単価」× マスタ分の数量。値決めどうしの比較なので、
-  // 実単価（見積ぶんで下がる）と混ざらない。その幅をマスタ分の金額に足すことで、
-  // 比較のもと（金額（マスタ）の合計）を崩さずに計画額を出せる。
+  // 値上げ幅は「A基準 − マスタ単価」× マスタ分の数量。単価どうしの比較なので、
+  // 実単価（見積ぶんで下がる）と混ざらない。その幅を 7月金額（合計）に足すことで、
+  // 土台（実績の金額）を崩さずに計画額を出せる。
   const approved = aDateCond(query);
   const aGain = (n) => `(${f(`a_price_m${n}`)} - (${mPrice})) * (${planQty})`;
   const aCol = (n) =>
     `CASE WHEN a_price_m${n} > 0${approved ? ` AND ${approved}` : ''}
-          THEN ${planAmt} + ${aGain(n)} ELSE ${planAmt} END`;
+          THEN ${planBase} + ${aGain(n)} ELSE ${planBase} END`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -1343,12 +1346,20 @@ async function dashboardData(query, user) {
   const hasBoth = `${hasPast} AND (${mPrice}) IS NOT NULL`;
   const actUp = `${hasBoth} AND (${mPrice}) - ${f('past_price')} >= 0.5`;
   const actSame = `${hasBoth} AND ABS((${mPrice}) - ${f('past_price')}) < 0.5`;
+  // 売上改善額 =（当月のマスタ単価 − 過去最新単価）× マスタ分の数量。
+  // 上がった品目（プラス）と下がった品目（マイナス）に分けて足す。
+  // 7月金額（合計）からこの改善額を引いたものが「値上げ前当初」の金額になる。
+  const actDown = `${hasBoth} AND (${mPrice}) - ${f('past_price')} <= -0.5`;
+  const gainExpr = `((${mPrice}) - ${f('past_price')}) * (${planQty})`;
   const actAgg = `
     SUM(CASE WHEN ${hasPast} THEN ${effAmt} END) AS act_amt_1,
     SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${effQty}) END) AS act_base_1,
     SUM(CASE WHEN ${hasPast} THEN ${planAmt} END) AS act_mst_1,
     SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${planQty}) END) AS act_mstbase_1,
     SUM(CASE WHEN ${hasBoth} THEN (${mPrice}) * (${planQty}) END) AS act_mp_1,
+    SUM(CASE WHEN ${actUp} THEN ${gainExpr} ELSE 0 END) AS gain_plus_1,
+    SUM(CASE WHEN ${actDown} THEN ${gainExpr} ELSE 0 END) AS gain_minus_1,
+    SUM(CASE WHEN ${actDown} THEN 1 ELSE 0 END) AS act_down_1,
     SUM(CASE WHEN ${hasPast} THEN 1 ELSE 0 END) AS act_cnt_1,
     SUM(CASE WHEN ${actUp} THEN 1 ELSE 0 END) AS act_up_1,
     SUM(CASE WHEN ${actSame} THEN 1 ELSE 0 END) AS act_same_1`;
@@ -1371,7 +1382,7 @@ async function dashboardData(query, user) {
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
     SUM(CASE WHEN b_price IS NOT NULL OR a_price_m3 > 0
-             THEN ${effAmt} + ${bsimGain} ELSE ${effAmt} END) AS bsim_amt,
+             THEN ${planBase} + ${bsimGain} ELSE ${planBase} END) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows${abAct}`;
   // 土台は価格調査の全品目。A基準の有無でも、当月の売上の有無でも絞らない
   // （当月に売上の無い品目は金額0として数える）。
@@ -1430,8 +1441,8 @@ async function dashboardData(query, user) {
     'bsim_amt', 'b_rows',
     ...Array.from({ length: actSlot }, (_, i) =>
       [`act_amt_${i + 1}`, `act_base_${i + 1}`, `act_mst_${i + 1}`, `act_mstbase_${i + 1}`,
-        `act_mp_${i + 1}`, `act_cnt_${i + 1}`,
-        `act_up_${i + 1}`, `act_same_${i + 1}`]).flat()];
+        `act_mp_${i + 1}`, `gain_plus_${i + 1}`, `gain_minus_${i + 1}`,
+        `act_cnt_${i + 1}`, `act_up_${i + 1}`, `act_same_${i + 1}`, `act_down_${i + 1}`]).flat()];
   const abTotals = abByEquip.reduce((acc, r) => {
     for (const k of sumKeys) acc[k] = Number(acc[k] ?? 0) + Number(r[k] ?? 0);
     return acc;
@@ -1453,6 +1464,10 @@ async function dashboardData(query, user) {
     mstBase: Number(actMonths?.act_mstbase_1 ?? 0),
     // 参考2。同じ品目を「マスタ単価 × 数量」で戻した金額（単価どうしの比較）
     mpAmount: Number(actMonths?.act_mp_1 ?? 0),
+    // 売上改善額の内訳。上がった品目ぶんと、下がった品目ぶん
+    gainPlus: Number(actMonths?.gain_plus_1 ?? 0),
+    gainMinus: Number(actMonths?.gain_minus_1 ?? 0),
+    down: Number(actMonths?.act_down_1 ?? 0),
     deals: Number(actMonths?.act_cnt_1 ?? 0),
     // 内訳。値上げがまだ反映されていない（単価同じ）も件数で分かるようにする
     up: Number(actMonths?.act_up_1 ?? 0),
