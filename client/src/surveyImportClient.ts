@@ -22,6 +22,7 @@ export interface SurveyRow {
   list_price: unknown;     // 標準単価
   qty: unknown;            // 当月の数量
   price: unknown;          // 当月の単価
+  amount: unknown;         // 当月の金額（合計を実績と合わせるためそのまま送る）
   past_price: unknown;     // 過去最新単価（値上げ前）
   past_date: string | null;// 過去最新受注日
 }
@@ -83,6 +84,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   // 「7月数量」「7月単価」から当月を決める（月は見出しから読む）
   const qtyAt = headers.findIndex((h) => /^\d{1,2}月数量$/.test(h));
   const priceAt = headers.findIndex((h) => /^\d{1,2}月単価$/.test(h));
+  // 金額はファイルの値をそのまま使う（単価×数量で戻すと端数がずれる）
+  const amountAt = headers.findIndex((h) => /^\d{1,2}月金額$/.test(h));
   if (qtyAt < 0 || priceAt < 0) {
     throw new Error('「7月数量」「7月単価」のような当月の列がありません。'
       + '価格調査（当月実績）のファイルをお使いください');
@@ -132,6 +135,7 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       list_price: at.list_price >= 0 ? r[at.list_price] : null,
       qty: r[qtyAt],
       price: r[priceAt],
+      amount: amountAt >= 0 ? r[amountAt] : null,
       past_price: pastPriceAt >= 0 ? r[pastPriceAt] : null,
       past_date: pastDateAt >= 0 ? toYmd(r[pastDateAt]) : null,
     });

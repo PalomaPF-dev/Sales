@@ -68,6 +68,7 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     ['過去最新受注日', (r) => r.past_date],
     [`実単価（${actLabel}）`, (r) => round(effPrice(r))],
     [`数量（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
+    [`金額（${actLabel}）`, (r) => round(r.master_amount)],
     ['上がり幅（実単価−過去）', (r) => {
       if (effPrice(r) == null || r.past_price == null) return '';
       return round(Number(effPrice(r)) - Number(r.past_price));

@@ -1254,7 +1254,10 @@ function scopeInfo(user) {
 async function dashboardData(query, user) {
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
   const { where, params: p } = dealFilters(query, user);
-  const andWhere = (cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
+  const andWhere = (cond) => {
+    if (!cond) return where;
+    return where ? `${where} AND ${cond}` : `WHERE ${cond}`;
+  };
 
   // 支店別・営業所別・法人別の値上げ額。
   //   現状額 = 実績の平均出荷単価 × 数量の合計（値上げしなかった場合）
@@ -1276,9 +1279,15 @@ async function dashboardData(query, user) {
   // こうすると「合計して ÷months で月あたりを出す」これまでの作りのまま正しい値になる。
   const effPrice = f('master_avg_price');
   const effQty = f('master_qty');
+  // 現状額は当月の金額そのもの（単価×数量で戻すと端数がずれ、実績の合計と合わなくなる）
+  const effAmt = `COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)`;
 
+  // A基準（計画）は、マスタ承認のある品目にだけ充てる。
+  // 承認の無い品目は現状のまま（値上げ0）として、土台の金額はそのまま残す。
+  const approved = aDateCond(query);
   const aCol = (n) =>
-    `(CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${effPrice} END) * (${effQty})`;
+    `CASE WHEN a_price_m${n} > 0${approved ? ` AND ${approved}` : ''}
+          THEN ${f(`a_price_m${n}`)} * (${effQty}) ELSE ${effAmt} END`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -1309,7 +1318,7 @@ async function dashboardData(query, user) {
   const actUp = `${hasPast} AND ${f('master_avg_price')} - ${f('past_price')} >= 0.5`;
   const actSame = `${hasPast} AND ABS(${f('master_avg_price')} - ${f('past_price')}) < 0.5`;
   const actAgg = `
-    SUM(CASE WHEN ${hasPast} THEN ${f('master_avg_price')} * (${effQty}) END) AS act_amt_1,
+    SUM(CASE WHEN ${hasPast} THEN ${effAmt} END) AS act_amt_1,
     SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${effQty}) END) AS act_base_1,
     SUM(CASE WHEN ${hasPast} THEN 1 ELSE 0 END) AS act_cnt_1,
     SUM(CASE WHEN ${actUp} THEN 1 ELSE 0 END) AS act_up_1,
@@ -1319,34 +1328,37 @@ async function dashboardData(query, user) {
   const ab = `
     COUNT(*) AS deals,
     SUM(${effQty}) AS qty,
-    SUM((${effPrice}) * (${effQty})) AS base_amt,
+    SUM(${effAmt}) AS base_amt,
     SUM(${aCol(0)}) AS a0_amt,
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
-    SUM((${bsimUnit}) * (${effQty})) AS bsim_amt,
+    SUM(CASE WHEN b_price IS NOT NULL OR a_price_m3 > 0
+             THEN (${bsimUnit}) * (${effQty}) ELSE ${effAmt} END) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows${abAct}`;
-  const abCond = `a_price_m3 IS NOT NULL AND (${effPrice}) IS NOT NULL AND (${effQty}) > 0`;
+  // 土台は価格調査の全品目。A基準の有無でも、当月の売上の有無でも絞らない
+  // （当月に売上の無い品目は金額0として数える）。
+  // こうすると現状額の合計が、取り込んだ当月金額の合計とそのまま一致する。
+  const abCond = '';
 
   // 月別のマスタ登録（A基準）。当月〜3か月後それぞれで、
   // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
   // 承認日などの絞り込み（dealFilters）はここにも効く。
+  const planned = (n) => `a_price_m${n} > 0${approved ? ` AND ${approved}` : ''}`;
   const monthAgg = [0, 1, 2, 3].map((n) => `
-    SUM(CASE WHEN a_price_m${n} > 0 THEN 1 ELSE 0 END) AS cnt_m${n},
-    SUM(CASE WHEN a_price_m${n} > 0 AND (${effPrice}) IS NOT NULL
-         THEN (${f(`a_price_m${n}`)} - (${effPrice})) * COALESCE(${effQty}, 0) END) AS raise_m${n}`)
+    SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
+    SUM(CASE WHEN ${planned(n)} AND (${effPrice}) IS NOT NULL
+         THEN ${f(`a_price_m${n}`)} * (${effQty}) - ${effAmt} END) AS raise_m${n}`)
     .join(',')
     // 想定B基準（法人ごとの妥結見通し）にした場合の値上げ額。A基準との比較に使う
     + `,
-    SUM(CASE WHEN a_price_m3 > 0 AND (${effPrice}) IS NOT NULL
-         THEN ((${bsimUnit}) - (${effPrice})) * COALESCE(${effQty}, 0) END) AS raise_bsim,
+    SUM(CASE WHEN ${planned(3)} AND (${effPrice}) IS NOT NULL
+         THEN (${bsimUnit}) * (${effQty}) - ${effAmt} END) AS raise_bsim,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
   // （承認日・A基準の有無）は掛けない。マスタ登録件数の母数もこれを使う。
   const pureQuery = { ...query };
-  delete pureQuery.aDateYm;
-  delete pureQuery.aDateOp;
   delete pureQuery.aState;
   const pure = dealFilters(pureQuery, user);
 
@@ -1360,16 +1372,16 @@ async function dashboardData(query, user) {
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
     db.get(`SELECT ${monthAgg},
-              SUM(CASE WHEN a_price_m3 IS NOT NULL THEN 1 ELSE 0 END) AS covered
+              SUM(CASE WHEN ${planned(3)} THEN 1 ELSE 0 END) AS covered
             FROM deal_calc ${planJoin} ${where}`, p),
     db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
-             GROUP BY equip_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC`, p),
+             GROUP BY equip_name ORDER BY SUM(${effAmt}) DESC`, p),
     db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
              GROUP BY branch`, p),
     // 法人はすべて返す（画面でタブに分けて出すため）。
     // まとまりの数は法人グループの数（千件に満たない）なので、上限は付けない
     db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
-             GROUP BY corp_name ORDER BY SUM((${effPrice}) * (${effQty})) DESC`, p),
+             GROUP BY corp_name ORDER BY SUM(${effAmt}) DESC`, p),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
   abByBranch.sort((a, b) => comparePref(a.name, b.name));
@@ -1638,6 +1650,17 @@ function dealOrder(q, mon = null) {
   return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
 }
 
+/**
+ * 承認日の条件をSQLの断片で返す（値は埋め込まない形にできないため直に入れる）。
+ * 「2026-08以降に承認された単価だけを計画として充てる」といった使い方をする。
+ * 承認日の無いA基準は、どちらの向きでも計画に含めない。
+ */
+function aDateCond(q) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(q.aDateYm ?? ''))) return '';
+  const first = `${q.aDateYm}-01`;
+  return q.aDateOp === 'before' ? `a_date_m3 < '${first}'` : `a_date_m3 >= '${first}'`;
+}
+
 function dealFilters(q, user) {
   const where = [];
   const params = [];
@@ -1668,9 +1691,10 @@ function dealFilters(q, user) {
   if (q.aState === 'has') where.push('a_price_m3 IS NOT NULL');
   else if (q.aState === 'none') where.push('a_price_m3 IS NULL');
 
-  // 承認日での絞り込み。「2026-08以降だけ見る（それより前は値上げ前の単価）」
-  // といった使い方をする。承認日の無い行は、どちらの向きでも対象外になる。
-  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(String(q.aDateYm ?? ''))) {
+  // 承認日は案件を減らす絞り込みには使わない（土台の品目はそのまま残す）。
+  // ダッシュボードでは aDateCond() で「計画を充てるかどうか」の条件に使い、
+  // 案件一覧では aState と同じように a_date_m3 で絞る用途だけに残す。
+  if (q.aDateFilter === 'row' && /^\d{4}-(0[1-9]|1[0-2])$/.test(String(q.aDateYm ?? ''))) {
     const first = `${q.aDateYm}-01`;
     where.push(q.aDateOp === 'before' ? 'a_date_m3 < ?' : 'a_date_m3 >= ?');
     params.push(first);
@@ -1798,8 +1822,9 @@ api.get('/deals', wrap(async (req, res) => {
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
              ${[1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${EFF_PRICE} IS NOT NULL
-                       THEN (CAST(a_price_m${n} AS FLOAT) - ${EFF_PRICE})
-                            * (${effMonthlyQty()})
+                       THEN CAST(a_price_m${n} AS FLOAT) * (${effMonthlyQty()})
+                            - COALESCE(CAST(master_amount AS FLOAT),
+                                       ${EFF_PRICE} * (${effMonthlyQty()}), 0)
                   END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -2683,7 +2708,7 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     matched += 1;
     const key = `${cust}|${model}`;
     const a = acc.get(key) ?? {
-      cust, model, qty: 0, amt: 0, wgt: 0, past_amt: 0, past_wgt: 0, past_date: null,
+      cust, model, qty: 0, money: 0, amt: 0, wgt: 0, past_amt: 0, past_wgt: 0, past_date: null,
       list_amt: 0, list_wgt: 0,
       customer_name: null, delivery_name: null, model_name: null,
       equip_name: null, category_name: null, top: Number.NEGATIVE_INFINITY,
@@ -2694,6 +2719,9 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     const past = num(r.past_price);
     const list = num(r.list_price);
     a.qty += qty;
+    // 金額はファイルの値をそのまま足す。単価×数量で戻すと端数がずれて、
+    // 全体の合計が実績と合わなくなるため
+    a.money += num(r.amount) > 0 ? num(r.amount) : price * qty;
     if (price > 0) { a.amt += price * w; a.wgt += w; }
     if (past > 0) { a.past_amt += past * w; a.past_wgt += w; }
     if (list > 0) { a.list_amt += list * w; a.list_wgt += w; }
@@ -2714,11 +2742,11 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
 
   const REP = ['customer_name', 'delivery_name', 'model_name', 'equip_name', 'category_name'];
   const vals = [...acc.values()].map((a) => [
-    a.cust, a.model, a.qty, a.amt, a.wgt, a.past_amt, a.past_wgt, a.past_date,
+    a.cust, a.model, a.qty, a.money, a.amt, a.wgt, a.past_amt, a.past_wgt, a.past_date,
     a.list_amt, a.list_wgt, ...REP.map((k) => a[k]), Number.isFinite(a.top) ? a.top : 0,
   ]);
   if (vals.length) {
-    const sumCols = ['qty_sum', 'price_amt', 'price_wgt', 'past_amt', 'past_wgt'];
+    const sumCols = ['qty_sum', 'money_sum', 'price_amt', 'price_wgt', 'past_amt', 'past_wgt'];
     const cols = ['ent_cd', 'model_code', ...sumCols, 'past_date',
       'list_amt', 'list_wgt', ...REP, 'top_qty'];
     // 送りが分かれても、数量の一番多い行の内容と、一番新しい受注日が残るようにする
@@ -2748,14 +2776,16 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   // 無いものは追加する。突き合わせは 得意先コード×商品コード。
   const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_code', 'customer_name',
     'delivery_name', 'model_code', 'model_name', 'equip_name', 'category_name', 'list_price',
-    'master_avg_price', 'master_qty', 'past_price', 'past_date', 'hist_batch', 'updated_at'];
+    'master_avg_price', 'master_qty', 'master_amount',
+    'past_price', 'past_date', 'hist_batch', 'updated_at'];
   const sel = `
     SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, s.ent_cd, s.customer_name,
            s.ent_cd, s.customer_name, s.delivery_name,
            s.model_code, s.model_name, s.equip_name, s.category_name,
            CASE WHEN s.list_wgt > 0 THEN s.list_amt / s.list_wgt END,
-           CASE WHEN s.price_wgt > 0 THEN s.price_amt / s.price_wgt END,
-           s.qty_sum,
+           CASE WHEN s.qty_sum > 0 THEN s.money_sum / s.qty_sum
+                WHEN s.price_wgt > 0 THEN s.price_amt / s.price_wgt END,
+           s.qty_sum, s.money_sum,
            CASE WHEN s.past_wgt > 0 THEN s.past_amt / s.past_wgt END,
            s.past_date,
            ${batch ? '?' : 'NULL'}, ?

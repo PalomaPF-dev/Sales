@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS deals (
   hist_qty        REAL,   -- 実績の数量合計（法人×品目・期間全体）
   master_qty      REAL,   -- マスタ登録側の数量合計（法人×品目に集約したもの）
   master_avg_price REAL,  -- 現状単価（価格調査の当月単価。数量で加重平均）
+  -- 当月の金額そのもの（単価×数量で戻すと端数がずれるため、合計が合うように持つ）
+  master_amount   REAL,
   past_price      REAL,   -- 過去最新単価（値上げ前。価格調査の比較用）
   past_date       TEXT,   -- 過去最新受注日（過去最新単価が出た日）
   act_price_1  REAL,   -- 価格調査の実単価（1番目の月。月の並びは settings の actual_meta）
@@ -228,6 +230,7 @@ CREATE TABLE IF NOT EXISTS act_staging (
   model_code TEXT NOT NULL,
   -- 当月の数量と、加重平均を出すための「単価×数量」と重み
   qty_sum    REAL NOT NULL DEFAULT 0,
+  money_sum  REAL NOT NULL DEFAULT 0,
   price_amt  REAL NOT NULL DEFAULT 0,
   price_wgt  REAL NOT NULL DEFAULT 0,
   -- 過去最新単価（値上げ前）と、その受注日（まとまりの中で一番新しい日）
