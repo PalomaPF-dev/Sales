@@ -477,12 +477,13 @@ export default function Dashboard() {
 
       <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
-          <strong>実績</strong>は価格調査の実際の単価、<strong>計画</strong>はA基準（申請単価）です。
-          どちらも<strong>現状額</strong>（値上げしなかった場合）と比べ、その差が<strong>値上げ額</strong>、
-          現状額に対する割合が<strong>値上げ率</strong>になります。
-          金額はすべて<strong>1か月あたり</strong>、数量は実績のまま固定しています。
-          実績の行は、その月に実単価のある案件だけで現状額も出しています
-          （売上の無い品目を混ぜると値上げ額が実態と合わなくなるため）。
+          <strong>土台</strong>は{actLabel}の実績そのもの（取り込んだ金額の合計）です。
+          <strong>実績</strong>は過去最新単価（値上げ前）から{actLabel}までに実際に上がった分、
+          <strong>計画</strong>はA基準（申請単価）どおりに上がった場合です。
+          どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
+          実績の行は<strong>過去最新単価のある品目だけ</strong>が対象のため、件数と金額が土台より小さくなります
+          （比べる相手の無い品目は値上げ額を出せないため）。
+          計画の行は全品目が対象で、承認のある品目だけA基準に置き換えています。
         </p>
         <table className="tbl">
           <thead>
@@ -493,7 +494,9 @@ export default function Dashboard() {
               <th style={nums} title="実績の月だけ。現状より単価が上がった件数と、単価が変わっていない件数">
                 内訳<br /><small>上がった / 同じ</small>
               </th>
-              <th style={nums}>現状額<br /><small>月あたり</small></th>
+              <th style={nums} title="実績の行は過去最新単価×数量、計画の行は当月の実績額">
+                比較のもと<br /><small>月あたり</small>
+              </th>
               <th style={nums}>金額<br /><small>月あたり</small></th>
               <th style={nums}>値上げ額<br /><small>月あたり</small></th>
               <th style={nums} title="値上げ額 ÷ 現状額">値上げ率</th>
@@ -506,27 +509,35 @@ export default function Dashboard() {
               計画どおりに上がっているかをその場で見比べられる。
             */}
             {[
+              // 土台。取り込んだ当月の金額そのもの（全品目）。比較はしない
+              {
+                key: 'base', ym: actYm || '当月', kind: '土台' as const,
+                deals: num(t?.deals), base: null as number | null, amt: num(t?.base_amt),
+                up: null, same: null,
+              },
               ...(data.actuals ?? []).map((a) => ({
-                key: `act-${a.ym}`, ym: a.ym, kind: '実績' as const,
-                deals: a.deals, base: a.base, amt: a.amount,
+                key: `act-${a.ym}`, ym: `過去→${a.ym.slice(5)}`, kind: '実績' as const,
+                deals: a.deals, base: a.base as number | null, amt: a.amount,
                 up: num(a.up), same: num(a.same),
               })),
               ...([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
                 .map(([label, amt]) => ({
                   key: `plan-${label}`, ym: label, kind: '計画' as const,
-                  deals: num(t?.deals), base: num(t?.base_amt), amt,
+                  deals: num(t?.deals), base: num(t?.base_amt) as number | null, amt,
                   up: null, same: null,
                 })),
             ]
-              .sort((a, b) => (a.ym === b.ym ? (a.kind === '実績' ? -1 : 1) : a.ym.localeCompare(b.ym)))
               .map((row) => {
-                const gain = row.amt - row.base;
-                const rate = row.base > 0 ? Math.round((gain / row.base) * 1000) / 10 : null;
+                const gain = row.base == null ? null : row.amt - row.base;
+                const rate = row.base != null && row.base > 0
+                  ? Math.round((gain! / row.base) * 1000) / 10 : null;
                 return (
                   <tr key={row.key}>
                     <td><strong>{row.ym}</strong></td>
                     <td>
-                      <span className={`badge ${row.kind === '実績' ? 'green' : 'blue'}`}>{row.kind}</span>
+                      <span className={`badge ${row.kind === '土台' ? 'gray' : row.kind === '実績' ? 'green' : 'blue'}`}>
+                        {row.kind}
+                      </span>
                     </td>
                     <td style={nums}>{row.deals.toLocaleString()}</td>
                     <td style={nums}>
@@ -539,11 +550,14 @@ export default function Dashboard() {
                         </span>
                       )}
                     </td>
-                    <td style={nums}>{yen(row.base / months)}</td>
+                    <td style={nums}>{row.base == null ? '—' : yen(row.base / months)}</td>
                     <td style={nums}>{yen(row.amt / months)}</td>
                     <td style={{ ...nums, fontWeight: 700,
-                                 color: gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
-                      {gain === 0 ? '—' : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
+                                 color: gain == null ? undefined
+                                   : gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
+                      {gain == null ? '—'
+                        : gain === 0 ? '—'
+                          : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
                     </td>
                     <td style={nums}>{rate == null ? '—' : `${rate > 0 ? '+' : ''}${rate}%`}</td>
                   </tr>

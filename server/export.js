@@ -153,7 +153,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
   if ((opts.filters ?? []).length === 0) cond.push(['絞り込み', 'なし（全件）']);
   cond.push([]);
   cond.push(['表示範囲', data.scope?.label ?? '']);
-  cond.push(['出荷実績の品目件数', n(data.histTotals?.deals)]);
+  cond.push(['品目件数（価格調査）', n(data.histTotals?.deals)]);
+  cond.push(['当月実績の金額（土台）', round(base)]);
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
@@ -161,25 +162,30 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const base = n(t.base_amt);
   const summary = [[
     '月', '区分', '件数', '上がった件数', '単価同じ件数',
-    '現状額（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
+    '比較のもと（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
   ]];
   const summaryRows = [
-    // 価格調査の実単価（実績）。現状額もその月に実単価のある案件だけで出す
+    // 土台。取り込んだ当月の金額そのもの（全品目）。比べる相手は無い
+    { ym: String(data.actuals?.[0]?.ym ?? '当月'), kind: '土台',
+      deals: n(t.deals), b: '', amt: base, up: '', same: '' },
+    // 実績。過去最新単価（値上げ前）→ 当月。過去単価のある品目だけが対象
     ...(data.actuals ?? []).map((a) => ({
-      ym: a.ym, kind: '実績', deals: n(a.deals), b: n(a.base), amt: n(a.amount),
-      up: n(a.up), same: n(a.same),
+      ym: `過去→${String(a.ym).slice(5)}`, kind: '実績', deals: n(a.deals),
+      b: n(a.base), amt: n(a.amount), up: n(a.up), same: n(a.same),
     })),
     // A基準（計画）
     ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
       ym, kind: '計画', deals: n(t.deals), b: base, amt, up: '', same: '',
     })),
-  ].sort((a, b2) => (a.ym === b2.ym ? (a.kind === '実績' ? -1 : 1) : String(a.ym).localeCompare(String(b2.ym))));
+  ];
   for (const r of summaryRows) {
-    const gain = r.amt - r.b;
+    const hasBase = r.b !== '' && r.b != null;
+    const gain = hasBase ? r.amt - r.b : '';
     summary.push([
       r.ym, r.kind, r.deals, r.up, r.same,
-      round(r.b / months), round(r.amt / months), round(gain / months),
-      r.b > 0 ? round((gain / r.b) * 100, 1) / 100 : '',
+      hasBase ? round(r.b / months) : '', round(r.amt / months),
+      hasBase ? round(gain / months) : '',
+      hasBase && r.b > 0 ? round((gain / r.b) * 100, 1) / 100 : '',
     ]);
   }
   addSheet('まとめ', summary, [12, 8, 10, 12, 12, 18, 18, 18, 10]);
