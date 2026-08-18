@@ -2,60 +2,64 @@ import * as XLSX from 'xlsx';
 import { api } from './api';
 
 /**
- * 価格調査（実単価）の取込。
+ * 価格調査（当月実績）の取込。案件一覧の土台になる。
  *
- * マスタ登録と同じ 得意先×納入先×商品 の単位のファイルで、
- * 「売上単価4月」「売上単価5月」…のように月ごとの実際の単価が入っている。
- * A基準（値上げの計画）に対して、実際いくらで出たのかを並べて見るために取り込む。
+ * 「７月数量」「７月単価」と「過去最新単価」が入ったファイルで、
+ * 値上げ前（過去最新単価）から当月（7月）までに実際いくら上がったかが分かる。
+ * A基準（マスタ登録）はこの当月単価に重ねて、今後の計画として比べる。
  *
- * 案件は 法人×品目 の単位なので、マスタ登録と同じように法人へ集約する
- * （単価は数量で加重平均。数量はマスタ単価の売上数を重みに使う）。
+ * 得意先×商品の単位で取り込み、案件は 得意先×商品 にまとめる。
  */
 
 export interface SurveyRow {
-  corp_code: string;        // 法人コード（案件のまとまりの単位）
-  corp_name: string;        // 法人名
-  customer_name: string;    // 得意先名
+  customer_code: string;   // 得意先コード（案件のまとまりの単位）
+  customer_name: string;
+  delivery_name: string;
   model_code: string;
   model_name: string;
   equip_name: string;
-  gas_type: string;
-  branch: string;
-  office: string;
-  sales_person: string;
-  cost_price: unknown;      // 実績原価（管理者だけが見る列）
-  qty: unknown;             // 1~3月の売上数（3か月分の合計）。加重平均の重みにも使う
-  base_price: unknown;      // 1-3月出荷単価（現状単価）。無ければ null
-  /** 月ごとの実単価。meta.months と同じ並び。値の無い月は null */
-  prices: (number | null)[];
+  category_name: string;
+  list_price: unknown;     // 標準単価
+  qty: unknown;            // 当月の数量
+  price: unknown;          // 当月の単価
+  past_price: unknown;     // 過去最新単価（値上げ前）
+  past_date: string | null;// 過去最新受注日
 }
 
 export interface SurveyParsed {
   rows: SurveyRow[];
   skippedRows: number;
-  /** 月の並び（YYYY-MM）。列の「売上単価4月」から作る */
-  months: string[];
-  /** 見出しのままの月名（4月・5月…）。画面の確認用 */
-  monthLabels: string[];
-  hasQty: boolean;
-  /** 「1-3月出荷単価」の列があるか（現状単価もこのファイルから取り込める） */
-  hasBase: boolean;
+  /** 当月（YYYY-MM）。「７月数量」の見出しと、基準の年から決める */
+  ym: string;
+  monthLabel: string;      // 「7月」
+  hasPast: boolean;        // 過去最新単価の列があるか
 }
 
-/** 見出しの表記ゆれを吸収する（全角数字・全角かっこ） */
+/** 見出しの表記ゆれを吸収する（全角数字・全角かっこ・空白） */
 function normHead(h: unknown): string {
   return String(h ?? '')
     .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/（/g, '(').replace(/）/g, ')')
+    .replace(/[\s　_]/g, '')
     .trim();
 }
 
+/** Excelの日付を「YYYY-MM-DD」へ。日付シリアルと文字列のどちらでも来る */
+function toYmd(v: unknown): string | null {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 20000 && n < 80000) {
+    return new Date(Date.UTC(1899, 11, 30) + n * 86400000).toISOString().slice(0, 10);
+  }
+  const m = String(v).trim().match(/^(\d{4})[/年-](\d{1,2})[/月-](\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : null;
+}
+
 /**
- * 「4月」が何年かを決める。
- *
+ * 「7月」が何年かを決める。
  * 見出しには年が無いため、マスタ登録の当月（例 2026-08）を手がかりにする。
- * 当月より後ろの月は前の年とみなす（2026-08 のとき 11月 → 2025-11）。
- * 手がかりが無ければ今年として扱う。
+ * 手がかりより後ろの月は前の年とみなす。無ければ今年として扱う。
  */
 function resolveYear(month: number, anchor: string | undefined): number {
   const m = /^(\d{4})-(\d{2})$/.exec(String(anchor ?? ''));
@@ -76,117 +80,84 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
 
-  // 法人はこのファイルの法人コード・法人名で決める（法人グループは使わない）。
-  // 「法人グループコード」のような書き方でも拾えるようにしておく
-  const corpCodeAt = headers.findIndex((h) => h.includes('法人') && h.includes('コード'));
-  const corpNameAt = headers.findIndex((h) => h.includes('法人') && h.includes('名'));
+  // 「7月数量」「7月単価」から当月を決める（月は見出しから読む）
+  const qtyAt = headers.findIndex((h) => /^\d{1,2}月数量$/.test(h));
+  const priceAt = headers.findIndex((h) => /^\d{1,2}月単価$/.test(h));
+  if (qtyAt < 0 || priceAt < 0) {
+    throw new Error('「7月数量」「7月単価」のような当月の列がありません。'
+      + '価格調査（当月実績）のファイルをお使いください');
+  }
+  const month = Number(/^(\d{1,2})月/.exec(headers[qtyAt])![1]);
+
   const col = {
-    法人コード: corpCodeAt,
-    法人名: corpNameAt,
-    得意先名: find('得意先名'),
+    得意先コード: find('得意先コード'),
     商品コード: find('商品コード'),
   };
   const missing = Object.entries(col).filter(([, i]) => i < 0).map(([k]) => k);
   if (missing.length) {
-    throw new Error(`価格調査の見出しが見つかりません: ${missing.join('・')}。`
-      + '「法人コード」「法人名」「得意先名」「商品コード」のあるシートが必要です');
+    throw new Error(`価格調査の見出しが見つかりません: ${missing.join('・')}`);
   }
 
-  // 「売上単価4月」のような月ごとの実単価の列を集める
-  const monthCols: { at: number; month: number; label: string }[] = [];
-  headers.forEach((h, i) => {
-    const m = /^売上単価\s*(\d{1,2})\s*月$/.exec(h);
-    if (m) monthCols.push({ at: i, month: Number(m[1]), label: `${Number(m[1])}月` });
-  });
-  if (!monthCols.length) {
-    throw new Error('「売上単価4月」のような月ごとの実単価の列がありません。'
-      + '価格調査（実績追加）のファイルをお使いください');
-  }
-  const months = monthCols.map((mc) => {
-    const y = resolveYear(mc.month, anchorYm);
-    return `${y}-${String(mc.month).padStart(2, '0')}`;
-  });
-  // 月の順に並べ直す（列の並びが前後していても時系列にする）
-  const order = months.map((ym, i) => ({ ym, i })).sort((a, b) => a.ym.localeCompare(b.ym));
-  const sortedCols = order.map((o) => monthCols[o.i]);
-  const sortedMonths = order.map((o) => o.ym);
+  // 過去の単価（値上げ前）。無いファイルでも取り込めるようにしておく
+  const pastPriceAt = findLike('過去最新単価') >= 0
+    ? headers.findIndex((h) => h.includes('過去最新単価') && !h.includes('換算'))
+    : -1;
+  const pastDateAt = findLike('過去最新受注日');
 
-  // 重み（加重平均の分母）。マスタ登録と同じ「売上数」の列を使う
-  const qtyAt = findLike('売上数');
-
-  // 現状単価（1-3月出荷単価）。「最新出荷単価」は今の単価ではないので外す。
-  // この列があれば、現状の単価・数量もこのファイルから取り込む
-  const baseAt = headers.findIndex((h) => h.includes('出荷単価') && !h.includes('最新'));
-
-  // 案件の行（法人×品目）をこのファイルから作るための項目。
-  // 無い列は空のまま取り込む（一覧の表示が空欄になるだけで、集計には影響しない）
   const at = {
-    model_name: find('器種名'),
+    customer_name: find('得意先名'),
+    delivery_name: find('納入先名'),
+    model_name: findLike('品目階層名') >= 0 ? findLike('品目階層名') : find('器種名'),
     equip_name: find('器具区分名'),
-    gas_type: find('ガス種'),
-    branch: find('得意先実績計上支店名'),
-    office: find('得意先実績計上地区名'),
-    sales_person: find('得意先担当者名'),
-    cost_price: find('実績原価'),
+    category_name: findLike('カテゴリー名'),
+    list_price: find('標準単価'),
   };
   const txt = (r: unknown[], i: number) => (i >= 0 ? String(r[i] ?? '').trim() : '');
-
-  const num = (v: unknown): number | null => {
-    if (v === null || v === undefined || String(v).trim() === '') return null;
-    const n = Number(String(v).replace(/[,¥\s]/g, ''));
-    return Number.isFinite(n) && n > 0 ? n : null;
-  };
 
   const rows: SurveyRow[] = [];
   let skippedRows = 0;
   for (let i = 1; i < grid.length; i++) {
     const r = grid[i] ?? [];
-    const corp = String(r[col.法人コード] ?? '').trim();
+    const cust = String(r[col.得意先コード] ?? '').trim();
     const model = String(r[col.商品コード] ?? '').trim();
-    if (!corp || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
-    const prices = sortedCols.map((mc) => num(r[mc.at]));
+    if (!cust || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
     rows.push({
-      corp_code: corp,
-      corp_name: String(r[col.法人名] ?? '').trim(),
-      customer_name: String(r[col.得意先名] ?? '').trim(),
+      customer_code: cust,
+      customer_name: txt(r, at.customer_name),
+      delivery_name: txt(r, at.delivery_name),
       model_code: model,
       model_name: txt(r, at.model_name),
       equip_name: txt(r, at.equip_name),
-      gas_type: txt(r, at.gas_type),
-      branch: txt(r, at.branch),
-      office: txt(r, at.office),
-      sales_person: txt(r, at.sales_person),
-      cost_price: at.cost_price >= 0 ? r[at.cost_price] : null,
-      qty: qtyAt >= 0 ? r[qtyAt] : null,
-      base_price: baseAt >= 0 ? r[baseAt] : null,
-      prices,
+      category_name: txt(r, at.category_name),
+      list_price: at.list_price >= 0 ? r[at.list_price] : null,
+      qty: r[qtyAt],
+      price: r[priceAt],
+      past_price: pastPriceAt >= 0 ? r[pastPriceAt] : null,
+      past_date: pastDateAt >= 0 ? toYmd(r[pastDateAt]) : null,
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');
 
+  const year = resolveYear(month, anchorYm);
   return {
     rows,
     skippedRows,
-    months: sortedMonths,
-    monthLabels: sortedCols.map((mc) => mc.label),
-    hasQty: qtyAt >= 0,
-    hasBase: baseAt >= 0,
+    ym: `${year}-${String(month).padStart(2, '0')}`,
+    monthLabel: `${month}月`,
+    hasPast: pastPriceAt >= 0,
   };
 }
 
 const CHUNK = 500;
 
 export interface SurveyResult {
-  matched: number;    // 法人を照合できた行
-  unmatched: number;  // 実績側に無い法人の行（重ねられない）
-  covered: number;    // 実単価が入った案件の数
+  matched: number;    // 取り込んだ行
+  unmatched: number;  // 得意先が空などで取り込めなかった行
+  covered: number;    // 当月単価の入った案件の数
   total: number;      // 案件の総数
+  removed?: number;   // 今回のファイルに無くなって消えた案件
 }
 
-/**
- * 小分けにして送る。サーバー側で法人×品目へ集約し、
- * 最後に案件へ実単価（数量で加重平均）を重ねる。
- */
 export async function sendSurveyImport(
   parsed: SurveyParsed,
   filename: string,
@@ -194,7 +165,7 @@ export async function sendSurveyImport(
 ): Promise<SurveyResult> {
   const started = await api<{ batch?: string }>('/survey-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, months: parsed.months }),
+    body: JSON.stringify({ filename, ym: parsed.ym }),
   });
   let matched = 0;
   let unmatched = 0;
@@ -207,8 +178,7 @@ export async function sendSurveyImport(
     unmatched += r.unmatched;
     opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
   }
-  const fin = await api<{ covered: number; total: number; removed?: number }>('/survey-import/finish', {
-    method: 'POST', body: JSON.stringify({ batch: started.batch }),
-  });
-  return { matched, unmatched, covered: fin.covered, total: fin.total };
+  const fin = await api<{ covered: number; total: number; removed?: number }>(
+    '/survey-import/finish', { method: 'POST', body: JSON.stringify({ batch: started.batch }) });
+  return { matched, unmatched, covered: fin.covered, total: fin.total, removed: fin.removed };
 }

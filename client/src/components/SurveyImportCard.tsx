@@ -77,14 +77,13 @@ export default function SurveyImportCard({ anchorYm, onDone }:
         </div>
       )}
       <p className="pt-note" style={{ marginTop: 0 }}>
-        <strong>月ごとの実際の単価</strong>（「売上単価4月」などの列）を取り込みます。
-        A基準は<strong>値上げの計画</strong>、こちらは<strong>実際いくらで出たか</strong>なので、
-        ダッシュボードの「まとめ」で計画と実績を月の流れで比べられます。
-        価格調査は 得意先×納入先×商品 の細かい単位なので、ファイルの<strong>法人コード</strong>で
-        <strong>法人×品目へ集約（数量で加重平均）します</strong>。
+        <strong>当月の実績</strong>（「7月数量」「7月単価」の列）と、
+        <strong>過去最新単価</strong>（値上げ前）を取り込みます。
+        過去→当月が<strong>実際に上がった分</strong>、そこから先のA基準が<strong>今後の計画</strong>です。
+        ファイルは 得意先×納入先×商品 の細かい単位なので、
+        <strong>得意先×商品へ集約（数量で加重平均）します</strong>。
         <strong>この取込が案件一覧の土台</strong>で、ファイルに無い案件は削除されます
         （決定単価（B基準）など画面で入れた値は、残る案件ではそのまま残ります）。
-        取り込むたびに前回の実単価は入れ替わります（月を足したファイルをそのまま取り込めます）。
         <strong>この取込を先に行い、そのあとにマスタ登録（A基準）</strong>を重ねてください。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -92,13 +91,10 @@ export default function SurveyImportCard({ anchorYm, onDone }:
         {parsed && (
           <>
             <span style={{ fontSize: 13 }}>
-              実単価のある行 {parsed.p.rows.length.toLocaleString()}件
-              （{parsed.p.months[0]} 〜 {parsed.p.months[parsed.p.months.length - 1]}
-              の{parsed.p.months.length}か月）
-              {parsed.p.hasQty ? '' : ' ・ 売上数の列が無いため単純平均で集約します'}
-              {parsed.p.hasBase
-                ? ' ・ 1-3月出荷単価と売上数もこのファイルの値に差し替えます'
-                : ' ・ 1-3月出荷単価の列が無いため、現状単価は今のままです'}
+              {parsed.p.rows.length.toLocaleString()}行（{parsed.p.ym} の実績）
+              {parsed.p.hasPast
+                ? ' ・ 過去最新単価と比べて、実際に上がった分を出します'
+                : ' ・ 過去最新単価の列が無いため、値上がりの比較は出ません'}
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>

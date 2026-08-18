@@ -57,23 +57,10 @@ export interface Deal {
   a_ringi_m2?: string | null;
   a_ringi_m3?: string | null;
   b_price?: number | null;          // B基準: 実際の決定単価
-  hist_avg_price?: number | null;   // 出荷実績（月別履歴）の平均単価（法人×品目）
-  hist_qty?: number | null;         // 出荷実績の数量合計（法人×品目）
-  master_avg_price?: number | null; // マスタ登録の1~3月出荷実績の平均単価（数量加重平均）
-  master_qty?: number | null;       // マスタ登録の1~3月売上数の合計
-  // 価格調査の実単価（月ごと）。並びは Meta.actualMeta.months と同じ
-  act_price_1?: number | null;
-  act_price_2?: number | null;
-  act_price_3?: number | null;
-  act_price_4?: number | null;
-  act_price_5?: number | null;
-  act_price_6?: number | null;
-  act_price_7?: number | null;
-  act_price_8?: number | null;
-  act_price_9?: number | null;
-  act_price_10?: number | null;
-  act_price_11?: number | null;
-  act_price_12?: number | null;
+  master_avg_price?: number | null; // 当月の実単価（価格調査。数量で加重平均）
+  master_qty?: number | null;       // 当月の数量（価格調査）
+  past_price?: number | null;       // 過去最新単価（値上げ前）
+  past_date?: string | null;        // 過去最新受注日
   /** 基準価格表と突き合わせて判別した品名（サーバーが添える。マスター未登録時は付かない） */
   std_name?: string | null;
   /** 判別の方法。code=器種ガスコード一致 / name=品名一致 / similar=類似（先頭一致） */
@@ -147,10 +134,8 @@ export interface Meta {
   corpStatuses: { code: string; name: string }[];
   /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
-  /** 出荷実績（月別履歴）の取込情報 */
-  histMeta?: { period: string; months?: number | null; filename?: string } | null;
-  /** 価格調査（実単価）の取込情報。months は ['2026-04', ...] の並び */
-  actualMeta?: { months: string[]; filename?: string; updatedAt?: string } | null;
+  /** 価格調査（当月実績）の取込情報。ym は当月（例 2026-07） */
+  actualMeta?: { ym?: string; filename?: string; updatedAt?: string } | null;
 }
 
 export const ROUND_STATE_NAMES: Record<string, string> = {

@@ -1274,10 +1274,8 @@ async function dashboardData(query, user) {
   // 実績の基準。マスタ登録の単価を優先し、無い品目は出荷実績で補う（案件一覧と同じ）。
   // マスタ登録の売上数は月平均（÷3）×対象月数（months）で期間ぶんに換算して揃える。
   // こうすると「合計して ÷months で月あたりを出す」これまでの作りのまま正しい値になる。
-  const effPrice = `CASE WHEN master_avg_price IS NOT NULL
-                         THEN ${f('master_avg_price')} ELSE ${f('hist_avg_price')} END`;
-  const effQty = `CASE WHEN master_avg_price IS NOT NULL
-                       THEN ${f('master_qty')} / ${mMonths} * ${months} ELSE ${f('hist_qty')} END`;
+  const effPrice = f('master_avg_price');
+  const effQty = f('master_qty');
 
   const aCol = (n) =>
     `(CASE WHEN a_price_m${n} > 0 THEN ${f(`a_price_m${n}`)} ELSE ${effPrice} END) * (${effQty})`;
@@ -1302,21 +1300,21 @@ async function dashboardData(query, user) {
   // 器具区分別などの表に出す「実績」。取り込んだ月ごとに出す
   // （4月からの推移を、まとめの表と同じ粒度で見られるようにする）。
   // 走査は既存の集計と同じ1回のままで、足し算だけが増える。
-  const actSlot = (actualMeta?.months ?? []).length;
+  // 価格調査を取り込んでいれば実績（過去→当月）を出す
+  const actSlot = actualMeta?.ym ? 1 : 0;
   // 上がった/単価同じ の判定。実単価は円単位なので0.5円未満のズレは「同じ」とみなす
-  const actUp = (n) => `act_price_${n} > 0 AND (${effPrice}) IS NOT NULL
-       AND ${f(`act_price_${n}`)} - (${effPrice}) >= 0.5`;
-  const actSame = (n) => `act_price_${n} > 0 AND (${effPrice}) IS NOT NULL
-       AND ABS(${f(`act_price_${n}`)} - (${effPrice})) < 0.5`;
-
-  const abAct = Array.from({ length: actSlot }, (_, i) => `,
-    SUM(CASE WHEN act_price_${i + 1} > 0
-         THEN ${f(`act_price_${i + 1}`)} * (${effQty}) END) AS act_amt_${i + 1},
-    SUM(CASE WHEN act_price_${i + 1} > 0
-         THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1},
-    SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1},
-    SUM(CASE WHEN ${actUp(i + 1)} THEN 1 ELSE 0 END) AS act_up_${i + 1},
-    SUM(CASE WHEN ${actSame(i + 1)} THEN 1 ELSE 0 END) AS act_same_${i + 1}`).join('');
+  // 実績は「過去最新単価（値上げ前）→ 当月単価」。単価は円単位なので
+  // 0.5円未満のズレは「単価同じ」とみなす
+  const hasPast = 'past_price > 0 AND master_avg_price IS NOT NULL';
+  const actUp = `${hasPast} AND ${f('master_avg_price')} - ${f('past_price')} >= 0.5`;
+  const actSame = `${hasPast} AND ABS(${f('master_avg_price')} - ${f('past_price')}) < 0.5`;
+  const actAgg = `
+    SUM(CASE WHEN ${hasPast} THEN ${f('master_avg_price')} * (${effQty}) END) AS act_amt_1,
+    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${effQty}) END) AS act_base_1,
+    SUM(CASE WHEN ${hasPast} THEN 1 ELSE 0 END) AS act_cnt_1,
+    SUM(CASE WHEN ${actUp} THEN 1 ELSE 0 END) AS act_up_1,
+    SUM(CASE WHEN ${actSame} THEN 1 ELSE 0 END) AS act_same_1`;
+  const abAct = actSlot > 0 ? `,${actAgg}` : '';
 
   const ab = `
     COUNT(*) AS deals,
@@ -1352,14 +1350,8 @@ async function dashboardData(query, user) {
   delete pureQuery.aState;
   const pure = dealFilters(pureQuery, user);
 
-  // 価格調査の実単価（月ごと）。実際いくらで出たのかを、現状額と同じ数量で金額にする。
-  // 単価の無い月はその月の実績が無いということなので、金額にも数量にも含めない。
-  const actAmt = Array.from({ length: ACT_SLOTS }, (_, i) => `
-    SUM(CASE WHEN act_price_${i + 1} > 0 THEN ${f(`act_price_${i + 1}`)} * (${effQty}) END) AS act_amt_${i + 1},
-    SUM(CASE WHEN act_price_${i + 1} > 0 THEN (${effPrice}) * (${effQty}) END) AS act_base_${i + 1},
-    SUM(CASE WHEN act_price_${i + 1} > 0 THEN 1 ELSE 0 END) AS act_cnt_${i + 1},
-    SUM(CASE WHEN ${actUp(i + 1)} THEN 1 ELSE 0 END) AS act_up_${i + 1},
-    SUM(CASE WHEN ${actSame(i + 1)} THEN 1 ELSE 0 END) AS act_same_${i + 1}`).join(',');
+  // 価格調査の実績。過去最新単価（値上げ前）から当月までに実際いくら上がったか。
+  const actAmt = actAgg;
 
   const [pureTotals, aMonths, abByEquip, abByBranch, abByCorp] = await Promise.all([
     // 品目件数・数量と、月ごとの実単価は同じ絞り込みなので1文にまとめる
@@ -1399,15 +1391,16 @@ async function dashboardData(query, user) {
   // 月の並び（actual_meta）と、月ごとの実績額を突き合わせて返す。
   // 現状額（base）は、その月に実績のある案件だけを同じ数量で足したもの。
   // 実績のある案件だけで比べないと、値上げ額が実態より大きく（小さく）出てしまう。
-  const actuals = (actualMeta?.months ?? []).map((ym, i) => ({
-    ym,
-    amount: Number(actMonths?.[`act_amt_${i + 1}`] ?? 0),
-    base: Number(actMonths?.[`act_base_${i + 1}`] ?? 0),
-    deals: Number(actMonths?.[`act_cnt_${i + 1}`] ?? 0),
+  // 実績は1つ（過去最新単価 → 当月）。計画（A基準）と同じ形で並べられるようにする
+  const actuals = actualMeta?.ym ? [{
+    ym: actualMeta.ym,
+    amount: Number(actMonths?.act_amt_1 ?? 0),
+    base: Number(actMonths?.act_base_1 ?? 0),
+    deals: Number(actMonths?.act_cnt_1 ?? 0),
     // 内訳。値上げがまだ反映されていない（単価同じ）も件数で分かるようにする
-    up: Number(actMonths?.[`act_up_${i + 1}`] ?? 0),
-    same: Number(actMonths?.[`act_same_${i + 1}`] ?? 0),
-  })).filter((a) => a.deals > 0);
+    up: Number(actMonths?.act_up_1 ?? 0),
+    same: Number(actMonths?.act_same_1 ?? 0),
+  }].filter((a) => a.deals > 0) : [];
   return {
     scope: scopeInfo(user),
     histTotals,
@@ -1420,7 +1413,7 @@ async function dashboardData(query, user) {
     aggMeta,
     actuals,
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
-    abActYms: actualMeta?.months ?? [],
+    abActYms: actualMeta?.ym ? [actualMeta.ym] : [],
   };
 }
 
@@ -1639,7 +1632,7 @@ function dealOrder(q, mon = null) {
   // 数量は期間の長さが行ごとに違うため、月平均に直して比べる。
   if (mon) {
     if (col === 'hist_avg_price') col = EFF_PRICE;
-    if (col === 'hist_qty') col = `(${effMonthlyQty(mon.mm, mon.hm)})`;
+    if (col === 'hist_qty') col = `(${effMonthlyQty()})`;
   }
   const dir = String(q.dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
@@ -1726,7 +1719,7 @@ function attachStandardMatch(rows, index) {
  *
  * 数量は期間全体の合計で持っているので、月平均を出すのに使う。
  */
-function monthsOfHist(meta) {
+function monthsOfHist_unused(meta) {
   // 期間の文字（2025/07〜2026/06）から数えるのを最優先にする。
   // 保存してある月数は、旧版の取込が月見出しの列数を重複して数えていて
   // 実際の2倍（24など）になっていることがあるため、期間が読めないときだけ使う
@@ -1747,13 +1740,9 @@ function monthsOfHist(meta) {
  * 月平均を出すのに使う。期間は取込時の見出し（「1~3月出荷単価」など）から
  * agg_meta に残してあり、読めない形式なら3か月とみなす。
  */
-function monthsOfMaster(meta) {
-  const m = /(\d{1,2})\s*[~〜～-]\s*(\d{1,2})\s*月/.exec(String(meta?.basePeriod ?? ''));
-  if (m) {
-    const span = Number(m[2]) - Number(m[1]) + 1;
-    if (span > 0 && span <= 12) return span;
-  }
-  return 3;
+function monthsOfMaster() {
+  // 価格調査は当月（7月など）の1か月ぶんの数量なので、月平均への割り算は要らない
+  return 1;
 }
 
 /**
@@ -1779,8 +1768,9 @@ async function loadImportMeta() {
     histMeta,
     aggMeta,
     actualMeta,
-    months: monthsOfHist(histMeta),
-    masterMonths: monthsOfMaster(aggMeta),
+    // 価格調査は当月ぶんの単価と数量なので、金額はそのまま1か月あたりになる
+    months: 1,
+    masterMonths: monthsOfMaster(),
   };
 }
 
@@ -1791,10 +1781,8 @@ async function loadImportMeta() {
  *
  * 数量は期間の合計なので、それぞれの月数で割って月平均にする。
  */
-const EFF_PRICE = 'COALESCE(master_avg_price, hist_avg_price)';
-const effMonthlyQty = (mm, hm) => `CASE WHEN master_avg_price IS NOT NULL
-       THEN COALESCE(CAST(master_qty AS FLOAT), 0) / ${mm}
-       ELSE COALESCE(CAST(hist_qty AS FLOAT), 0) / ${hm} END`;
+const EFF_PRICE = 'master_avg_price';
+const effMonthlyQty = () => 'COALESCE(CAST(master_qty AS FLOAT), 0)';
 
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
@@ -1811,7 +1799,7 @@ api.get('/deals', wrap(async (req, res) => {
              ${[1, 2, 3].map((n) => `
              SUM(CASE WHEN a_price_m${n} > 0 AND ${EFF_PRICE} IS NOT NULL
                        THEN (CAST(a_price_m${n} AS FLOAT) - ${EFF_PRICE})
-                            * (${effMonthlyQty(mMonths, months)})
+                            * (${effMonthlyQty()})
                   END) AS raise_m${n}`).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -2460,11 +2448,11 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
 api.post('/agg-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const filename = String(req.body?.filename ?? 'マスタ登録.xlsx');
-  const { c } = await db.get('SELECT COUNT(*) AS c FROM corp_map');
+  const { c } = await db.get('SELECT COUNT(*) AS c FROM deals');
   if (!Number(c)) {
     return res.status(400).json({
-      error: '先に「出荷実績（月別履歴）」を取り込んでください。'
-        + '案件一覧は出荷実績の法人×品目が土台で、マスタ登録はそこへ重ねます',
+      error: '先に「価格調査（当月実績）」を取り込んでください。'
+        + '案件一覧は価格調査の得意先×商品が土台で、マスタ登録はそこへ重ねます',
     });
   }
   await db.run('DELETE FROM agg_staging');
@@ -2496,17 +2484,6 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     return Number.isFinite(n) ? n : 0;
   };
 
-  // 得意先名 → 法人グループコード（完全一致 → 長い名前からの先頭一致）
-  const map = await db.all('SELECT name_key, ent_cd FROM corp_map');
-  const byNorm = new Map(map.map((m) => [m.name_key, m.ent_cd]));
-  const norms = [...byNorm.keys()].sort((a, b) => b.length - a.length);
-  const findEnt = (name) => {
-    const n = normCorpName(name);
-    if (byNorm.has(n)) return byNorm.get(n);
-    for (const cn of norms) if (cn.length >= 3 && n.startsWith(cn)) return byNorm.get(cn);
-    return null;
-  };
-
   // 承認日（登録日）は「YYYY-MM-DD」。足し合わせず、まとまりの中で一番新しい日を残す。
   // 稟議Noは承認とセットの情報なので、承認日が一番新しい行のものを一緒に残す。
   const ymd = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
@@ -2525,7 +2502,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   let matched = 0;
   let unmatched = 0;
   for (const r of rows) {
-    const ent = findEnt(r.customer_name);
+    // 案件は 得意先×商品。マスタ登録も同じ得意先コードで突き合わせる
+    const ent = String(r.customer_code ?? '').trim();
     if (!ent) { unmatched += 1; continue; }
     matched += 1;
     const key = `${ent}|${String(r.model_code).trim()}`;
@@ -2602,10 +2580,10 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // 集約した結果を案件へ重ねる。単価は数量での加重平均。
   // 実績にある法人×品目だけが対象（案件の土台は実績）。
   const stamp = now();
+  // 現状の単価・数量は価格調査（当月実績）が正なので、ここでは触らない。
+  // マスタ登録からはA基準（計画）と、支店・営業所・担当者だけを重ねる。
   await db.run(`
     UPDATE deals SET
-      master_qty = s.qty,
-      master_avg_price = CASE WHEN s.qty > 0 THEN s.base_amt / s.qty END,
       a_price_m0 = CASE WHEN s.qty > 0 THEN s.a0_amt / s.qty END,
       a_price_m1 = CASE WHEN s.qty > 0 THEN s.a1_amt / s.qty END,
       a_price_m2 = CASE WHEN s.qty > 0 THEN s.a2_amt / s.qty END,
@@ -2655,24 +2633,23 @@ const actCols = (prefix) => Array.from({ length: ACT_SLOTS }, (_, i) => `${prefi
  * このファイルの法人コード・法人名で案件（法人×品目）を作り直す。
  * 出荷実績（月別履歴）の法人グループは使わない。
  */
+/**
+ * 価格調査（当月実績）の取込。案件一覧の土台を作る。
+ *
+ * 得意先コード×商品コード の単位で、当月の単価（数量で加重平均）・数量、
+ * そして過去最新単価（値上げ前）を案件に入れる。
+ * A基準（マスタ登録）は、この当月単価に重ねて今後の計画として比べる。
+ */
 api.post('/survey-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const filename = String(req.body?.filename ?? '価格調査.xlsx');
-  const months = Array.isArray(req.body?.months) ? req.body.months.map(String) : [];
-  if (!months.length) return res.status(400).json({ error: '月の並びがありません' });
-  if (months.length > ACT_SLOTS) {
-    return res.status(400).json({ error: `実単価は${ACT_SLOTS}か月分までしか取り込めません` });
-  }
+  const ym = String(req.body?.ym ?? '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: '当月が分かりません' });
   await db.run('DELETE FROM act_staging');
-  // 法人の対応表もこのファイルで作り直す（古い法人が残らないようにする）
-  await db.run('DELETE FROM corp_map');
-  // 前回の取込の残りを消す。月の並びが変わったとき、古い月の値が残らないようにする
-  await db.run(`UPDATE deals SET ${actCols('act_price_').map((c2) => `${c2} = NULL`).join(', ')}
-                 WHERE ${actCols('act_price_').map((c2) => `${c2} IS NOT NULL`).join(' OR ')}`);
   await db.run(
     `INSERT INTO settings (key, value) VALUES ('actual_meta', ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-    [JSON.stringify({ months, filename, updatedAt: new Date().toISOString() })]
+    [JSON.stringify({ ym, months: [ym], filename, updatedAt: new Date().toISOString() })]
   );
   // 今回の取込に含まれない案件を最後に落とすための印
   res.json({ ok: true, batch: `act-${Date.now()}` });
@@ -2689,100 +2666,71 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     const n = Number(String(v).replace(/[,¥\s]/g, ''));
     return Number.isFinite(n) ? n : 0;
   };
+  const txt = (v) => (String(v ?? '').trim() || null);
 
-  // 法人×品目ごとに、月ごとの「Σ 単価×重み」と「Σ 重み」を足し込む。
-  // 重みは1~3月の売上数。売上の無い行（0）は重み1として扱い、
-  // 数量の多い行にならされつつ、全行が0のまとまりでは単純な平均になるようにする。
+  // 得意先×商品ごとに、数量と「単価×数量」を足し込む（加重平均のため）。
+  // 数量が0の行は重み1として扱い、全行0のまとまりでも単純平均になるようにする。
   const acc = new Map();
   let matched = 0;
   let unmatched = 0;
-  const txt = (v) => (String(v ?? '').trim() || null);
   for (const r of rows) {
-    // 法人はファイルの法人コードで決める（法人グループの対応表は使わない）
-    const ent = String(r.corp_code ?? '').trim();
-    if (!ent || isBlankCorp(ent) || isBlankCorp(r.corp_name)) { unmatched += 1; continue; }
+    const cust = String(r.customer_code ?? '').trim();
+    const model = String(r.model_code ?? '').trim();
+    if (!cust || !model || isBlankCorp(cust) || isBlankCorp(r.customer_name)) {
+      unmatched += 1;
+      continue;
+    }
     matched += 1;
-    const key = `${ent}|${String(r.model_code).trim()}`;
+    const key = `${cust}|${model}`;
     const a = acc.get(key) ?? {
-      ent, model: String(r.model_code).trim(),
-      amt: Array(ACT_SLOTS).fill(0), wgt: Array(ACT_SLOTS).fill(0),
-      base: 0, qty: 0, cost: 0,
-      corp_name: null, customer_name: null, model_name: null, equip_name: null,
-      gas_type: null, branch: null, office: null, sales_person: null,
-      top: Number.NEGATIVE_INFINITY,
+      cust, model, qty: 0, amt: 0, wgt: 0, past_amt: 0, past_wgt: 0, past_date: null,
+      list_amt: 0, list_wgt: 0,
+      customer_name: null, delivery_name: null, model_name: null,
+      equip_name: null, category_name: null, top: Number.NEGATIVE_INFINITY,
     };
     const qty = num(r.qty);
     const w = qty > 0 ? qty : 1;
-    // 現状（1-3月出荷単価）。実単価と同じファイルから取るので、
-    // 「実際いくらで出たか」と「元がいくらか」が必ず同じ土俵になる
-    a.base += num(r.base_price) * qty;
+    const price = num(r.price);
+    const past = num(r.past_price);
+    const list = num(r.list_price);
     a.qty += qty;
-    a.cost += num(r.cost_price) * qty;
-    // 法人名・得意先名・支店などは、数量の一番多い行を代表にする
+    if (price > 0) { a.amt += price * w; a.wgt += w; }
+    if (past > 0) { a.past_amt += past * w; a.past_wgt += w; }
+    if (list > 0) { a.list_amt += list * w; a.list_wgt += w; }
+    // 過去最新受注日は、まとまりの中で一番新しい日を残す
+    const d = txt(r.past_date);
+    if (d && (!a.past_date || d > a.past_date)) a.past_date = d;
+    // 名前は数量の一番多い行を代表にする
     if (qty > a.top) {
       a.top = qty;
-      a.corp_name = txt(r.corp_name);
       a.customer_name = txt(r.customer_name);
+      a.delivery_name = txt(r.delivery_name);
       a.model_name = txt(r.model_name);
       a.equip_name = txt(r.equip_name);
-      a.gas_type = txt(r.gas_type);
-      a.branch = txt(r.branch);
-      a.office = txt(r.office);
-      a.sales_person = txt(r.sales_person);
-    }
-    const prices = Array.isArray(r.prices) ? r.prices : [];
-    for (let i = 0; i < Math.min(prices.length, ACT_SLOTS); i++) {
-      const p = num(prices[i]);
-      if (p <= 0) continue;   // 単価の無い月はその月だけ飛ばす
-      a.amt[i] += p * w;
-      a.wgt[i] += w;
+      a.category_name = txt(r.category_name);
     }
     acc.set(key, a);
   }
 
-  // 得意先名・法人名 → 法人コード の対応表も、このファイルから作る。
-  // マスタ登録（A基準）の取込は得意先名から法人を引くため、これが無いと重ねられない
-  // （出荷実績の取込に頼らずに済むようにする）。
-  const mapRows = [];
-  const seenKey = new Set();
-  for (const r of rows) {
-    const ent = String(r.corp_code ?? '').trim();
-    if (!ent || isBlankCorp(ent)) continue;
-    for (const name of [r.customer_name, r.corp_name]) {
-      const key = normCorpName(name);
-      if (!key || seenKey.has(key)) continue;
-      seenKey.add(key);
-      mapRows.push([key, ent, String(r.corp_name ?? '').trim()]);
-    }
-  }
-  for (let i = 0; i < mapRows.length; i += 300) {
-    const part = mapRows.slice(i, i + 300);
-    await db.run(
-      `INSERT INTO corp_map (name_key, ent_cd, corp_name)
-       VALUES ${part.map(() => '(?,?,?)').join(',')}
-       ON CONFLICT (name_key) DO UPDATE SET ent_cd = excluded.ent_cd, corp_name = excluded.corp_name`,
-      part.flat()
-    );
-  }
-
-  const REP = ['corp_name', 'customer_name', 'model_name', 'equip_name',
-    'gas_type', 'branch', 'office', 'sales_person'];
+  const REP = ['customer_name', 'delivery_name', 'model_name', 'equip_name', 'category_name'];
   const vals = [...acc.values()].map((a) => [
-    a.ent, a.model, a.base, a.qty, a.cost, ...a.amt, ...a.wgt,
-    ...REP.map((k) => a[k]), Number.isFinite(a.top) ? a.top : 0,
+    a.cust, a.model, a.qty, a.amt, a.wgt, a.past_amt, a.past_wgt, a.past_date,
+    a.list_amt, a.list_wgt, ...REP.map((k) => a[k]), Number.isFinite(a.top) ? a.top : 0,
   ]);
   if (vals.length) {
-    const sumCols = ['base_amt', 'qty_sum', 'cost_amt',
-      ...actCols('a').map((c) => `${c}_amt`), ...actCols('w').map((c) => `${c}_sum`)];
-    const cols = ['ent_cd', 'model_code', ...sumCols, ...REP, 'top_qty'];
-    // 送りが分かれても、数量の一番多い行の内容が残るようにする
+    const sumCols = ['qty_sum', 'price_amt', 'price_wgt', 'past_amt', 'past_wgt'];
+    const cols = ['ent_cd', 'model_code', ...sumCols, 'past_date',
+      'list_amt', 'list_wgt', ...REP, 'top_qty'];
+    // 送りが分かれても、数量の一番多い行の内容と、一番新しい受注日が残るようにする
     const keepTop = (c) =>
       `${c} = CASE WHEN excluded.top_qty > act_staging.top_qty THEN excluded.${c} ELSE act_staging.${c} END`;
     await db.run(
       `INSERT INTO act_staging (${cols.join(',')})
        VALUES ${vals.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
-         ${sumCols.map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
+         ${[...sumCols, 'list_amt', 'list_wgt'].map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
+         past_date = CASE WHEN act_staging.past_date IS NULL OR excluded.past_date > act_staging.past_date
+                          THEN excluded.past_date ELSE act_staging.past_date END,
          ${[...REP, 'top_qty'].map(keepTop).join(', ')}`,
       vals.flat()
     );
@@ -2792,32 +2740,28 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
 
 api.post('/survey-import/finish', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
-  // 集約した実単価を案件へ重ねる。単価は数量での加重平均
   const stamp = now();
-  const sets = Array.from({ length: ACT_SLOTS }, (_, i) =>
-    `act_price_${i + 1} = CASE WHEN s.w${i + 1}_sum > 0 THEN s.a${i + 1}_amt / s.w${i + 1}_sum END`);
   const batch = String(req.body?.batch ?? '');
 
-  // 案件（法人×品目）をこのファイルの内容で作り直す。
-  // 既にある行は上書き（決定単価など画面で入れた値は触らないので残る）、
-  // 無い行は追加する。突き合わせは 法人コード×品目コード。
-  const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_name',
-    'model_code', 'model_name', 'equip_name', 'gas_type', 'branch', 'office', 'sales_person',
-    'master_avg_price', 'master_qty', 'cost_price',
-    ...actCols('act_price_'), 'hist_batch', 'updated_at'];
-  const price = (i) => `CASE WHEN s.w${i}_sum > 0 THEN s.a${i}_amt / s.w${i}_sum END`;
+  // 案件（得意先×商品）をこのファイルの内容で作り直す。
+  // 既にある案件は上書き（決定単価など画面で入れた値は触らないので残る）、
+  // 無いものは追加する。突き合わせは 得意先コード×商品コード。
+  const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_code', 'customer_name',
+    'delivery_name', 'model_code', 'model_name', 'equip_name', 'category_name', 'list_price',
+    'master_avg_price', 'master_qty', 'past_price', 'past_date', 'hist_batch', 'updated_at'];
   const sel = `
-    SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, s.ent_cd, s.corp_name, s.customer_name,
-           s.model_code, s.model_name, s.equip_name, s.gas_type, s.branch, s.office, s.sales_person,
-           CASE WHEN s.qty_sum > 0 AND s.base_amt > 0 THEN s.base_amt / s.qty_sum END,
-           CASE WHEN s.qty_sum > 0 AND s.base_amt > 0 THEN s.qty_sum END,
-           CASE WHEN s.qty_sum > 0 AND s.cost_amt > 0 THEN s.cost_amt / s.qty_sum END,
-           ${Array.from({ length: ACT_SLOTS }, (_, i) => price(i + 1)).join(', ')},
+    SELECT s.ent_cd || '|' || s.model_code, s.ent_cd, s.ent_cd, s.customer_name,
+           s.ent_cd, s.customer_name, s.delivery_name,
+           s.model_code, s.model_name, s.equip_name, s.category_name,
+           CASE WHEN s.list_wgt > 0 THEN s.list_amt / s.list_wgt END,
+           CASE WHEN s.price_wgt > 0 THEN s.price_amt / s.price_wgt END,
+           s.qty_sum,
+           CASE WHEN s.past_wgt > 0 THEN s.past_amt / s.past_wgt END,
+           s.past_date,
            ${batch ? '?' : 'NULL'}, ?
       FROM act_staging s
      WHERE true`;   // SQLiteは INSERT...SELECT の ON CONFLICT を JOIN の ON と読み違えるため、
                     // 区切りとして WHERE を置く（PostgreSQLでも同じ意味になる）
-  // 上書きする列（agg_key は突き合わせのキーなので除く）
   const upd = ins.filter((c) => c !== 'agg_key').map((c) => `${c} = excluded.${c}`).join(', ');
   await db.run(
     `INSERT INTO deals (${ins.join(',')}) ${sel}
@@ -2838,9 +2782,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     removed = Number(r?.changes ?? 0);
   }
 
-  const anyAct = actCols('act_price_').map((c) => `${c} IS NOT NULL`).join(' OR ');
   const [{ covered }, { total }, { groups }] = await Promise.all([
-    db.get(`SELECT COUNT(*) AS covered FROM deals WHERE ${anyAct}`),
+    db.get('SELECT COUNT(*) AS covered FROM deals WHERE master_avg_price IS NOT NULL'),
     db.get('SELECT COUNT(*) AS total FROM deals'),
     db.get('SELECT COUNT(*) AS groups FROM act_staging'),
   ]);

@@ -326,7 +326,9 @@ export default function Dashboard() {
   const m1 = data.aggMeta?.m1 || '翌月';
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
-  const months = data.months || 12;
+  const months = data.months || 1;
+  const actYm = data.actuals?.[0]?.ym ?? '';
+  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
   // 表の切り替え。既定は器具区分別（URLの tab で切り替える）
   const tab = (['equip', 'branch', 'corp'] as const).includes(get('tab') as never)
     ? (get('tab') as 'equip' | 'branch' | 'corp') : 'equip';
@@ -352,10 +354,9 @@ export default function Dashboard() {
         </button>
       </div>
       <p className="page-sub">
-        出荷実績（{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}）の<strong>品目件数</strong>を母数に、
-        マスタ登録（A基準）との突合件数と、月ごとの<strong>値上げ額</strong>（(A基準−実績単価)×数量）を出します。
-        実績単価と数量は<strong>{meta?.aggMeta?.basePeriod?.trim() || '1~3月'}の出荷実績</strong>
-        （マスタ登録の単価を優先。無い品目は出荷実績取込の値）です。
+        価格調査（{actLabel}実績）の<strong>品目件数</strong>を母数に、
+        マスタ登録（A基準）との突合件数と、<strong>値上げ額</strong>（(A基準−{actLabel}の実単価)×数量）を出します。
+        <strong>実績</strong>の行は、値上げ前（過去最新単価）から{actLabel}までに実際に上がった分です。
         <strong>承認日</strong>は既定で<strong>当月以降に承認された単価だけ</strong>を見ています
         （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
         絞り込みで件数と値上げ額が変わります。
@@ -431,7 +432,7 @@ export default function Dashboard() {
       */}
       <div className="tiles">
         {/* 出荷実績（1~3月）の品目全数と、マスタ登録に載っている品目の突合 */}
-        <Kpi label={`出荷実績（${meta?.aggMeta?.basePeriod?.trim() || '1~3月'}）`}
+        <Kpi label={`実績（${actLabel}）`}
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 月平均 ${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}`} />
         <Kpi label="マスタ登録（A基準あり）"

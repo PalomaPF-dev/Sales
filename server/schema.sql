@@ -127,7 +127,9 @@ CREATE TABLE IF NOT EXISTS deals (
   hist_avg_price  REAL,   -- 実績の平均単価（法人×品目・期間全体）
   hist_qty        REAL,   -- 実績の数量合計（法人×品目・期間全体）
   master_qty      REAL,   -- マスタ登録側の数量合計（法人×品目に集約したもの）
-  master_avg_price REAL,  -- マスタ登録側の出荷単価の加重平均（整合確認用）
+  master_avg_price REAL,  -- 現状単価（価格調査の当月単価。数量で加重平均）
+  past_price      REAL,   -- 過去最新単価（値上げ前。価格調査の比較用）
+  past_date       TEXT,   -- 過去最新受注日（過去最新単価が出た日）
   act_price_1  REAL,   -- 価格調査の実単価（1番目の月。月の並びは settings の actual_meta）
   act_price_2  REAL,   -- 価格調査の実単価（2番目の月。月の並びは settings の actual_meta）
   act_price_3  REAL,   -- 価格調査の実単価（3番目の月。月の並びは settings の actual_meta）
@@ -224,44 +226,23 @@ CREATE TABLE IF NOT EXISTS agg_staging (
 CREATE TABLE IF NOT EXISTS act_staging (
   ent_cd     TEXT NOT NULL,
   model_code TEXT NOT NULL,
-  -- 現状（1-3月出荷単価×売上数）と売上数の合計。現状単価もこのファイルから取り込む
-  base_amt REAL NOT NULL DEFAULT 0,
-  qty_sum  REAL NOT NULL DEFAULT 0,
-  cost_amt REAL NOT NULL DEFAULT 0,
-  -- 案件の行をこのファイルから作るための項目。数量の一番多い行を代表にする
-  corp_name    TEXT,
+  -- 当月の数量と、加重平均を出すための「単価×数量」と重み
+  qty_sum    REAL NOT NULL DEFAULT 0,
+  price_amt  REAL NOT NULL DEFAULT 0,
+  price_wgt  REAL NOT NULL DEFAULT 0,
+  -- 過去最新単価（値上げ前）と、その受注日（まとまりの中で一番新しい日）
+  past_amt   REAL NOT NULL DEFAULT 0,
+  past_wgt   REAL NOT NULL DEFAULT 0,
+  past_date  TEXT,
+  list_amt   REAL NOT NULL DEFAULT 0,
+  list_wgt   REAL NOT NULL DEFAULT 0,
+  -- 案件の行を作るための項目。数量の一番多い行を代表にする
   customer_name TEXT,
-  model_name   TEXT,
-  equip_name   TEXT,
-  gas_type     TEXT,
-  branch       TEXT,
-  office       TEXT,
-  sales_person TEXT,
-  top_qty      REAL,
-  a1_amt   REAL NOT NULL DEFAULT 0,
-  a2_amt   REAL NOT NULL DEFAULT 0,
-  a3_amt   REAL NOT NULL DEFAULT 0,
-  a4_amt   REAL NOT NULL DEFAULT 0,
-  a5_amt   REAL NOT NULL DEFAULT 0,
-  a6_amt   REAL NOT NULL DEFAULT 0,
-  a7_amt   REAL NOT NULL DEFAULT 0,
-  a8_amt   REAL NOT NULL DEFAULT 0,
-  a9_amt   REAL NOT NULL DEFAULT 0,
-  a10_amt   REAL NOT NULL DEFAULT 0,
-  a11_amt   REAL NOT NULL DEFAULT 0,
-  a12_amt   REAL NOT NULL DEFAULT 0,
-  w1_sum   REAL NOT NULL DEFAULT 0,
-  w2_sum   REAL NOT NULL DEFAULT 0,
-  w3_sum   REAL NOT NULL DEFAULT 0,
-  w4_sum   REAL NOT NULL DEFAULT 0,
-  w5_sum   REAL NOT NULL DEFAULT 0,
-  w6_sum   REAL NOT NULL DEFAULT 0,
-  w7_sum   REAL NOT NULL DEFAULT 0,
-  w8_sum   REAL NOT NULL DEFAULT 0,
-  w9_sum   REAL NOT NULL DEFAULT 0,
-  w10_sum   REAL NOT NULL DEFAULT 0,
-  w11_sum   REAL NOT NULL DEFAULT 0,
-  w12_sum   REAL NOT NULL DEFAULT 0,
+  delivery_name TEXT,
+  model_name    TEXT,
+  equip_name    TEXT,
+  category_name TEXT,
+  top_qty       REAL,
   PRIMARY KEY (ent_cd, model_code)
 );
 

@@ -17,8 +17,7 @@ interface DealsRes {
   };
   page: number;
   size: number;
-  months: number;        // 月別履歴の対象月数（数量の月平均に使う）
-  masterMonths?: number; // マスタ登録の出荷実績（1~3月）の月数
+  months: number;        // 当月ぶん（=1）。金額はそのまま1か月あたり
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
@@ -247,48 +246,33 @@ export default function Deals() {
     if (ok) setMsg({ kind: 'ok', text: '適用年月を保存しました' });
   };
 
-  // 実績はマスタ登録の単価を優先し、無い品目は出荷実績（1~3月）の値で補う。
-  // 数量は期間の合計なので、それぞれの月数で割って月平均を出す。
-  const months = data?.months || 3;
-  const mMonths = data?.masterMonths || 3;
-  const basePeriod = meta?.aggMeta?.basePeriod?.trim() || '1~3月';
-  // 価格調査の実単価。月の並びは取込時に決まる（actualMeta）
-  const actMonths = meta?.actualMeta?.months ?? [];
-  /** 実単価のうち一番新しい月の値。無ければ null */
-  const latestAct = (d: Deal) => {
-    for (let i = actMonths.length; i >= 1; i--) {
-      const v = (d as unknown as Record<string, number | null | undefined>)[`act_price_${i}`];
-      if (v != null) return { ym: actMonths[i - 1], price: Number(v) };
-    }
-    return null;
-  };
+  // 現状は価格調査の当月実績（単価・数量）。過去最新単価と比べると、
+  // 値上げ前からいくら上がったかが分かる。
+  const actYm = meta?.actualMeta?.ym ?? '';
+  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  /** 現状の単価（当月の実単価） */
+  const effPrice = (d: Deal) => d.master_avg_price ?? null;
+  /** 当月の数量 */
+  const monthlyQty = (d: Deal) => (d.master_qty == null ? null : Number(d.master_qty));
+
   /**
-   * 実際に上がった幅。一番新しい月の実単価 − 現状の平均単価。
+   * 値上げ前（過去最新単価）から当月までに実際に上がった幅。
    * どちらかが無い行は出さない（比べる相手が無いため）。
    */
   const actDiff = (d: Deal) => {
-    const last = latestAct(d);
-    const base = effPrice(d);
-    if (!last || base == null) return '—';
-    const diff = last.price - Number(base);
-    const rate = Number(base) > 0 ? Math.round((diff / Number(base)) * 1000) / 10 : null;
+    const now = effPrice(d);
+    const past = d.past_price;
+    if (now == null || past == null) return '—';
+    const diff = Number(now) - Number(past);
+    const rate = Number(past) > 0 ? Math.round((diff / Number(past)) * 1000) / 10 : null;
     return (
       <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : { fontWeight: 700 }}
-            title={`${last.ym}の実単価 ${yen(last.price)} − 現状の平均単価 ${yen(base)}`}>
+            title={`${actLabel}の単価 ${yen(now)} − 過去最新単価 ${yen(past)}`
+              + (d.past_date ? `（過去最新受注日 ${d.past_date}）` : '')}>
         {diff === 0 ? '0' : `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}`}
         {rate != null && diff !== 0 && <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>}
       </span>
     );
-  };
-
-  /** 実績の平均単価（マスタ登録を優先。無い品目は出荷実績の値） */
-  const effPrice = (d: Deal) => d.master_avg_price ?? d.hist_avg_price ?? null;
-  /** 月平均の数量（期間の合計 ÷ その実績の月数） */
-  const monthlyQty = (d: Deal) => {
-    if (d.master_avg_price != null) {
-      return d.master_qty == null ? null : Number(d.master_qty) / mMonths;
-    }
-    return d.hist_qty == null ? null : Number(d.hist_qty) / months;
   };
 
   /**
@@ -328,7 +312,7 @@ export default function Deals() {
     const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
     return (
       <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : undefined}
-            title={`A基準（${label}の申請単価）− 実績の平均単価（マスタ登録の${basePeriod}出荷実績）`}>
+            title={`A基準（${label}の申請単価）− ${actLabel}の実単価`}>
         {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
         {rate != null && <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>}
       </span>
@@ -351,8 +335,8 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>出荷実績の法人×品目</strong>を土台に、価格を比較します。
-        実績は<strong>{basePeriod}の出荷実績</strong>（平均単価と数量）で、
-        マスタ登録の単価を優先し、マスタ登録に無い品目は出荷実績取込の値を表示します。
+        <strong>過去最新単価</strong>（値上げ前）から<strong>{actLabel}の実単価</strong>までが実際の値上がり、
+        そこから先の<strong>A基準</strong>が今後の計画です。
         A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
         B基準は実際の決定単価（営業企画・管理者が入力）です。
         A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
@@ -458,7 +442,7 @@ export default function Deals() {
             <b>{data.totals.count.toLocaleString()}</b>件
             {' ・ '}完了 <b>{Number(data.totals.r2_done || 0).toLocaleString()}</b>
             {/* 絞り込んだ全件の値上げ額（1か月あたり）。月ごとに単価が変わるので3つ出す */}
-            <span title={`値上げ幅（A基準−実績の平均単価）× 月平均の数量 を、絞り込んだ全件で合計した金額。実績はマスタ登録の${basePeriod}出荷実績`}>
+            <span title={`値上げ幅（A基準−${actLabel}の実単価）× ${actLabel}の数量 を、絞り込んだ全件で合計した金額`}>
               {' ・ '}値上げ額（月）合計{' '}
               {([['m1', data.totals.raise_m1], ['m2', data.totals.raise_m2], ['m3', data.totals.raise_m3]] as const)
                 .map(([key, v], i) => (
@@ -543,16 +527,10 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={7} className="grp">基本情報</th>
-              <th colSpan={2} className="grp sep"
-                  title={`${basePeriod}の出荷実績。マスタ登録の単価を優先し、マスタ登録に無い品目は出荷実績取込の値を表示します`}>
-                出荷実績<small>（{basePeriod}）</small>
+              <th colSpan={4} className="grp sep"
+                  title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}の実単価までが、実際に上がった分です`}>
+                実績<small>（価格調査 {actLabel}）</small>
               </th>
-              {actMonths.length > 0 && (
-                <th colSpan={actMonths.length + 1} className="grp sep"
-                    title="価格調査の実単価。月ごとに実際いくらで出たかと、現状（左）からの上がり幅を出します">
-                  実単価（価格調査）
-                </th>
-              )}
               <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
               <th className="num grp sep">B基準</th>
               <th colSpan={3} className="grp sep">値上げ幅（A基準−実績）</th>
@@ -567,22 +545,16 @@ export default function Deals() {
               <Th col="branch">支店</Th>
               <Th col="office">営業所</Th>
               <Th col="sales_person">担当者</Th>
-              <Th col="hist_avg_price" className="num sep">平均単価</Th>
-              <Th col="hist_qty" className="num"
-                  title={`1か月あたりの数量（${basePeriod}の売上数の合計 ÷ ${mMonths}か月）`}>
-                数量<br /><small>月平均</small>
+              <th className="num sep" title="値上げ前の単価。カーソルを合わせると受注日が出ます">
+                過去最新単価
+              </th>
+              <Th col="hist_avg_price" className="num" title={`${actLabel}の実単価（数量で加重平均）`}>
+                {actLabel}単価
               </Th>
-              {actMonths.map((ym, i) => (
-                <th key={ym} className={`num${i === 0 ? ' sep' : ''}`}
-                    title={`${ym}の実単価（価格調査）`}>
-                  {Number(ym.slice(5, 7))}月
-                </th>
-              ))}
-              {actMonths.length > 0 && (
-                <th className="num" title="一番新しい月の実単価 − 現状の平均単価。実際に上がった幅">
-                  上がり幅<br /><small>最新月−現状</small>
-                </th>
-              )}
+              <Th col="hist_qty" className="num" title={`${actLabel}の数量`}>数量</Th>
+              <th className="num" title={`${actLabel}の実単価 − 過去最新単価。実際に上がった幅`}>
+                上がり幅<br /><small>過去→{actLabel}</small>
+              </th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
               <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
@@ -632,27 +604,18 @@ export default function Deals() {
                   <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
 
-                  {/* 出荷実績（法人×品目）。マスタ登録の1~3月実績（無い行は空欄） */}
-                  <td className="num sep">{effPrice(d) == null ? '—' : yen(effPrice(d))}</td>
+                  {/* 実績（価格調査）。過去最新単価 → 当月の実単価・数量・上がり幅 */}
+                  <td className="num sep"
+                      title={d.past_date ? `過去最新受注日 ${d.past_date}` : undefined}>
+                    {d.past_price == null ? '—' : yen(d.past_price)}
+                    {d.past_date && <div className="sub">{dateLabel(d.past_date)}</div>}
+                  </td>
+                  <td className="num">{effPrice(d) == null ? '—' : yen(effPrice(d))}</td>
                   <td className="num">
                     {monthlyQty(d) == null ? '—'
                       : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                   </td>
-
-                  {/* 価格調査の実単価。月ごとに実際いくらで出たかを並べ、
-                      最後に一番新しい月の上がり幅（実単価−現状単価）を出す */}
-                  {actMonths.map((ym, i) => {
-                    const v = (d as unknown as Record<string, number | null | undefined>)[`act_price_${i + 1}`];
-                    return (
-                      <td key={ym} className={`num${i === 0 ? ' sep' : ''}`}
-                          title={v == null ? `${ym}: 実績なし` : `${ym}: ${yen(v)}`}>
-                        {v == null ? '—' : yen(v)}
-                      </td>
-                    );
-                  })}
-                  {actMonths.length > 0 && (
-                    <td className="num">{actDiff(d)}</td>
-                  )}
+                  <td className="num">{actDiff(d)}</td>
 
                   {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日。
                       カーソルで承認日と稟議Noが見える */}

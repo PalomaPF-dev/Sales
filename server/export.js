@@ -29,25 +29,18 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
  * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
-function buildColumns({ months, masterMonths = 3, withCost, aggMeta, actualMeta }) {
+function buildColumns({ months, withCost, aggMeta, actualMeta }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
   const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
 
-  // 実績はマスタ登録の単価を優先し、無い品目は出荷実績（1~3月）で補う（案件一覧と同じ基準）。
-  // 数量は期間の合計のため、それぞれの月数で割って月平均にする
-  const effPrice = (r) => (r.master_avg_price ?? r.hist_avg_price ?? null);
-  const monthlyQty = (r) => {
-    if (r.master_avg_price != null) {
-      return r.master_qty == null ? null : Number(r.master_qty) / masterMonths;
-    }
-    return r.hist_qty == null ? null : Number(r.hist_qty) / months;
-  };
-  const basePeriod = String(aggMeta?.basePeriod ?? '').trim() || '1~3月';
-  // 価格調査の実単価。取り込んだ月の分だけ列にする
-  const actMonths = Array.isArray(actualMeta?.months) ? actualMeta.months : [];
+  // 現状は価格調査の当月実績（単価・数量）。過去最新単価と比べると実際の値上がりが分かる
+  const effPrice = (r) => (r.master_avg_price ?? null);
+  const monthlyQty = (r) => (r.master_qty == null ? null : Number(r.master_qty));
+  const actYm = String(actualMeta?.ym ?? '');
+  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
 
   /** 値上げ幅 = その月のA基準 − 実績単価。単価0は未申請なので空にする */
   const diff = (key) => (r) => {
@@ -70,20 +63,15 @@ function buildColumns({ months, masterMonths = 3, withCost, aggMeta, actualMeta 
     ['営業所', (r) => r.office],
     ['担当者', (r) => r.sales_person],
 
-    // 出荷実績（マスタ登録の1~3月実績を優先。無い品目は出荷実績取込の値）
-    [`平均出荷単価（${basePeriod}）`, (r) => round(effPrice(r))],
-    ['数量（月平均）', (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
-
-    // 価格調査の実単価（月ごと）。計画（A基準）と実際の単価を並べて見るための列
-    ...actMonths.map((ym, i) => [`実単価 ${ym}`, (r) => round(r[`act_price_${i + 1}`])]),
-    // 実際に上がった幅（一番新しい月の実単価 − 現状の平均単価）。画面と同じ
-    ...(actMonths.length ? [['上がり幅（実単価−現状）', (r) => {
-      for (let i = actMonths.length; i >= 1; i--) {
-        const v = r[`act_price_${i}`];
-        if (v != null && effPrice(r) != null) return round(Number(v) - Number(effPrice(r)));
-      }
-      return '';
-    }]] : []),
+    // 実績（価格調査）。値上げ前 → 当月 → 実際に上がった幅
+    ['過去最新単価', (r) => round(r.past_price)],
+    ['過去最新受注日', (r) => r.past_date],
+    [`実単価（${actLabel}）`, (r) => round(effPrice(r))],
+    [`数量（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
+    ['上がり幅（実単価−過去）', (r) => {
+      if (effPrice(r) == null || r.past_price == null) return '';
+      return round(Number(effPrice(r)) - Number(r.past_price));
+    }],
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
     [`A基準 ${m0}`, (r) => round(r.a_price_m0)],

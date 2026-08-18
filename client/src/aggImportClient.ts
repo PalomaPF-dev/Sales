@@ -10,7 +10,8 @@ import { api } from './api';
  */
 
 export interface AggRow {
-  customer_name: string;   // 法人の照合に使う（得意先名 → 法人グループ）
+  customer_code: string;   // 案件の突き合わせに使う（得意先×商品）
+  customer_name: string;
   model_code: string;
   // 支店・営業所・担当者。法人×品目にまとめるときは数量の一番多い行を代表にする
   branch: string;
@@ -168,6 +169,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     const model = txt(r, col.model_code);
     if (!cust || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
     rows.push({
+      customer_code: cust,
       customer_name: txt(r, col.customer_name),
       model_code: model,
       branch: txt(r, col.branch),
