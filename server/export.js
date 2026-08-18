@@ -3,7 +3,7 @@ import XLSX from 'xlsx';
 /**
  * 案件一覧の内容をそのままExcelにする。
  *
- * 列は画面と同じ並び（基本情報 → 出荷実績 → A基準 → B基準 → 値上げ幅 → 交渉）。
+ * 列は画面と同じ並び（基本情報 → 実績（価格調査） → A基準 → B基準 → 値上げ幅 → 交渉）。
  * 絞り込みは呼び出し側（/deals/export）で効かせているので、
  * ここには絞り込み済みの行だけが渡ってくる。
  *
@@ -38,15 +38,17 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
 
   // 現状は価格調査の当月実績（単価・数量）。過去最新単価と比べると実際の値上がりが分かる
   const effPrice = (r) => (r.master_avg_price ?? null);
+  /** マスタ単価（値決めの単価）。A基準はこれと比べる。無い行は実単価で代用 */
+  const mPrice = (r) => (r.master_price ?? r.master_avg_price ?? null);
   const monthlyQty = (r) => (r.master_qty == null ? null : Number(r.master_qty));
   const actYm = String(actualMeta?.ym ?? '');
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
 
-  /** 値上げ幅 = その月のA基準 − 実績単価。単価0は未申請なので空にする */
+  /** 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価0は未申請なので空にする */
   const diff = (key) => (r) => {
     const a = Number(r[key]);
-    if (!(a > 0) || effPrice(r) == null) return '';
-    return round(a - Number(effPrice(r)));
+    if (!(a > 0) || mPrice(r) == null) return '';
+    return round(a - Number(mPrice(r)));
   };
 
   const cols = [
@@ -63,15 +65,20 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     ['営業所', (r) => r.office],
     ['担当者', (r) => r.sales_person],
 
-    // 実績（価格調査）。値上げ前 → 当月 → 実際に上がった幅
+    // 実績（価格調査）。値上げ前 → 当月のマスタ単価 → 実際に出た単価
     ['過去最新単価', (r) => round(r.past_price)],
     ['過去最新受注日', (r) => r.past_date],
+    [`マスタ単価（${actLabel}）`, (r) => round(r.master_price)],
+    ['上がり幅（マスタ単価−過去）', (r) => {
+      if (mPrice(r) == null || r.past_price == null) return '';
+      return round(Number(mPrice(r)) - Number(r.past_price));
+    }],
     [`実単価（${actLabel}）`, (r) => round(effPrice(r))],
     [`数量（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
     [`金額（${actLabel}）`, (r) => round(r.master_amount)],
-    ['上がり幅（実単価−過去）', (r) => {
-      if (effPrice(r) == null || r.past_price == null) return '';
-      return round(Number(effPrice(r)) - Number(r.past_price));
+    ['実勢差（実単価−マスタ単価）', (r) => {
+      if (effPrice(r) == null || r.master_price == null) return '';
+      return round(Number(effPrice(r)) - Number(r.master_price));
     }],
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
@@ -98,8 +105,8 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     [`値上げ幅 ${m3}`, diff('a_price_m3')],
     [`値上げ額（月あたり）${m3}`, (r) => {
       const a = Number(r.a_price_m3);
-      if (!(a > 0) || effPrice(r) == null || monthlyQty(r) == null) return '';
-      return round((a - Number(effPrice(r))) * Number(monthlyQty(r)));
+      if (!(a > 0) || mPrice(r) == null || monthlyQty(r) == null) return '';
+      return round((a - Number(mPrice(r))) * Number(monthlyQty(r)));
     }],
 
     // 交渉
@@ -137,6 +144,10 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
   const t = data.abTotals ?? {};
+  // 当月の金額そのもの（土台）。条件シートとまとめシートの両方で使う
+  const base = n(t.base_amt);
+  // マスタ単価（値決めの単価）どおりに出た場合の金額。実績との差が目減りした分
+  const mpAmt = n(t.mp_amt);
 
   const wb = XLSX.utils.book_new();
   const addSheet = (name, aoa, widths) => {
@@ -156,11 +167,11 @@ export function buildDashboardWorkbook(data, opts = {}) {
   cond.push(['表示範囲', data.scope?.label ?? '']);
   cond.push(['品目件数（価格調査）', n(data.histTotals?.deals)]);
   cond.push(['当月実績の金額（土台）', round(base)]);
+  cond.push(['当月のマスタ単価どおりの金額', round(mpAmt)]);
   cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（実績と計画を月の流れで並べる）
-  const base = n(t.base_amt);
   const summary = [[
     '月', '区分', '件数', '上がった件数', '単価同じ件数',
     '比較のもと（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
@@ -169,7 +180,12 @@ export function buildDashboardWorkbook(data, opts = {}) {
     // 土台。取り込んだ当月の金額そのもの（全品目）。比べる相手は無い
     { ym: String(data.actuals?.[0]?.ym ?? '当月'), kind: '土台',
       deals: n(t.deals), b: '', amt: base, up: '', same: '' },
-    // 実績。過去最新単価（値上げ前）→ 当月。過去単価のある品目だけが対象
+    // 実勢。マスタ単価どおりに出た場合（比較のもと）と、実際の金額の差
+    ...(mpAmt > 0 ? [{
+      ym: `${String(data.actuals?.[0]?.ym ?? '当月')} 実勢`, kind: '実勢',
+      deals: n(t.deals), b: mpAmt, amt: base, up: '', same: n(t.mp_same),
+    }] : []),
+    // 実績。過去最新単価（値上げ前）→ 当月のマスタ単価。過去単価のある品目だけが対象
     ...(data.actuals ?? []).map((a) => ({
       ym: `過去→${String(a.ym).slice(5)}`, kind: '実績', deals: n(a.deals),
       b: n(a.base), amt: n(a.amount), up: n(a.up), same: n(a.same),

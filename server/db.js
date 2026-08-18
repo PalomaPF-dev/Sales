@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-19-monthly-amount';
+const SCHEMA_VERSION = '2026-08-19-master-price';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -570,6 +570,9 @@ async function beforeSchema() {
     'DROP TABLE IF EXISTS act_staging',
     // 当月の金額そのもの（合計を合わせるために持つ）
     'ALTER TABLE deals ADD COLUMN master_amount DOUBLE PRECISION',
+    // 当月のマスタ単価（値決めの単価）。実単価（master_avg_price）とは別に持ち、
+    // A基準（今後の計画）はこのマスタ単価と比べる
+    'ALTER TABLE deals ADD COLUMN master_price REAL',
     // 価格調査（当月実績）の過去最新単価と受注日
     'ALTER TABLE deals ADD COLUMN past_price REAL',
     'ALTER TABLE deals ADD COLUMN past_date TEXT',
@@ -608,7 +611,7 @@ async function beforeSchema() {
   // 列を1つでも足したら、その列を並びに含めた形へ作り直す必要がある。
   // 一番あとに足した列がビューに無ければ、旧構成とみなして落とす。
   try {
-    await db.get('SELECT master_amount, past_price, past_date FROM deal_calc LIMIT 1');
+    await db.get('SELECT master_price, master_amount, past_price, past_date FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

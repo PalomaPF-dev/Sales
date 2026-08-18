@@ -4,9 +4,15 @@ import { api } from './api';
 /**
  * 価格調査（当月実績）の取込。案件一覧の土台になる。
  *
- * 「７月数量」「７月単価」と「過去最新単価」が入ったファイルで、
- * 値上げ前（過去最新単価）から当月（7月）までに実際いくら上がったかが分かる。
- * A基準（マスタ登録）はこの当月単価に重ねて、今後の計画として比べる。
+ * ファイルには当月（7月）の数量・単価・金額が「マスタ／見積／合計」で入っている。
+ * ・マスタ単価 … 値決めの単価。A基準（今後の計画）はこれと比べる
+ * ・実単価     … 金額（合計）÷ 数量（合計）。実際に出た単価で、見積ぶんが
+ *                混ざるとマスタ単価より下がる。こちらが実績の正
+ * ・金額（合計）… 実績そのもの。合計が売上と一致するようにそのまま持つ
+ * 「過去最新単価」からマスタ単価までが、これまでに上がった分になる。
+ *
+ * 「７月数量」「７月単価」だけの古い形式でも取り込める（その場合は
+ * マスタ単価＝当月単価として扱う）。
  *
  * 得意先×商品の単位で取り込み、案件は 得意先×商品 にまとめる。
  */
@@ -20,11 +26,12 @@ export interface SurveyRow {
   equip_name: string;
   category_name: string;
   list_price: unknown;     // 標準単価
-  qty: unknown;            // 当月の数量
-  price: unknown;          // 当月の単価
+  qty: unknown;            // 当月の数量（マスタ＋見積の合計）
+  price: unknown;          // 当月の実単価（金額÷数量。数量0のときはマスタ単価）
   amount: unknown;         // 当月の金額（合計を実績と合わせるためそのまま送る）
+  master_price: unknown;   // 当月のマスタ単価（値決めの単価。A基準はこれと比べる）
   past_price: unknown;     // 過去最新単価（値上げ前）
-  past_date: string | null;// 過去最新受注日
+  past_date: string | null;// 過去最新受注日（過去最新売上日）
 }
 
 export interface SurveyParsed {
@@ -34,6 +41,7 @@ export interface SurveyParsed {
   ym: string;
   monthLabel: string;      // 「7月」
   hasPast: boolean;        // 過去最新単価の列があるか
+  hasMasterPrice: boolean; // マスタ単価の列があるか（新しい形式のファイル）
 }
 
 /** 見出しの表記ゆれを吸収する（全角数字・全角かっこ・空白） */
@@ -81,16 +89,30 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
 
-  // 「7月数量」「7月単価」から当月を決める（月は見出しから読む）
-  const qtyAt = headers.findIndex((h) => /^\d{1,2}月数量$/.test(h));
-  const priceAt = headers.findIndex((h) => /^\d{1,2}月単価$/.test(h));
-  // 金額はファイルの値をそのまま使う（単価×数量で戻すと端数がずれる）
-  const amountAt = headers.findIndex((h) => /^\d{1,2}月金額$/.test(h));
-  if (qtyAt < 0 || priceAt < 0) {
+  // 「7月数量」「7月単価」から当月を決める（月は見出しから読む）。
+  // 新しい形式は「7月数量(マスタ)」「7月数量(合計)」のように種別が付く。
+  // 数量・金額は合計、単価はマスタを使う（無ければ種別なしの列）。
+  const findMonth = (kind: string, suffix: string) =>
+    headers.findIndex((h) => new RegExp(`^\\d{1,2}月${kind}${suffix}$`).test(h));
+  const pick = (kind: string, ...suffixes: string[]) => {
+    for (const sfx of suffixes) {
+      const i = findMonth(kind, sfx);
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  // 数量・金額は合計（マスタ＋見積）。実績の合計を合わせるための土台になる
+  const qtyAt = pick('数量', '\\(合計\\)', '', '\\(マスタ\\)');
+  const amountAt = pick('金額', '\\(合計\\)', '', '\\(マスタ\\)');
+  // マスタ単価は値決めの単価。古い形式では種別なしの「7月単価」がこれにあたる
+  const mPriceAt = pick('単価', '\\(マスタ\\)', '');
+  if (qtyAt < 0 || mPriceAt < 0) {
     throw new Error('「7月数量」「7月単価」のような当月の列がありません。'
       + '価格調査（当月実績）のファイルをお使いください');
   }
   const month = Number(/^(\d{1,2})月/.exec(headers[qtyAt])![1]);
+  // マスタ単価の列に種別が付いていれば新しい形式
+  const hasMasterPrice = findMonth('単価', '\\(マスタ\\)') >= 0;
 
   const col = {
     得意先コード: find('得意先コード'),
@@ -105,7 +127,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const pastPriceAt = findLike('過去最新単価') >= 0
     ? headers.findIndex((h) => h.includes('過去最新単価') && !h.includes('換算'))
     : -1;
-  const pastDateAt = findLike('過去最新受注日');
+  // 受注日／売上日はファイルによって呼び方が違う
+  const pastDateAt = findLike('過去最新受注日') >= 0 ? findLike('過去最新受注日') : findLike('過去最新売上日');
 
   const at = {
     customer_name: find('得意先名'),
@@ -116,6 +139,12 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     list_price: find('標準単価'),
   };
   const txt = (r: unknown[], i: number) => (i >= 0 ? String(r[i] ?? '').trim() : '');
+  /** 数として読む。空欄・記号入りでも0に落とす */
+  const num = (r: unknown[], i: number) => {
+    if (i < 0) return 0;
+    const n = Number(String(r[i] ?? '').replace(/[,¥\s]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  };
 
   const rows: SurveyRow[] = [];
   let skippedRows = 0;
@@ -134,8 +163,15 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       category_name: txt(r, at.category_name),
       list_price: at.list_price >= 0 ? r[at.list_price] : null,
       qty: r[qtyAt],
-      price: r[priceAt],
+      // 実単価は 金額÷数量（見積ぶんも混ざった、実際に出た単価）。
+      // 数量が0の月は割り算ができないので、マスタ単価を代わりに置く
+      price: (() => {
+        const q = num(r, qtyAt);
+        const amt = num(r, amountAt);
+        return q > 0 && amt > 0 ? amt / q : (mPriceAt >= 0 ? r[mPriceAt] : null);
+      })(),
       amount: amountAt >= 0 ? r[amountAt] : null,
+      master_price: mPriceAt >= 0 ? r[mPriceAt] : null,
       past_price: pastPriceAt >= 0 ? r[pastPriceAt] : null,
       past_date: pastDateAt >= 0 ? toYmd(r[pastDateAt]) : null,
     });
@@ -149,6 +185,7 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     ym: `${year}-${String(month).padStart(2, '0')}`,
     monthLabel: `${month}月`,
     hasPast: pastPriceAt >= 0,
+    hasMasterPrice,
   };
 }
 

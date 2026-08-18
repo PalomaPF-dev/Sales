@@ -79,7 +79,10 @@ export default function SurveyImportCard({ anchorYm, onDone }:
       <p className="pt-note" style={{ marginTop: 0 }}>
         <strong>当月の実績</strong>（「7月数量」「7月単価」の列）と、
         <strong>過去最新単価</strong>（値上げ前）を取り込みます。
-        過去→当月が<strong>実際に上がった分</strong>、そこから先のA基準が<strong>今後の計画</strong>です。
+        単価が「マスタ／見積／合計」に分かれたファイルでは、
+        <strong>マスタ単価</strong>（値決めの単価）と<strong>実単価</strong>（金額÷数量）の
+        両方を取り込みます。過去→当月のマスタ単価が<strong>実際に上がった分</strong>、
+        そこから先のA基準が<strong>今後の計画</strong>で、どちらも値決めどうしの比較です。
         ファイルは 得意先×納入先×商品 の細かい単位なので、
         <strong>得意先×商品へ集約（数量で加重平均）します</strong>。
         <strong>この取込が案件一覧の土台</strong>で、ファイルに無い案件は削除されます
@@ -95,6 +98,9 @@ export default function SurveyImportCard({ anchorYm, onDone }:
               {parsed.p.hasPast
                 ? ' ・ 過去最新単価と比べて、実際に上がった分を出します'
                 : ' ・ 過去最新単価の列が無いため、値上がりの比較は出ません'}
+              {parsed.p.hasMasterPrice
+                ? ' ・ マスタ単価と実単価を分けて取り込みます'
+                : ' ・ マスタ単価の列が無いため、当月単価をマスタ単価として扱います'}
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>

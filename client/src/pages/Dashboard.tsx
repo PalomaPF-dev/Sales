@@ -19,6 +19,11 @@ interface AbRow {
   deals: number;
   qty: number;
   base_amt: number;
+  /** マスタ単価（値決めの単価）どおりに出た場合の金額。実績との差が見積などで下がった分 */
+  mp_amt: number;
+  /** 実単価がマスタ単価と同じ件数 / 下回った件数 */
+  mp_same: number;
+  mp_below: number;
   a0_amt: number;
   /**
    * 実績（価格調査の月ごと）。act_amt_1 が4月ぶん…という並び。未取込なら入らない。
@@ -207,7 +212,7 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3 }: {
             <Th col="qty" right title="1か月あたりの数量">
               数量<br /><small>月平均</small>
             </Th>
-            <Th col="base" right title="現状の出荷単価（実績の平均）× 数量。値上げしなかった場合の金額（1か月あたり）">
+            <Th col="base" right title="当月の金額そのもの（実績）。値上げしなかった場合の金額（1か月あたり）">
               現状額<br /><small>月あたり</small>
             </Th>
             {actYms.map((ym, i) => (
@@ -355,14 +360,15 @@ export default function Dashboard() {
       </div>
       <p className="page-sub">
         価格調査（{actLabel}実績）の<strong>品目件数</strong>を母数に、
-        マスタ登録（A基準）との突合件数と、<strong>値上げ額</strong>（(A基準−{actLabel}の実単価)×数量）を出します。
+        マスタ登録（A基準）との突合件数と、
+        <strong>値上げ額</strong>（(A基準−{actLabel}のマスタ単価)×数量）を出します。
         <strong>実績</strong>の行は、値上げ前（過去最新単価）から{actLabel}までに実際に上がった分です。
         <strong>承認日</strong>は既定で<strong>当月以降に承認された単価だけ</strong>を見ています
         （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
         絞り込みで件数と値上げ額が変わります。
-        下の表の<strong>現状額</strong>は実績単価×数量で、値上げしなかった場合の金額です。
-        各月の<strong>A基準額</strong>はA基準前提で数量を固定した金額で、その差が値上げ額、
-        現状額に対する割合が<strong>値上げ率</strong>です。
+        下の表の<strong>現状額</strong>は{actLabel}の金額そのもの（実績）です。
+        各月の<strong>A基準額</strong>は、そこへ「A基準 − {actLabel}のマスタ単価」の値上げ幅を
+        足した金額で、その差が値上げ額、現状額に対する割合が<strong>値上げ率</strong>です。
         金額はすべて<strong>1か月あたり</strong>です。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
@@ -440,7 +446,7 @@ export default function Dashboard() {
              sub={num(data.histTotals?.deals) > 0
                ? `出荷実績の品目の ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
-        {/* 実績（価格調査の実単価）。実際にいくら上がったかを、計画の隣に並べる */}
+        {/* 実績（過去最新単価 → 当月のマスタ単価）。実際にいくら上がったかを計画の隣に並べる */}
         {(data.actuals ?? []).map((a) => {
           const gain = (a.amount - a.base) / months;
           const rate = a.base > 0 ? Math.round(((a.amount - a.base) / a.base) * 1000) / 10 : null;
@@ -453,7 +459,7 @@ export default function Dashboard() {
                  label={`値上げ額（月あたり） ${a.ym} 実績`}
                  value={`${gain >= 0 ? '＋' : '−'}${yen(Math.abs(gain))}`}
                  sub={`上がった ${up.toLocaleString()}件 / 単価同じ ${same.toLocaleString()}件`
-                   + `（実単価 ${a.deals.toLocaleString()}件${rate == null ? '' : `・${rate > 0 ? '+' : ''}${rate}%`}）`} />
+                   + `（過去単価のある ${a.deals.toLocaleString()}件${rate == null ? '' : `・${rate > 0 ? '+' : ''}${rate}%`}）`} />
           );
         })}
         {([
@@ -478,12 +484,16 @@ export default function Dashboard() {
       <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
           <strong>土台</strong>は{actLabel}の実績そのもの（取り込んだ金額の合計）です。
+          <strong>実勢</strong>は{actLabel}のマスタ単価（値決めの単価）どおりに出た場合との差で、
+          見積ぶんなどで目減りした分にあたります。
           <strong>実績</strong>は過去最新単価（値上げ前）から{actLabel}までに実際に上がった分、
           <strong>計画</strong>はA基準（申請単価）どおりに上がった場合です。
           どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
           実績の行は<strong>過去最新単価のある品目だけ</strong>が対象のため、件数と金額が土台より小さくなります
           （比べる相手の無い品目は値上げ額を出せないため）。
-          計画の行は全品目が対象で、承認のある品目だけA基準に置き換えています。
+          計画の行は全品目が対象で、承認のある品目だけ
+          「A基準 − {actLabel}のマスタ単価」の値上げ幅を土台に足しています
+          （値決めどうしの比較なので、実単価の目減りとは混ざりません）。
         </p>
         <table className="tbl">
           <thead>
@@ -494,7 +504,8 @@ export default function Dashboard() {
               <th style={nums} title="実績の月だけ。現状より単価が上がった件数と、単価が変わっていない件数">
                 内訳<br /><small>上がった / 同じ</small>
               </th>
-              <th style={nums} title="実績の行は過去最新単価×数量、計画の行は当月の実績額">
+              <th style={nums}
+                  title="実勢の行はマスタ単価×数量、実績の行は過去最新単価×数量、計画の行は当月の実績額">
                 比較のもと<br /><small>月あたり</small>
               </th>
               <th style={nums}>金額<br /><small>月あたり</small></th>
@@ -504,7 +515,7 @@ export default function Dashboard() {
           </thead>
           <tbody>
             {/*
-              実績（価格調査の実単価）→ 計画（A基準）の順に、月の流れで並べる。
+              実勢（実単価とマスタ単価の差）→ 実績（過去→当月）→ 計画（A基準）の順に並べる。
               8月のように実績と計画の両方がある月は2行になり、
               計画どおりに上がっているかをその場で見比べられる。
             */}
@@ -513,8 +524,14 @@ export default function Dashboard() {
               {
                 key: 'base', ym: actYm || '当月', kind: '土台' as const,
                 deals: num(t?.deals), base: null as number | null, amt: num(t?.base_amt),
-                up: null, same: null,
+                up: null as number | null, same: null as number | null,
               },
+              // 実勢。マスタ単価どおりに出た場合（比較のもと）と、実際の金額の差
+              ...(num(t?.mp_amt) > 0 ? [{
+                key: 'mp', ym: `${actLabel} 実勢`, kind: '実勢' as const,
+                deals: num(t?.deals), base: num(t?.mp_amt) as number | null, amt: num(t?.base_amt),
+                up: null as number | null, same: num(t?.mp_same) as number | null,
+              }] : []),
               ...(data.actuals ?? []).map((a) => ({
                 key: `act-${a.ym}`, ym: `過去→${a.ym.slice(5)}`, kind: '実績' as const,
                 deals: a.deals, base: a.base as number | null, amt: a.amount,
@@ -535,13 +552,19 @@ export default function Dashboard() {
                   <tr key={row.key}>
                     <td><strong>{row.ym}</strong></td>
                     <td>
-                      <span className={`badge ${row.kind === '土台' ? 'gray' : row.kind === '実績' ? 'green' : 'blue'}`}>
+                      <span className={`badge ${row.kind === '土台' || row.kind === '実勢' ? 'gray'
+                        : row.kind === '実績' ? 'green' : 'blue'}`}>
                         {row.kind}
                       </span>
                     </td>
                     <td style={nums}>{row.deals.toLocaleString()}</td>
                     <td style={nums}>
-                      {row.up == null ? '—' : (
+                      {row.kind === '実勢' ? (
+                        <span title={`実単価が${actLabel}のマスタ単価と同じ品目の件数`}>
+                          <span style={{ color: 'var(--muted)' }}>—</span>
+                          {' / '}{row.same?.toLocaleString()}
+                        </span>
+                      ) : row.up == null ? '—' : (
                         <span title={`上がった ${row.up.toLocaleString()}件 / 単価が変わっていない ${row.same?.toLocaleString()}件`}>
                           <span style={{ fontWeight: 700, color: row.up > 0 ? '#15803d' : 'var(--muted)' }}>
                             {row.up.toLocaleString()}
