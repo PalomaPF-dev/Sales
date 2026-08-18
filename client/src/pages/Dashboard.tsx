@@ -58,9 +58,13 @@ interface DashboardRes {
     raise_bsim: number | null;
     b_rows: number;
   };
-  /** 価格調査の実単価から出した月ごとの実績。実単価のある案件だけで集計する */
+  /**
+   * 実績（過去最新単価 → 当月）。過去最新単価のある品目だけで集計する。
+   * amount=その品目ぶんの金額（マスタ）、base=過去最新単価×マスタ分の数量、
+   * mpAmount=同じ品目をマスタ単価×数量で戻した金額（値決めどうしの比較・参考）
+   */
   actuals?: {
-    ym: string; amount: number; base: number; deals: number;
+    ym: string; amount: number; base: number; mpAmount?: number; deals: number;
     /** 内訳。up=現状より上がった件数、same=単価が変わっていない件数 */
     up?: number; same?: number;
   }[];
@@ -516,7 +520,11 @@ export default function Dashboard() {
           <strong>マスタ</strong>はそのうち<strong>値決めどおりに出た分</strong>（金額（マスタ））で、
           土台との差が見積ぶんなどにあたります。
           <strong>A基準はこのマスタ分に対して当てる</strong>ため、計画の行の比較のもとはマスタ分の金額です。
-          <strong>実績</strong>は過去最新単価（値上げ前）から{actLabel}のマスタ単価までに実際に上がった分、
+          <strong>実績</strong>は過去最新単価（値上げ前）から{actLabel}までに実際に上がった分で、
+          金額は<strong>金額（マスタ）のうち過去最新単価のある品目ぶん</strong>、
+          比較のもとは<strong>過去最新単価 × マスタ分の数量</strong>です。
+          すぐ下の<strong>参考</strong>の行は、同じ品目を「マスタ単価 × 数量」で戻した場合で、
+          値決めどうしの比較にあたります（金額（マスタ）とは端数のぶんずれます）。
           <strong>計画</strong>はA基準（申請単価）どおりに上がった場合です。
           どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
           実績の行は<strong>過去最新単価のある品目だけ</strong>が対象のため、件数と金額がマスタ分より小さくなります
@@ -567,6 +575,12 @@ export default function Dashboard() {
                 deals: a.deals, base: a.base as number | null, amt: a.amount,
                 up: num(a.up), same: num(a.same),
               })),
+              // 参考。同じ品目を「マスタ単価 × 数量」で戻した場合（値決めどうしの比較）
+              ...(data.actuals ?? []).filter((a) => num(a.mpAmount) > 0).map((a) => ({
+                key: `actmp-${a.ym}`, ym: `過去→${a.ym.slice(5)}（単価）`, kind: '参考' as const,
+                deals: a.deals, base: a.base as number | null, amt: num(a.mpAmount),
+                up: num(a.up), same: num(a.same),
+              })),
               ...([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
                 .map(([label, amt]) => ({
                   key: `plan-${label}`, ym: label, kind: '計画' as const,
@@ -582,7 +596,8 @@ export default function Dashboard() {
                   <tr key={row.key}>
                     <td><strong>{row.ym}</strong></td>
                     <td>
-                      <span className={`badge ${row.kind === '土台' || row.kind === 'マスタ' ? 'gray'
+                      <span className={`badge ${row.kind === '土台' || row.kind === 'マスタ'
+                        || row.kind === '参考' ? 'gray'
                         : row.kind === '実績' ? 'green' : 'blue'}`}>
                         {row.kind}
                       </span>
