@@ -1661,6 +1661,13 @@ function aDateCond(q) {
   return q.aDateOp === 'before' ? `a_date_m3 < '${first}'` : `a_date_m3 >= '${first}'`;
 }
 
+/** 文字での検索の対象。名前だけでなくコードや区分も「含む」で引けるようにする */
+const SEARCH_COLS = [
+  'corp_name', 'corp_code', 'customer_name', 'customer_code', 'delivery_name',
+  'model_name', 'model_code', 'equip_name', 'category_name',
+  'branch', 'office', 'sales_person',
+];
+
 function dealFilters(q, user) {
   const where = [];
   const params = [];
@@ -1671,10 +1678,18 @@ function dealFilters(q, user) {
       params.push(...ids);
     }
   }
-  if (q.q) {
-    where.push('(customer_name LIKE ? OR corp_name LIKE ? OR model_name LIKE ? OR delivery_name LIKE ?)');
-    const like = `%${q.q}%`;
-    params.push(like, like, like, like);
+  // 文字での検索。入れた言葉を「含む」もので絞り込む。
+  // 空白で区切ると、すべての言葉を含むものだけが残る（例:「岩谷 給湯」）。
+  // 名前だけでなくコード・器具区分・支店・担当者も対象にして、
+  // 思いついた言葉のどれで打っても引けるようにする。
+  if (String(q.q ?? '').trim()) {
+    const words = String(q.q).trim().split(/[\s　]+/).filter(Boolean).slice(0, 5);
+    for (const w of words) {
+      const cond = SEARCH_COLS.map((c) => `LOWER(COALESCE(${c}, '')) LIKE ?`).join(' OR ');
+      where.push(`(${cond})`);
+      const like = `%${w.toLowerCase()}%`;
+      params.push(...SEARCH_COLS.map(() => like));
+    }
   }
   for (const [key, col] of [
     ['equip', 'equip_name'], ['person', 'sales_person'],

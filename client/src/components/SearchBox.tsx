@@ -78,7 +78,7 @@ export default function SearchBox({
       <input
         type="text"
         value={text}
-        placeholder="例: 東京ガス / FH-1613 / 池田"
+        placeholder="含む検索（例: 岩谷 / 給湯 / 札幌）"
         onChange={(e) => { setText(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
@@ -88,8 +88,27 @@ export default function SearchBox({
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => { setText(''); setGroups([]); onSearch(''); }}>×</button>
       )}
-      {open && groups.length > 0 && (
+      {open && (text.trim() || groups.length > 0) && (
         <div className="suggest">
+          {/*
+            まずは「含む」で絞り込む選択肢を出す。候補を選ぶと1つに絞られるが、
+            打った言葉を含むものを全部見たい場合が多いため、こちらを先頭に置く。
+          */}
+          {text.trim() && (
+            <div className="sg">
+              <div className="sg-head">この言葉を含むもの</div>
+              <button
+                type="button"
+                className={`sg-item${active === -1 ? ' active' : ''}`}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(-1)}
+                onClick={() => { setOpen(false); onSearch(text.trim()); }}
+              >
+                <span className="nm">「{text.trim()}」を含むすべて</span>
+                <span className="ct">Enter</span>
+              </button>
+            </div>
+          )}
           {groups.map((g) => (
             <div key={g.key} className="sg">
               <div className="sg-head">{g.label}</div>
@@ -112,7 +131,10 @@ export default function SearchBox({
               })}
             </div>
           ))}
-          <div className="sg-foot">Enterでそのまま文字検索／↑↓で候補を選択</div>
+          <div className="sg-foot">
+            法人名・得意先名・器種名・コード・器具区分・支店・担当者を「含む」で探します
+            （空白で区切ると、すべての言葉を含むもの）
+          </div>
         </div>
       )}
     </div>

@@ -347,7 +347,7 @@ export default function Deals() {
 
       <div className="filters">
         <label className="fld" style={{ minWidth: 260, flex: '1 1 260px' }}>
-          検索（法人・得意先・器種・担当者）
+          検索（含む・空白区切りでAND）
           <SearchBox
             value={get('q')}
             onSearch={(q) => setParam('q', q)}
