@@ -118,6 +118,76 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
+/** グラフの1本ぶん */
+interface FlowBar {
+  label: string;                       // 下に出す名前（当初 / 7月 実績 / 8月 計画 …）
+  kind: '当初' | '実績' | '計画';
+  amt: number;                         // 金額（月あたり）
+  gain: number | null;                 // 値上げ前当初との差。当初の本は null
+  sub?: string;                        // 件数など、名前の下に添える一行
+}
+
+/** まとめの表と同じ数字を、当初 → 実績 → 計画 の棒グラフで出す */
+function FlowChart({ bars }: { bars: FlowBar[] }) {
+  // 色はまとめの表のバッジと同じ意味（灰=当初・参考、緑=実績、青=計画）
+  const COLOR = { 当初: '#9ca3af', 実績: '#15803d', 計画: '#2563eb' } as const;
+  const W = 900;
+  const H = 250;
+  const top = 44;                      // 金額と値上げ額のラベルぶん
+  const bottom = 40;                   // 月名と件数ぶん
+  const max = Math.max(...bars.map((b) => b.amt), 1);
+  const bw = Math.min(88, (W - 40) / bars.length - 24);
+  const step = (W - 40) / bars.length;
+  const oku = (v: number) =>
+    Math.abs(v) >= 1e8 ? `${(v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 1 })}億`
+      : `${Math.round(v / 1e4).toLocaleString()}万`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="値上げ前当初から計画までの金額の推移"
+         style={{ width: '100%', height: 'auto', display: 'block' }}>
+      {bars.map((b, i) => {
+        const h = Math.max(2, ((H - top - bottom) * b.amt) / max);
+        const x = 20 + step * i + (step - bw) / 2;
+        const y = H - bottom - h;
+        return (
+          <g key={b.label}>
+            <title>
+              {`${b.label}: ¥${Math.round(b.amt).toLocaleString()}`
+                + (b.gain == null ? '' : `
+値上げ前当初との差 ${b.gain >= 0 ? '＋' : '−'}¥${Math.round(Math.abs(b.gain)).toLocaleString()}`)}
+            </title>
+            <rect x={x} y={y} width={bw} height={h} rx={4} fill={COLOR[b.kind]} />
+            {/* 角丸は上だけ。下は台形にならないよう塗り足す */}
+            <rect x={x} y={Math.max(y, H - bottom - 4)} width={bw} height={Math.min(4, h)} fill={COLOR[b.kind]} />
+            <text x={x + bw / 2} y={y - 24} textAnchor="middle"
+                  style={{ font: '700 15px sans-serif', fill: 'var(--fg, #111827)' }}>
+              {oku(b.amt)}
+            </text>
+            {b.gain != null && (
+              <text x={x + bw / 2} y={y - 8} textAnchor="middle"
+                    style={{ font: '600 11px sans-serif',
+                             fill: b.gain < 0 ? '#c2410c' : b.gain > 0 ? '#15803d' : '#6b7280' }}>
+                {b.gain === 0 ? '±0' : `${b.gain > 0 ? '＋' : '−'}${oku(Math.abs(b.gain))}`}
+              </text>
+            )}
+            <text x={x + bw / 2} y={H - bottom + 16} textAnchor="middle"
+                  style={{ font: '600 12px sans-serif', fill: 'var(--fg, #111827)' }}>
+              {b.label}
+            </text>
+            {b.sub && (
+              <text x={x + bw / 2} y={H - bottom + 31} textAnchor="middle"
+                    style={{ font: '11px sans-serif', fill: '#6b7280' }}>
+                {b.sub}
+              </text>
+            )}
+          </g>
+        );
+      })}
+      {/* 基線 */}
+      <line x1={16} x2={W - 16} y1={H - bottom} y2={H - bottom} stroke="#d1d5db" strokeWidth={1} />
+    </svg>
+  );
+}
+
 /**
  * 金額のマス。すべて1か月あたりで出す（期間合計は出さない）。
  * base を渡すと、その月の値上げ額と、現状額に対する値上げ率も添える。
@@ -563,19 +633,7 @@ export default function Dashboard() {
         <Kpi label={`実績（${actLabel}）`}
              value={`${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={`数量 月平均 ${Math.round(num(data.histTotals?.qty) / months).toLocaleString()}`} />
-        {/*
-          金額の並び。値上げ前当初 → 当月の金額（合計）が実績で、
-          その差が売上改善額。A基準（計画）は当月の金額（合計）と比べる。
-        */}
-        {gain != null && (
-          <Kpi label={`${actLabel} 値上げ前当初`}
-               value={yen((num(t?.base_amt) - gain) / months)}
-               sub={`金額の合計から売上改善額 ${yen(gain / months)} を引いた額`
-                 + ' ・ A基準はこれと比べます'} />
-        )}
-        <Kpi label={`${actLabel}金額の合計（実績）`}
-             value={yen(num(t?.base_amt) / months)}
-             sub={`${num(t?.deals).toLocaleString()}件 ・ 取り込んだ金額そのもの`} />
+        {/* 金額の流れはタイルではなく、まとめのグラフと表で出す */}
         {gain != null && (
           <div className="tile">
             <div className="label">売上改善額（過去→当月）</div>
@@ -596,38 +654,11 @@ export default function Dashboard() {
             </div>
           </div>
         )}
-        <Kpi label={`${actLabel}金額（マスタ）の合計`}
-             value={yen(num(t?.mp_amt) / months)}
-             sub={(() => {
-               const mp = num(t?.mp_amt);
-               if (!(mp > 0)) return '値決めどおりに出た分';
-               const gap = num(t?.base_amt) - mp;
-               return `値決めどおりに出た分 ・ 見積ぶんなど ${yen(Math.abs(gap) / months)}`
-                 + ` ・ 数量 ${Math.round(num(t?.plan_qty) / months).toLocaleString()}`;
-             })()} />
         <Kpi label="マスタ登録（A基準あり）"
              value={`${num(data.aMonths?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={num(data.histTotals?.deals) > 0
                ? `出荷実績の品目の ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
                : undefined} />
-        {([
-          [m0, data.aMonths?.raise_m0],
-          [m1, data.aMonths?.raise_m1],
-          [m2, data.aMonths?.raise_m2],
-          [m3, data.aMonths?.raise_m3],
-        ] as [string, number | null | undefined][]).map(([label, raise]) => {
-          const r = num(raise) / months;
-          // 値上げ前当初（A基準の比較のもと）に対して何%の値上げになるか
-          const base = gain == null ? num(t?.base_amt) : num(t?.base_amt) - gain;
-          const rate = base > 0 ? Math.round((num(raise) / base) * 1000) / 10 : null;
-          return (
-            <Kpi key={label}
-                 label={`値上げ額（月あたり） ${label}`}
-                 value={`${r >= 0 ? '＋' : '−'}${yen(Math.abs(r))}`}
-                 sub={rate == null ? undefined
-                   : `値上げ前当初に対して ${rate > 0 ? '+' : ''}${rate}%`} />
-          );
-        })}
       </div>
 
       <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
@@ -647,6 +678,35 @@ export default function Dashboard() {
           計画の行は全品目が対象で、承認のある品目だけ
           「A基準 − {actLabel}のマスタ単価」×マスタ分の数量 を足しています。
         </p>
+        {/*
+          同じ数字を、当初 → 実績 → 計画 の棒グラフでも出す。
+          値上げ額のラベルは、どの本も値上げ前当初との差
+        */}
+        {(() => {
+          const pre = gain == null ? null : num(t?.base_amt) - gain;
+          const bars: FlowBar[] = [
+            ...(pre != null ? [{
+              label: `${actLabel} 当初`, kind: '当初' as const, amt: pre / months, gain: null,
+              sub: `${num(t?.deals).toLocaleString()}件`,
+            }] : []),
+            {
+              label: `${actLabel} 実績`, kind: '実績' as const, amt: num(t?.base_amt) / months,
+              gain: pre == null ? null : gain! / months,
+              sub: gain == null ? `${num(t?.deals).toLocaleString()}件`
+                : `↑${num(act?.up).toLocaleString()} / ↓${num(act?.down).toLocaleString()}`,
+            },
+            ...([[m0, num(t?.a0_amt), num(data.aMonths?.cnt_m0)],
+                 [m1, num(t?.a1_amt), num(data.aMonths?.cnt_m1)],
+                 [m2, num(t?.a2_amt), num(data.aMonths?.cnt_m2)],
+                 [m3, num(t?.a3_amt), num(data.aMonths?.cnt_m3)]] as [string, number, number][])
+              .map(([label, amt, cnt]) => ({
+                label: `${label} 計画`, kind: '計画' as const, amt: amt / months,
+                gain: pre == null ? null : (amt - pre) / months,
+                sub: `申請 ${cnt.toLocaleString()}件`,
+              })),
+          ];
+          return <FlowChart bars={bars} />;
+        })()}
         <table className="tbl">
           <thead>
             <tr>
