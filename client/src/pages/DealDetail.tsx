@@ -164,6 +164,8 @@ export default function DealDetail() {
                 ? `${d.nego_result}${NEGO_LABELS[d.nego_result] ? `（${NEGO_LABELS[d.nego_result]}）` : ''}`
                 : '—'}
             </dd>
+            <dt>商談メモ</dt>
+            <dd style={{ whiteSpace: 'pre-wrap' }}>{d.nego_note || '—'}</dd>
             <dt>最終確定</dt>
             <dd>
               {d.final_price == null && !d.final_date ? '—'
@@ -204,7 +206,7 @@ export default function DealDetail() {
         </p>
         {data.negotiation?.note && <p className="pt-note" style={{ marginTop: 6 }}>{data.negotiation.note}</p>}
         <p className="pt-note" style={{ marginTop: 10 }}>
-          交渉情報と履歴は法人ごとに記録します。
+          交渉情報は法人ごとに記録します。商談結果の詳細は品目ごとの商談メモへ。
           {d.corp_code && (
             <>
               {' '}

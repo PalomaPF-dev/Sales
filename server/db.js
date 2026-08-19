@@ -413,7 +413,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-20-agg-insert';
+const SCHEMA_VERSION = '2026-08-21-nego-note';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -625,6 +625,8 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN act_price_10 REAL',
     'ALTER TABLE deals ADD COLUMN act_price_11 REAL',
     'ALTER TABLE deals ADD COLUMN act_price_12 REAL',
+    // 商談メモ（商談結果の詳細）。交渉は品目ごとに結果が変わるため、案件に持つ
+    'ALTER TABLE deals ADD COLUMN nego_note TEXT',
   ]) {
     await tryAlter(sql);
   }
@@ -648,7 +650,7 @@ async function beforeSchema() {
   // 列を1つでも足したら、その列を並びに含めた形へ作り直す必要がある。
   // 一番あとに足した列がビューに無ければ、旧構成とみなして落とす。
   try {
-    await db.get('SELECT nego_result, final_date, product_name, plan_qty FROM deal_calc LIMIT 1');
+    await db.get('SELECT nego_result, nego_note, final_date, product_name, plan_qty FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

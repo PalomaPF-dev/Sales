@@ -24,14 +24,13 @@
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
   /*
     フォントはOS標準（Webフォントは使わない。社内ネットワークでの読み込み待ちを無くすため）。
-    Windows は数字・英字も含めてメイリオで表示する。
-    system-ui を先頭にすると日本語Windowsでは游ゴシック UI が、
-    Segoe UI を先頭にすると数字が Segoe UI が当たるが、どちらも線が細く
-    「薄い・細い」と見づらさの指摘があったため、意図的にメイリオだけを優先する
-    （メイリオの英数字は Verdana 系で、画面表示での視認性が高い）。
-    Mac はメイリオが無いので Hiragino Sans が当たる。
+    MacとWindowsで見え方が違うという指摘を受け、Macのヒラギノの見た目に合わせる。
+    Windowsにヒラギノは無いため、字面が一番近い游ゴシックのMedium
+    （細字のRegularではなくMedium。「薄い・細い」の指摘への対策）を当てる。
+    游ゴシックの無い古いWindowsだけメイリオへ落ちる。
   */
-  font-family: 'Meiryo', 'Hiragino Sans', system-ui, sans-serif;
+  font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN',
+    'Yu Gothic Medium', '游ゴシック Medium', 'YuGothic', 'Meiryo', system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -336,7 +335,34 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 .tbl.deals td, .tbl.deals th { white-space: nowrap; }
 .tbl.deals td small { display: inline-block; max-width: 190px; overflow: hidden;
   text-overflow: ellipsis; vertical-align: bottom; }
-.tbl.deals td:nth-child(2) { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+
+/*
+  右へスクロールしても、どの品目の行か分かるように、
+  選択・法人・得意先・器種名・商品名/規格・器具区分の列を左に固定する。
+  position: sticky は左位置を自分で持てないため、列幅と left をここで決め打ちする。
+*/
+.tbl.deals th.fx, .tbl.deals td.fx {
+  position: sticky; background: var(--surface-1);
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* 見出しは上下にも固定されるため、角のマスは他の見出しより上に描く */
+.tbl.deals thead th.fx { background: #f8fafc; z-index: 3; }
+.tbl.deals thead th.grp.fx { background: #f1f5f9; }
+.tbl.deals td.fx { z-index: 1; }
+/* 1行目の「基本情報」は固定列全体をまとめて覆う（幅は列に任せる） */
+.tbl.deals th.fxg { left: 0; }
+.tbl.deals .fx1 { left: 0; min-width: 36px; max-width: 36px; }
+.tbl.deals .fx2 { left: 36px; min-width: 130px; max-width: 130px; }
+.tbl.deals .fx3 { left: 166px; min-width: 150px; max-width: 150px; }
+.tbl.deals .fx4 { left: 316px; min-width: 120px; max-width: 120px; }
+.tbl.deals .fx5 { left: 436px; min-width: 140px; max-width: 140px; }
+.tbl.deals .fx6 { left: 576px; min-width: 90px; max-width: 90px; }
+/* 固定列とスクロールする列の境目に影を入れて、固定が分かるようにする */
+.tbl.deals .fx6 { box-shadow: 2px 0 0 var(--baseline); }
+/* 固定列は背景を持つため、行の色（ホバー・編集中・目標未達）を上書きして揃える */
+.tbl.deals tbody tr:hover td.fx { background: #f8fafc; }
+.tbl.deals tbody tr.editing td.fx,
+.tbl.deals tbody tr.editing:hover td.fx { background: var(--accent-soft); }
 
 /* ---- ダッシュボード ---- */
 

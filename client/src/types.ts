@@ -81,6 +81,7 @@ export interface Deal {
   r2_raise_unit: number | null;     // ❹ ❸−❶
   r2_applied_ym: string | null;     // 適用年月
   nego_result?: string | null;      // 商談結果（○=合意 / △=交渉中 / ×=不可）
+  nego_note?: string | null;        // 商談メモ（商談結果の詳細。品目ごとに残す）
   final_date?: string | null;       // 最終確定日
   final_price?: number | null;      // 最終確定単価
   r2_done: number;

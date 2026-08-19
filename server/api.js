@@ -2062,8 +2062,8 @@ api.get('/deals/:id', wrap(async (req, res) => {
 const EDITABLE = [
   'r2_agreed_price', 'r2_applied_ym', 'r2_done',
   'price_type_code',
-  // 値上げ交渉（営業担当者が入力する）
-  'nego_result', 'final_date', 'final_price',
+  // 値上げ交渉（営業担当者が入力する）。商談メモは商談結果の詳細
+  'nego_result', 'nego_note', 'final_date', 'final_price',
 ];
 
 /** 商談結果の選択肢。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談 */
@@ -2144,6 +2144,11 @@ function buildDealUpdate(body, deal, user) {
       v = normNegoResult(v);
       if (v != null && !NEGO_RESULTS.includes(v)) {
         throw new Error('商談結果は 〇（合意）/ □（広域待ち）/ △（否決）/ ×（本社へ相談）から選んでください');
+      }
+    } else if (f === 'nego_note') {
+      v = String(v ?? '').trim() || null;
+      if (v != null && v.length > 500) {
+        throw new Error('商談メモは500文字以内で入力してください');
       }
     } else if (f === 'final_date') {
       v = String(v ?? '').trim() || null;
@@ -2679,21 +2684,27 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       product_name: null, gas_type: null, equip_name: null, category_name: null,
       top: Number.NEGATIVE_INFINITY,
     };
-    // 支店・営業所・担当者などの名前は、数量の一番多い行（主な納入先）を代表にする
+    // 支店・営業所・担当者などの名前は、数量の一番多い行（主な納入先）を代表にする。
+    // 代表の行で空欄の項目は他の行から補う（品目名などを取りこぼさないため）
+    const rep = {
+      branch: String(r.branch ?? '').trim() || null,
+      office: String(r.office ?? '').trim() || null,
+      person: String(r.sales_person ?? '').trim() || null,
+      // 実績（価格調査）に無い品目を案件として追加するときに使う
+      corp_group: txt2(r.corp_group),
+      industry: txt2(r.industry),
+      customer_name: txt2(r.customer_name),
+      model_name: txt2(r.model_name),
+      product_name: txt2(r.product_name),
+      gas_type: txt2(r.gas_type),
+      equip_name: txt2(r.equip_name),
+      category_name: txt2(r.category_name),
+    };
     if (qty > a.top) {
       a.top = qty;
-      a.branch = String(r.branch ?? '').trim() || null;
-      a.office = String(r.office ?? '').trim() || null;
-      a.person = String(r.sales_person ?? '').trim() || null;
-      // 実績（価格調査）に無い品目を案件として追加するときに使う
-      a.corp_group = txt2(r.corp_group);
-      a.industry = txt2(r.industry);
-      a.customer_name = txt2(r.customer_name);
-      a.model_name = txt2(r.model_name);
-      a.product_name = txt2(r.product_name);
-      a.gas_type = txt2(r.gas_type);
-      a.equip_name = txt2(r.equip_name);
-      a.category_name = txt2(r.category_name);
+      for (const [k, v] of Object.entries(rep)) if (v != null) a[k] = v;
+    } else {
+      for (const [k, v] of Object.entries(rep)) if (a[k] == null) a[k] = v;
     }
     a.qty += qty;
     // 単価は「その単価が入っている行」だけで加重平均する。
@@ -2733,9 +2744,12 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   const keepNewer = (c) =>
     `${c} = CASE WHEN agg_staging.${c} IS NULL OR excluded.${c} > agg_staging.${c}`
     + ` THEN excluded.${c} ELSE agg_staging.${c} END`;
-  // 送りが分かれても、数量の一番多い行の支店・営業所・担当者が残るようにする
+  // 送りが分かれても、数量の一番多い行の支店・営業所・担当者が残るようにする。
+  // 片方が空欄の項目はもう片方から補う（品目名などを取りこぼさないため）
   const keepTop = (c) =>
-    `${c} = CASE WHEN excluded.top_qty > agg_staging.top_qty THEN excluded.${c} ELSE agg_staging.${c} END`;
+    `${c} = CASE WHEN excluded.top_qty > agg_staging.top_qty
+       THEN COALESCE(excluded.${c}, agg_staging.${c})
+       ELSE COALESCE(agg_staging.${c}, excluded.${c}) END`;
   // 稟議Noは承認日とセット。承認日が新しい側の値を採る（同じなら入っている方を残す）
   const keepWithDate = (c, d) =>
     `${c} = CASE WHEN agg_staging.${d} IS NULL OR excluded.${d} > agg_staging.${d}
@@ -2913,6 +2927,10 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   /** 値が入っているか。0やマイナスも「入っている」として扱う */
   const filled = (v) => v !== null && v !== undefined && String(v).trim() !== '';
 
+  // 代表の名前として持つ項目（得意先名・品目名など）
+  const REP = ['customer_name', 'corp_group', 'industry', 'delivery_name',
+    'model_name', 'product_name', 'spec', 'equip_name', 'category_name'];
+
   // 得意先×商品ごとに、数量と「単価×数量」を足し込む（加重平均のため）。
   // 数量が0の行は重み1として扱い、全行0のまとまりでも単純平均になるようにする。
   const acc = new Map();
@@ -2962,24 +2980,21 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     // 過去最新受注日は、まとまりの中で一番新しい日を残す
     const d = txt(r.past_date);
     if (d && (!a.past_date || d > a.past_date)) a.past_date = d;
-    // 名前は数量の一番多い行を代表にする
+    // 名前は数量の一番多い行を代表にする。ただし代表の行で空欄の項目は
+    // 同じまとまりの他の行から補う。金額はあるのに器種名・商品名・器具区分が
+    // 空のままの案件を作らないため（どれかの行に入っていれば必ず載る）
     if (qty > a.top) {
       a.top = qty;
-      a.customer_name = txt(r.customer_name);
-      a.corp_group = txt(r.corp_group);
-      a.industry = txt(r.industry);
-      a.delivery_name = txt(r.delivery_name);
-      a.model_name = txt(r.model_name);
-      a.product_name = txt(r.product_name);
-      a.spec = txt(r.spec);
-      a.equip_name = txt(r.equip_name);
-      a.category_name = txt(r.category_name);
+      for (const k of REP) {
+        const v = txt(r[k]);
+        if (v != null) a[k] = v;
+      }
+    } else {
+      for (const k of REP) if (a[k] == null) a[k] = txt(r[k]);
     }
     acc.set(key, a);
   }
 
-  const REP = ['customer_name', 'corp_group', 'industry', 'delivery_name',
-    'model_name', 'product_name', 'spec', 'equip_name', 'category_name'];
   const vals = [...acc.values()].map((a) => [
     a.cust, a.model, a.qty, a.money, a.amt, a.wgt, a.mp_amt, a.mp_wgt,
     a.plan_qty, a.plan_money, a.past_amt, a.past_wgt, a.past_date,
@@ -2990,9 +3005,12 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
       'plan_qty_sum', 'plan_money_sum', 'past_amt', 'past_wgt'];
     const cols = ['ent_cd', 'model_code', ...sumCols, 'past_date',
       'list_amt', 'list_wgt', ...REP, 'top_qty'];
-    // 送りが分かれても、数量の一番多い行の内容と、一番新しい受注日が残るようにする
+    // 送りが分かれても、数量の一番多い行の内容と、一番新しい受注日が残るようにする。
+    // 片方が空欄の項目はもう片方から補う（品目名などを取りこぼさないため）
     const keepTop = (c) =>
-      `${c} = CASE WHEN excluded.top_qty > act_staging.top_qty THEN excluded.${c} ELSE act_staging.${c} END`;
+      `${c} = CASE WHEN excluded.top_qty > act_staging.top_qty
+         THEN COALESCE(excluded.${c}, act_staging.${c})
+         ELSE COALESCE(act_staging.${c}, excluded.${c}) END`;
     await db.run(
       `INSERT INTO act_staging (${cols.join(',')})
        VALUES ${vals.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}

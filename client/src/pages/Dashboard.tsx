@@ -694,6 +694,39 @@ export default function Dashboard() {
                : undefined} />
       </div>
 
+      {/*
+        器具区分別・支店別・法人別はどれも列が多いため、縦に並べず切り替えで出す。
+        まず器具区分・支店・法人を選んで値上げ額を見られるよう、まとめより先（上）に置く。
+        選んだタブはURLに残るので、開き直しても同じ表が出る。
+      */}
+      <div className="card">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>{TABS.find((x) => x.key === tab)?.title}</h3>
+          {/* 出す内容の切り替え。実績と計画を分けて、横スクロールせずに端まで見えるようにする */}
+          <div className="seg">
+            {VIEWS.map((v) => (
+              <button key={v.key} className={view === v.key ? 'on' : ''}
+                      onClick={() => setParam('view', v.key === 'act' ? '' : v.key)}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+          <div className="seg" style={{ marginLeft: 'auto' }}>
+            {TABS.map((x) => (
+              <button key={x.key} className={tab === x.key ? 'on' : ''}
+                      onClick={() => setParam('tab', x.key === 'equip' ? '' : x.key)}>
+                {x.label}
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>{rowsOf(x.key).length.toLocaleString()}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
+                 total={t} months={months} actYms={data.abActYms}
+                 m0={m0} m1={m1} m2={m2} m3={m3} view={view}
+                 link={(name, kind) => dealsLink(kind, { [tab]: name ?? '' })} />
+      </div>
+
       <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
           <strong>当初</strong>は値上げ前の金額で、{actLabel}の金額（合計）から
@@ -849,37 +882,6 @@ export default function Dashboard() {
         </table>
       </Card>
 
-      {/*
-        器具区分別・支店別・法人別はどれも列が多いため、縦に並べず切り替えで出す。
-        選んだタブはURLに残るので、開き直しても同じ表が出る。
-      */}
-      <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>{TABS.find((x) => x.key === tab)?.title}</h3>
-          {/* 出す内容の切り替え。実績と計画を分けて、横スクロールせずに端まで見えるようにする */}
-          <div className="seg">
-            {VIEWS.map((v) => (
-              <button key={v.key} className={view === v.key ? 'on' : ''}
-                      onClick={() => setParam('view', v.key === 'act' ? '' : v.key)}>
-                {v.label}
-              </button>
-            ))}
-          </div>
-          <div className="seg" style={{ marginLeft: 'auto' }}>
-            {TABS.map((x) => (
-              <button key={x.key} className={tab === x.key ? 'on' : ''}
-                      onClick={() => setParam('tab', x.key === 'equip' ? '' : x.key)}>
-                {x.label}
-                <span style={{ marginLeft: 6, opacity: 0.7 }}>{rowsOf(x.key).length.toLocaleString()}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
-                 total={t} months={months} actYms={data.abActYms}
-                 m0={m0} m1={m1} m2={m2} m3={m3} view={view}
-                 link={(name, kind) => dealsLink(kind, { [tab]: name ?? '' })} />
-      </div>
     </div>
   );
 }

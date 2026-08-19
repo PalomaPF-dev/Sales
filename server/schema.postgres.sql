@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS deals (
   r2_applied_ym   TEXT,   -- 値上げの適用年月（YYYY-MM）
   -- 値上げ交渉（営業担当者が入力）。商談結果は ○（合意）/△（交渉中）/×（不可）
   nego_result     TEXT,
+  nego_note       TEXT,   -- 商談メモ（商談結果の詳細。品目ごとに残す）
   final_date      TEXT,   -- 最終確定日
 
   r2_done         INTEGER NOT NULL DEFAULT 0,

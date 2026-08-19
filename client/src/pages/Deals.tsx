@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import { NEGO_LABELS } from '../types';
 import type { Deal, Meta, RoundState } from '../types';
-import { RoundStateBadge } from '../components/ui';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
 import type { BulkResult } from '../bulkUpdateClient';
@@ -25,7 +24,7 @@ interface DealsRes {
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'r2State', 'aState', 'aDateYm', 'aDateOp', 'gain'] as const;
+  'aState', 'aDateYm', 'aDateOp', 'gain'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -64,6 +63,49 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isDev = me.role === 'developer';
+
+  // 商談結果の一括入力。行頭のチェックで品目を選び、まとめて同じ結果を入れる
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const [selNego, setSelNego] = useState('');
+  const [selNote, setSelNote] = useState('');
+
+  const toggleSel = (id: number) => {
+    setSel((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  /** 選んだ品目に商談結果（とメモ）を一括で入れる */
+  const applyBulkNego = async () => {
+    if (!sel.size || !selNego) return;
+    setBusy(true);
+    setMsg(null);
+    const body: Record<string, unknown> = { nego_result: selNego };
+    if (selNote.trim()) body.nego_note = selNote.trim();
+    let done = 0;
+    try {
+      for (const id of sel) {
+        const updated = await api<Deal>(`/deals/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+        setData((prev) => prev && {
+          ...prev,
+          rows: prev.rows.map((r) => (r.id === id ? { ...r, ...updated } : r)),
+        });
+        done += 1;
+      }
+      setMsg({ kind: 'ok', text: `${done.toLocaleString()}件に商談結果「${selNego}」を入れました` });
+      setSel(new Set());
+      setSelNote('');
+    } catch (e) {
+      setMsg({
+        kind: 'error',
+        text: `${done.toLocaleString()}件まで保存できました。続きでエラー: ${(e as Error).message}`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // Excelでの一括取込
   const bulkFileRef = useRef<HTMLInputElement>(null);
@@ -171,7 +213,13 @@ export default function Deals() {
     const qs = queryString();
     qs.set('page', String(page));
     qs.set('size', '50');
-    api<DealsRes>(`/deals?${qs}`).then(setData).catch((e) => setMsg({ kind: 'error', text: e.message }));
+    api<DealsRes>(`/deals?${qs}`)
+      .then((d) => {
+        setData(d);
+        // 表示が変わったら選択は引き継がない（見えていない行への一括入力を防ぐ）
+        setSel(new Set());
+      })
+      .catch((e) => setMsg({ kind: 'error', text: e.message }));
   }, [queryString, page]);
 
   useEffect(load, [load]);
@@ -198,6 +246,7 @@ export default function Deals() {
       r2_applied_ym: d.r2_applied_ym ?? '',
       // 取込ファイル由来の「○」などの表記ゆれも、選択肢の記号に揃えて出す
       nego_result: normNego(d.nego_result),
+      nego_note: d.nego_note ?? '',
       final_date: d.final_date ?? '',
       final_price: d.final_price == null ? '' : String(d.final_price),
       qty: d.qty == null ? '' : String(d.qty),
@@ -261,6 +310,7 @@ export default function Deals() {
     const ok = await patch(d.id, {
       r2_applied_ym: ym === '' ? null : ym,
       nego_result: draft.nego_result?.trim() || null,
+      nego_note: draft.nego_note?.trim() || null,
       final_date: draft.final_date?.trim() || null,
       final_price: fp === '' ? null : Number(fp),
     });
@@ -303,6 +353,26 @@ export default function Deals() {
     return diffCell(Number(now) - Number(past), Number(past),
       `${actLabel}の実単価 ${yen(now)} − 過去最新単価 ${yen(past)}`
       + (d.past_date ? `（過去最新受注日 ${d.past_date}）` : ''));
+  };
+
+  /**
+   * 目標値（第2弾新値上げ単価）の値上げ幅。目標 − 当月のマスタ単価。
+   * A基準の値上げ幅と同じ土俵で、目標がいくらの値上げにあたるかを添える。
+   */
+  const targetDiff = (d: Deal) => {
+    const price = d.r2_target_price;
+    if (price == null || Number(price) <= 0 || mPrice(d) == null) return null;
+    const base = Number(mPrice(d));
+    const diff = Number(price) - base;
+    const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
+    return (
+      <div className="sub"
+           style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : { fontWeight: 700 }}
+           title={`目標値 − ${actLabel}のマスタ単価 ${yen(base)}`}>
+        {diff === 0 ? '±0' : `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}`}
+        {rate != null && diff !== 0 && <span style={{ fontWeight: 400 }}> ({rate > 0 ? '+' : ''}{rate}%)</span>}
+      </div>
+    );
   };
 
   /**
@@ -364,7 +434,8 @@ export default function Deals() {
         隣の<strong>目標値</strong>が第2弾新値上げ単価です。
         A基準の下段はその単価の<strong>承認日</strong>（申請単価のある月だけ入ります）で、絞り込みにも使えます。
         <strong>値上げ幅</strong>は「A基準 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
-        <strong>商談結果・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
+        <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
+        行頭のチェックで品目を選ぶと、<strong>商談結果とメモをまとめて一括入力</strong>できます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -461,13 +532,6 @@ export default function Deals() {
             <option value="none">比較なし（過去単価なし）</option>
           </select>
         </label>
-        <label className="fld">
-          状態
-          <select value={get('r2State')} onChange={(e) => setParam('r2State', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.states.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
-          </select>
-        </label>
       </div>
 
       {data && (
@@ -513,6 +577,30 @@ export default function Deals() {
             一括取込
           </button>
           <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}>Excel出力</button>
+        </div>
+      )}
+
+      {/* 商談結果の一括入力。行頭のチェックで品目を選び、同じ結果とメモをまとめて入れる */}
+      {data && (
+        <div className="toolbar">
+          <span className="count">
+            選択 <b>{sel.size.toLocaleString()}</b>件
+            {sel.size === 0 && <span style={{ color: 'var(--muted)' }}>（行頭のチェックで品目を選ぶと、商談結果をまとめて入れられます）</span>}
+          </span>
+          <select value={selNego} onChange={(e) => setSelNego(e.target.value)} disabled={!sel.size}>
+            <option value="">商談結果を選ぶ</option>
+            <option value="〇">〇 合意</option>
+            <option value="□">□ 広域待ち</option>
+            <option value="△">△ 否決</option>
+            <option value="×">× 本社へ相談</option>
+          </select>
+          <input type="text" value={selNote} disabled={!sel.size}
+            placeholder="商談メモ（任意。商談結果の詳細）"
+            style={{ flex: '1 1 220px', minWidth: 180 }}
+            onChange={(e) => setSelNote(e.target.value)} />
+          <button className="btn sm" disabled={busy || !sel.size || !selNego} onClick={applyBulkNego}>
+            選択した品目へ一括入力
+          </button>
         </div>
       )}
 
@@ -578,8 +666,9 @@ export default function Deals() {
         <table className="tbl deals">
           <thead>
             <tr>
-              <th colSpan={8} className="grp">基本情報</th>
-              <th colSpan={4} className="grp sep"
+              <th colSpan={6} className="grp fx fxg">基本情報</th>
+              <th colSpan={3} className="grp">担当</th>
+              <th colSpan={5} className="grp sep"
                   title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}の実単価までが、実際に上がった分です`}>
                 実績<small>（価格調査 {actLabel}）</small>
               </th>
@@ -592,13 +681,22 @@ export default function Deals() {
               <th className="grp"></th>
             </tr>
             <tr>
-              <Th col="corp_name">法人</Th>
-              <Th col="customer_name">得意先 / 納入先</Th>
-              <Th col="model_name">器種名</Th>
-              <Th col="product_name" title="価格調査の商品名。下段は規格（ガス種）">
+              {/* 商談結果の一括入力のための選択。見出しはページ内の全行をまとめて選ぶ */}
+              <th className="fx fx1" title="表示中の行をまとめて選ぶ／外す">
+                <input type="checkbox"
+                  checked={(data?.rows.length ?? 0) > 0 && (data?.rows ?? []).every((r) => sel.has(r.id))}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setSel(on ? new Set((data?.rows ?? []).map((r) => r.id)) : new Set());
+                  }} />
+              </th>
+              <Th col="corp_name" className="fx fx2">法人</Th>
+              <Th col="customer_name" className="fx fx3">得意先 / 納入先</Th>
+              <Th col="model_name" className="fx fx4">器種名</Th>
+              <Th col="product_name" className="fx fx5" title="価格調査の商品名。下段は規格（ガス種）">
                 商品名 / 規格
               </Th>
-              <Th col="equip_name">器具区分</Th>
+              <Th col="equip_name" className="fx fx6">器具区分</Th>
               <Th col="branch">支店</Th>
               <Th col="office">営業所</Th>
               <Th col="sales_person">担当者</Th>
@@ -610,17 +708,24 @@ export default function Deals() {
                   title={`${actLabel}の実単価（金額÷数量）`}>
                 {actLabel}単価
               </Th>
+              <Th col="master_price" className="num"
+                  title={`${actLabel}のマスタ単価（値決めの単価）。A基準・目標値の値上げ幅はこれと比べます`}>
+                {actLabel}マスタ
+              </Th>
               <th className="num" title={`${actLabel}の実単価 − 過去最新単価。実際に上がった幅`}>
                 上がり幅<br /><small>過去→{actLabel}</small>
               </th>
-              <Th col="hist_qty" className="num" title={`${actLabel}の数量`}>数量</Th>
+              <Th col="hist_qty" className="num"
+                  title={`${actLabel}の数量。0は${actLabel}の出荷が無かった品目（出荷無）`}>
+                数量
+              </Th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
               <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="r2_target_price" className="num"
-                  title="第2弾新値上げ単価（目標値）。マスタ登録のファイルから入ります">
-                目標値<br /><small>第2弾</small>
+                  title={`第2弾新値上げ単価（目標値）。マスタ登録のファイルから入ります。下段は目標の値上げ幅（目標値 − ${actLabel}のマスタ単価）`}>
+                目標値<br /><small>下段は値上げ幅</small>
               </Th>
               <th className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
@@ -630,10 +735,10 @@ export default function Deals() {
                   title="商談の結果。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談">
                 商談結果
               </Th>
+              <th title="商談結果の詳細。品目ごとに残すメモです">商談メモ</th>
               <Th col="final_date" className="num">最終確定日</Th>
               <Th col="final_price" className="num">最終確定単価</Th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
-              <Th col="r2_state">状態</Th>
               <th></th>
             </tr>
           </thead>
@@ -642,7 +747,10 @@ export default function Deals() {
               const isEditing = editing === d.id;
               return (
                 <tr key={d.id} className={isEditing ? 'editing' : ''}>
-                  <td title={[d.corp_code, d.industry].filter(Boolean).join(' / ')}>
+                  <td className="fx fx1">
+                    <input type="checkbox" checked={sel.has(d.id)} onChange={() => toggleSel(d.id)} />
+                  </td>
+                  <td className="fx fx2" title={[d.corp_name, d.corp_code, d.industry].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'corp_name') : (
                       <a href={`/corps/${d.corp_code}`}
                          onClick={(e) => { e.preventDefault(); if (d.corp_code) navigate(`/corps/${d.corp_code}`); }}>
@@ -650,7 +758,7 @@ export default function Deals() {
                       </a>
                     )}
                   </td>
-                  <td title={d.delivery_name || ''}>
+                  <td className="fx fx3" title={[d.customer_name, d.delivery_name].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'customer_name') : (
                       <>
                         {d.customer_name}
@@ -658,20 +766,24 @@ export default function Deals() {
                       </>
                     )}
                   </td>
-                  <td>
+                  <td className="fx fx4" title={d.model_name || d.model_code || ''}>
                     {isEditing && isDev ? baseCell(d, 'model_name') : (
                       <>
+                        {/* 器種名が無い行もどの品目か分かるように、商品コードで代用して必ず出す */}
                         <a href={`/deals/${d.id}`} onClick={(e) => { e.preventDefault(); navigate(`/deals/${d.id}`); }}>
-                          {d.model_name}
+                          {d.model_name || d.model_code || '（品目名なし）'}
                         </a>
                       </>
                     )}
                   </td>
-                  <td title={d.model_code || ''}>
-                    {d.product_name || '—'}
+                  <td className="fx fx5" title={[d.product_name, d.gas_type, d.model_code].filter(Boolean).join(' / ')}>
+                    {/* 商品名が無い行は商品コードを出す（金額があるのに空欄の行を作らない） */}
+                    {d.product_name || (d.model_code ? `コード ${d.model_code}` : '—')}
                     {d.gas_type && <><br /><small style={{ color: 'var(--muted)' }}>{d.gas_type}</small></>}
                   </td>
-                  <td>{isEditing && isDev ? baseCell(d, 'equip_name') : d.equip_name}</td>
+                  <td className="fx fx6" title={d.equip_name || ''}>
+                    {isEditing && isDev ? baseCell(d, 'equip_name') : (d.equip_name || '—')}
+                  </td>
                   <td>{isEditing && isDev ? baseCell(d, 'branch') : (d.branch || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
@@ -683,10 +795,14 @@ export default function Deals() {
                     {d.past_date && <div className="sub">{dateLabel(d.past_date)}</div>}
                   </td>
                   <td className="num">{effPrice(d) == null ? '—' : yen(effPrice(d))}</td>
+                  {/* 当月のマスタ単価（値決めの単価）。A基準・目標値の値上げ幅の比較のもと */}
+                  <td className="num">{d.master_price == null ? '—' : yen(d.master_price)}</td>
                   <td className="num">{actDiff(d)}</td>
                   <td className="num">
                     {monthlyQty(d) == null ? '—'
-                      : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                      : Number(monthlyQty(d)) === 0
+                        ? <span style={{ color: 'var(--muted)' }} title={`${actLabel}の実績が無かった品目です`}>出荷無</span>
+                        : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                   </td>
 
                   {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日。
@@ -695,7 +811,15 @@ export default function Deals() {
                   <td className="num">{aCell(d.a_price_m1, d.a_date_m1, d.a_ringi_m1)}</td>
                   <td className="num">{aCell(d.a_price_m2, d.a_date_m2, d.a_ringi_m2)}</td>
                   <td className="num">{aCell(d.a_price_m3, d.a_date_m3, d.a_ringi_m3)}</td>
-                  <td className="num">{d.r2_target_price == null ? '—' : yen(d.r2_target_price)}</td>
+                  {/* 目標値。下段に目標の値上げ幅（目標値 − 当月のマスタ単価）を添える */}
+                  <td className="num">
+                    {d.r2_target_price == null ? '—' : (
+                      <>
+                        {yen(d.r2_target_price)}
+                        {targetDiff(d)}
+                      </>
+                    )}
+                  </td>
 
                   {/* 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価は月ごとに変わる */}
                   <td className="num sep">{aDiff(d, d.a_price_m0, ymLabel(meta?.aggMeta?.m0, '当月'))}</td>
@@ -703,7 +827,7 @@ export default function Deals() {
                   <td className="num">{aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
 
-                  {/* 値上げ交渉。商談結果・最終確定日・最終確定単価・適用年月（営業担当者が入力） */}
+                  {/* 値上げ交渉。商談結果・商談メモ・最終確定日・最終確定単価・適用年月（営業担当者が入力） */}
                   <td className="sep">
                     {isEditing ? (
                       <select className="cell" value={draft.nego_result}
@@ -718,6 +842,19 @@ export default function Deals() {
                       <span title={NEGO_LABELS[d.nego_result ?? ''] ?? undefined}>
                         {d.nego_result || '—'}
                       </span>
+                    )}
+                  </td>
+                  {/* 商談メモ（商談結果の詳細）。長い文はカーソルを合わせると全文が読める */}
+                  <td title={d.nego_note || undefined}>
+                    {isEditing ? (
+                      <input type="text" className="cell" value={draft.nego_note}
+                        placeholder="商談結果の詳細"
+                        style={{ width: 180, textAlign: 'left' }}
+                        onChange={(e) => setDraft({ ...draft, nego_note: e.target.value })} />
+                    ) : (
+                      d.nego_note
+                        ? <small style={{ color: 'var(--ink-2)' }}>{d.nego_note}</small>
+                        : '—'
                     )}
                   </td>
                   <td className="num">
@@ -739,17 +876,14 @@ export default function Deals() {
                     ) : (d.r2_applied_ym || '—')}
                   </td>
                   <td>
-                    {isEditing ? (
-                      <div className="round-actions">
-                        <button className="btn secondary sm" disabled={busy} onClick={() => saveRound(d)}>保存</button>
-                      </div>
-                    ) : <RoundStateBadge state={d.r2_state} />}
-                  </td>
-
-                  <td>
-                    <button className="btn secondary sm" onClick={() => (isEditing ? setEditing(null) : startEdit(d))}>
-                      {isEditing ? '閉じる' : '入力'}
-                    </button>
+                    <div className="round-actions">
+                      {isEditing && (
+                        <button className="btn sm" disabled={busy} onClick={() => saveRound(d)}>保存</button>
+                      )}
+                      <button className="btn secondary sm" onClick={() => (isEditing ? setEditing(null) : startEdit(d))}>
+                        {isEditing ? '閉じる' : '入力'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -773,7 +907,8 @@ export default function Deals() {
         </p>
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          「入力」から商談結果・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
+          「入力」から商談結果・商談メモ・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
+          行頭のチェックで品目を選ぶと、商談結果とメモをまとめて入れられます。
         </p>
       )}
     </div>

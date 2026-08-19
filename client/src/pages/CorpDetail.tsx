@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card, CorpStatusBadge } from '../components/ui';
-import NegotiationLog from '../components/NegotiationLog';
 import type { CorpNegotiation, Meta } from '../types';
 
 interface CorpDetailRes {
@@ -102,14 +101,16 @@ export default function CorpDetail() {
         </p>
       </Card>
 
-      <NegotiationLog corpCode={data.corp_code} corpName={data.corp_name} />
-
       <Card title="この法人の明細">
         <p className="pt-note" style={{ margin: 0 }}>
           <a href={`/deals?corp=${encodeURIComponent(data.corp_code)}`}
              onClick={(e) => { e.preventDefault(); navigate(`/deals?corp=${encodeURIComponent(data.corp_code)}`); }}>
             案件一覧でこの法人の明細を表示する（{Number(data.deals).toLocaleString()}件）
           </a>
+        </p>
+        <p className="pt-note" style={{ marginTop: 8 }}>
+          商談結果は商品（品目）ごとに変わるため、結果の詳細は案件一覧の
+          <strong>商談メモ</strong>に品目ごとに残します（法人単位の交渉履歴は廃止しました）。
         </p>
       </Card>
     </div>
