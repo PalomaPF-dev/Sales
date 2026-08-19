@@ -2667,8 +2667,10 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     const key = `${ent}|${String(r.model_code).trim()}`;
     const qty = num(r.qty);
     const a = acc.get(key) ?? {
-      ent, model: String(r.model_code).trim(), qty: 0, base: 0,
-      a0: 0, a1: 0, a2: 0, a3: 0, cost: 0,
+      ent, model: String(r.model_code).trim(), qty: 0,
+      base: 0, baseW: 0,
+      a0: 0, a0W: 0, a1: 0, a1W: 0, a2: 0, a2W: 0, a3: 0, a3W: 0,
+      cost: 0, costW: 0,
       d0: null, d1: null, d2: null, d3: null,
       r0: null, r1: null, r2: null, r3: null,
       tgt: 0, tgtW: 0, nego: null, fdate: null, fprice: null,
@@ -2682,12 +2684,20 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       a.person = String(r.sales_person ?? '').trim() || null;
     }
     a.qty += qty;
-    a.base += num(r.base_price) * qty;
-    a.a0 += num(r.a_price_m0) * qty;
-    a.a1 += num(r.a_price_m1) * qty;
-    a.a2 += num(r.a_price_m2) * qty;
-    a.a3 += num(r.a_price_m3) * qty;
-    a.cost += num(r.cost_price) * qty;
+    // 単価は「その単価が入っている行」だけで加重平均する。
+    // 全行の数量で割ると、未申請（単価なし）の行に引きずられて
+    // ファイルの単価より低くなってしまう。数量0の行は重み1で数える
+    const w = qty > 0 ? qty : 1;
+    const addPrice = (kAmt, kW, v) => {
+      const n2 = num(v);
+      if (n2 > 0) { a[kAmt] += n2 * w; a[kW] += w; }
+    };
+    addPrice('base', 'baseW', r.base_price);
+    addPrice('a0', 'a0W', r.a_price_m0);
+    addPrice('a1', 'a1W', r.a_price_m1);
+    addPrice('a2', 'a2W', r.a_price_m2);
+    addPrice('a3', 'a3W', r.a_price_m3);
+    addPrice('cost', 'costW', r.cost_price);
     // 承認日・稟議Noは、その月の申請単価が入っている行からだけ拾う。
     // 単価が無いのに承認日だけが残るのはおかしいため
     if (num(r.a_price_m0) > 0) takeApproval(a, 'd0', 'r0', ymd(r.a_date_m0), txt2(r.a_ringi_m0));
@@ -2718,30 +2728,25 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   const keepWithDate = (c, d) =>
     `${c} = CASE WHEN agg_staging.${d} IS NULL OR excluded.${d} > agg_staging.${d}
        THEN COALESCE(excluded.${c}, agg_staging.${c}) ELSE agg_staging.${c} END`;
+  const SUM_COLS = ['qty', 'base_amt', 'base_wgt', 'a0_amt', 'a0_wgt', 'a1_amt', 'a1_wgt',
+    'a2_amt', 'a2_wgt', 'a3_amt', 'a3_wgt', 'cost_amt', 'cost_wgt', 'tgt_amt', 'tgt_wgt'];
   const vals = [...acc.values()].map((a) =>
-    [a.ent, a.model, a.qty, a.base, a.a0, a.a1, a.a2, a.a3, a.cost, a.d0, a.d1, a.d2, a.d3,
-      a.r0, a.r1, a.r2, a.r3,
+    [a.ent, a.model, a.qty, a.base, a.baseW, a.a0, a.a0W, a.a1, a.a1W,
+      a.a2, a.a2W, a.a3, a.a3W, a.cost, a.costW, a.tgt, a.tgtW,
+      a.d0, a.d1, a.d2, a.d3, a.r0, a.r1, a.r2, a.r3,
       a.branch, a.office, a.person,
-      a.tgt, a.tgtW, a.nego, a.fdate, a.fprice,
+      a.nego, a.fdate, a.fprice,
       Number.isFinite(a.top) ? a.top : 0]);
   if (vals.length) {
     await db.run(
       `INSERT INTO agg_staging
-         (ent_cd, model_code, qty, base_amt, a0_amt, a1_amt, a2_amt, a3_amt, cost_amt,
+         (ent_cd, model_code, ${SUM_COLS.join(', ')},
           d0_max, d1_max, d2_max, d3_max, r0_no, r1_no, r2_no, r3_no,
           branch, office, sales_person,
-          tgt_amt, tgt_wgt, nego_result, final_date, final_price, top_qty)
-       VALUES ${vals.map(() => `(${'?,'.repeat(25)}?)`).join(',')}
+          nego_result, final_date, final_price, top_qty)
+       VALUES ${vals.map(() => `(${'?,'.repeat(31)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
-         qty = agg_staging.qty + excluded.qty,
-         base_amt = agg_staging.base_amt + excluded.base_amt,
-         a0_amt = agg_staging.a0_amt + excluded.a0_amt,
-         a1_amt = agg_staging.a1_amt + excluded.a1_amt,
-         a2_amt = agg_staging.a2_amt + excluded.a2_amt,
-         a3_amt = agg_staging.a3_amt + excluded.a3_amt,
-         cost_amt = agg_staging.cost_amt + excluded.cost_amt,
-         tgt_amt = agg_staging.tgt_amt + excluded.tgt_amt,
-         tgt_wgt = agg_staging.tgt_wgt + excluded.tgt_wgt,
+         ${SUM_COLS.map((c) => `${c} = agg_staging.${c} + excluded.${c}`).join(', ')},
          ${[0, 1, 2, 3].map((n) => keepWithDate(`r${n}_no`, `d${n}_max`)).join(', ')},
          ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
          ${keepNewer('final_date')},
@@ -2762,10 +2767,10 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // マスタ登録からはA基準（計画）と、支店・営業所・担当者だけを重ねる。
   await db.run(`
     UPDATE deals SET
-      a_price_m0 = CASE WHEN s.qty > 0 THEN s.a0_amt / s.qty END,
-      a_price_m1 = CASE WHEN s.qty > 0 THEN s.a1_amt / s.qty END,
-      a_price_m2 = CASE WHEN s.qty > 0 THEN s.a2_amt / s.qty END,
-      a_price_m3 = CASE WHEN s.qty > 0 THEN s.a3_amt / s.qty END,
+      a_price_m0 = CASE WHEN s.a0_wgt > 0 THEN s.a0_amt / s.a0_wgt END,
+      a_price_m1 = CASE WHEN s.a1_wgt > 0 THEN s.a1_amt / s.a1_wgt END,
+      a_price_m2 = CASE WHEN s.a2_wgt > 0 THEN s.a2_amt / s.a2_wgt END,
+      a_price_m3 = CASE WHEN s.a3_wgt > 0 THEN s.a3_amt / s.a3_wgt END,
       a_date_m0 = s.d0_max,
       a_date_m1 = s.d1_max,
       a_date_m2 = s.d2_max,
@@ -2774,7 +2779,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       a_ringi_m1 = s.r1_no,
       a_ringi_m2 = s.r2_no,
       a_ringi_m3 = s.r3_no,
-      cost_price = CASE WHEN s.qty > 0 THEN s.cost_amt / s.qty END,
+      cost_price = CASE WHEN s.cost_wgt > 0 THEN s.cost_amt / s.cost_wgt END,
       -- 支店・営業所・担当者は実績側に無いので、マスタ登録から写す
       -- （まとまりの中で数量の一番多い行のもの）
       branch = s.branch,

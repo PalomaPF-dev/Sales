@@ -413,7 +413,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-20-negotiation';
+const SCHEMA_VERSION = '2026-08-20-agg-weights';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。

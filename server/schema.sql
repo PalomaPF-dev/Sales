@@ -210,12 +210,21 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   ent_cd     TEXT NOT NULL,
   model_code TEXT NOT NULL,
   qty        REAL NOT NULL DEFAULT 0,
+  -- 単価は「その単価が入っている行」だけの数量で加重平均する。
+  -- 全行の数量で割ると、未申請（単価なし）の行に引きずられて
+  -- ファイルの単価より低い値になってしまうため、単価ごとに重みを持つ
   base_amt   REAL NOT NULL DEFAULT 0,
+  base_wgt   REAL NOT NULL DEFAULT 0,
   a0_amt     REAL NOT NULL DEFAULT 0,
+  a0_wgt     REAL NOT NULL DEFAULT 0,
   a1_amt     REAL NOT NULL DEFAULT 0,
+  a1_wgt     REAL NOT NULL DEFAULT 0,
   a2_amt     REAL NOT NULL DEFAULT 0,
+  a2_wgt     REAL NOT NULL DEFAULT 0,
   a3_amt     REAL NOT NULL DEFAULT 0,
+  a3_wgt     REAL NOT NULL DEFAULT 0,
   cost_amt   REAL NOT NULL DEFAULT 0,
+  cost_wgt   REAL NOT NULL DEFAULT 0,
   -- 承認日（登録日）は足し合わせず、まとまりの中で一番新しい日を残す
   d0_max     TEXT,
   d1_max     TEXT,
