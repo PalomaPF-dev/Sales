@@ -347,7 +347,7 @@ export interface AggResult {
 
 /**
  * 小分けにして送る。サーバー側で法人×品目へ集約し、
- * 最後に実績ベースの案件へA基準（数量加重平均）を重ねる。
+ * 最後に実績ベースの案件へA基準（リストの単価そのまま）を重ねる。
  */
 export async function sendAggImport(
   parsed: AggParsed,

@@ -24,7 +24,7 @@ interface DealsRes {
 }
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'aState', 'aDateYm', 'aDateOp', 'gain'] as const;
+  'aState', 'act', 'aDateYm', 'aDateOp', 'gain'] as const;
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -429,6 +429,8 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>価格調査（{actLabel}実績）の得意先×商品</strong>を土台に、価格を比較します。
+        マスタ登録（A基準）はこの実績へ突合して重ね、当たらなかった品目は
+        <strong>{actLabel}実績無し</strong>として載ります（数量の欄に出ます）。
         実績は<strong>過去最新単価</strong>（値上げ前）と<strong>{actLabel}の実単価</strong>（金額÷数量）の比較で、
         その先の<strong>A基準</strong>（マスタ登録の申請単価。当月と向こう3か月）が今後の計画、
         隣の<strong>目標値</strong>が第2弾新値上げ単価です。
@@ -496,6 +498,15 @@ export default function Deals() {
             <option value="">すべて</option>
             <option value="has">あり（値上げ対象）</option>
             <option value="none">なし</option>
+          </select>
+        </label>
+        {/* 当月実績（価格調査）との突合。マスタ登録にだけあって当たらない品目は実績無し */}
+        <label className="fld" title={`${actLabel}実績（価格調査）をベースにマスタ登録（A基準）を突合しています。当たらない品目は${actLabel}実績無しです`}>
+          {actLabel}実績
+          <select value={get('act')} onChange={(e) => setParam('act', e.target.value)}>
+            <option value="">すべて</option>
+            <option value="has">あり（突合済）</option>
+            <option value="none">なし（{actLabel}実績無し）</option>
           </select>
         </label>
         {/*
@@ -799,9 +810,14 @@ export default function Deals() {
                   <td className="num">{d.master_price == null ? '—' : yen(d.master_price)}</td>
                   <td className="num">{actDiff(d)}</td>
                   <td className="num">
-                    {monthlyQty(d) == null ? '—'
+                    {monthlyQty(d) == null
+                      // マスタ登録にだけあって、当月実績（価格調査）と突合で当たらなかった品目
+                      ? <span style={{ color: 'var(--muted)' }}
+                              title={`マスタ登録（A基準）にはあるものの、${actLabel}実績（価格調査）に無かった品目です`}>
+                          {actLabel}実績無し
+                        </span>
                       : Number(monthlyQty(d)) === 0
-                        ? <span style={{ color: 'var(--muted)' }} title={`${actLabel}の実績が無かった品目です`}>出荷無</span>
+                        ? <span style={{ color: 'var(--muted)' }} title={`${actLabel}の出荷が無かった品目です`}>出荷無</span>
                         : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                   </td>
 

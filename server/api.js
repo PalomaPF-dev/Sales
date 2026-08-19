@@ -1772,6 +1772,12 @@ function dealFilters(q, user) {
   if (q.aState === 'has') where.push('a_price_m3 IS NOT NULL');
   else if (q.aState === 'none') where.push('a_price_m3 IS NULL');
 
+  // 当月実績（価格調査）との突合。当月実績をベースにマスタ登録（A基準）を重ねるため、
+  // マスタ登録にだけあって突合で当たらなかった品目は当月の数量（master_qty）が入らない。
+  // その品目は「当月実績無し」として絞り込める
+  if (q.act === 'has') where.push('master_qty IS NOT NULL');
+  else if (q.act === 'none') where.push('master_qty IS NULL');
+
   // 売上改善額の向き。過去最新単価と当月のマスタ単価を比べて、
   // 上がった品目（プラス）・下がった品目（マイナス）・変わらない品目に分ける。
   // ダッシュボードの内訳から、その中身をこの一覧で開けるようにするための絞り込み。
@@ -2660,7 +2666,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     }
   };
 
-  // 法人×品目ごとに、数量と「単価×数量」を足し込む（加重平均のため）
+  // 法人×品目ごとにまとめる。数量は月あたりの影響額（値上げ額）の計算にだけ使い、
+  // A基準・目標値の単価はファイルの値をそのまま持つ（加重平均しない）
   const acc = new Map();
   let matched = 0;
   let unmatched = 0;
@@ -2674,16 +2681,18 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     const a = acc.get(key) ?? {
       ent, model: String(r.model_code).trim(), qty: 0,
       base: 0, baseW: 0,
-      a0: 0, a0W: 0, a1: 0, a1W: 0, a2: 0, a2W: 0, a3: 0, a3W: 0,
+      a0: null, a1: null, a2: null, a3: null,
       cost: 0, costW: 0,
       d0: null, d1: null, d2: null, d3: null,
       r0: null, r1: null, r2: null, r3: null,
-      tgt: 0, tgtW: 0, nego: null, fdate: null, fprice: null,
+      tgt: null, nego: null, fdate: null, fprice: null,
       branch: null, office: null, person: null,
       corp_group: null, industry: null, customer_name: null, model_name: null,
       product_name: null, gas_type: null, equip_name: null, category_name: null,
       top: Number.NEGATIVE_INFINITY,
     };
+    const isTop = qty > a.top;
+    if (isTop) a.top = qty;
     // 支店・営業所・担当者などの名前は、数量の一番多い行（主な納入先）を代表にする。
     // 代表の行で空欄の項目は他の行から補う（品目名などを取りこぼさないため）
     const rep = {
@@ -2699,27 +2708,29 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       gas_type: txt2(r.gas_type),
       equip_name: txt2(r.equip_name),
       category_name: txt2(r.category_name),
+      // A基準・目標値もリストの単価をそのまま代表値として持つ。
+      // 納入先違いで行が分かれても単価は同じはずなので、平均はしない
+      // （0は「未申請」の印なので値として扱わない）
+      a0: num(r.a_price_m0) > 0 ? num(r.a_price_m0) : null,
+      a1: num(r.a_price_m1) > 0 ? num(r.a_price_m1) : null,
+      a2: num(r.a_price_m2) > 0 ? num(r.a_price_m2) : null,
+      a3: num(r.a_price_m3) > 0 ? num(r.a_price_m3) : null,
+      tgt: num(r.target_price) > 0 ? num(r.target_price) : null,
     };
-    if (qty > a.top) {
-      a.top = qty;
+    if (isTop) {
       for (const [k, v] of Object.entries(rep)) if (v != null) a[k] = v;
     } else {
       for (const [k, v] of Object.entries(rep)) if (a[k] == null) a[k] = v;
     }
     a.qty += qty;
-    // 単価は「その単価が入っている行」だけで加重平均する。
-    // 全行の数量で割ると、未申請（単価なし）の行に引きずられて
-    // ファイルの単価より低くなってしまう。数量0の行は重み1で数える
+    // 出荷単価・実績原価は参考値のため、従来どおり
+    // 「その単価が入っている行」だけの数量で加重平均する。数量0の行は重み1
     const w = qty > 0 ? qty : 1;
     const addPrice = (kAmt, kW, v) => {
       const n2 = num(v);
       if (n2 > 0) { a[kAmt] += n2 * w; a[kW] += w; }
     };
     addPrice('base', 'baseW', r.base_price);
-    addPrice('a0', 'a0W', r.a_price_m0);
-    addPrice('a1', 'a1W', r.a_price_m1);
-    addPrice('a2', 'a2W', r.a_price_m2);
-    addPrice('a3', 'a3W', r.a_price_m3);
     addPrice('cost', 'costW', r.cost_price);
     // 承認日・稟議Noは、その月の申請単価が入っている行からだけ拾う。
     // 単価が無いのに承認日だけが残るのはおかしいため
@@ -2727,9 +2738,6 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     if (num(r.a_price_m1) > 0) takeApproval(a, 'd1', 'r1', ymd(r.a_date_m1), txt2(r.a_ringi_m1));
     if (num(r.a_price_m2) > 0) takeApproval(a, 'd2', 'r2', ymd(r.a_date_m2), txt2(r.a_ringi_m2));
     if (num(r.a_price_m3) > 0) takeApproval(a, 'd3', 'r3', ymd(r.a_date_m3), txt2(r.a_ringi_m3));
-    // 第2弾新値上げ単価（目標値）。数量で加重平均する
-    const tgt = num(r.target_price);
-    if (tgt > 0) { a.tgt += tgt * (qty > 0 ? qty : 1); a.tgtW += qty > 0 ? qty : 1; }
     // 商談結果・最終確定単価は数量の一番多い行を代表に、最終確定日は一番新しい日を残す
     if (qty >= a.top) {
       if (txt2(r.nego_result)) a.nego = normNegoResult(r.nego_result);
@@ -2754,11 +2762,24 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   const keepWithDate = (c, d) =>
     `${c} = CASE WHEN agg_staging.${d} IS NULL OR excluded.${d} > agg_staging.${d}
        THEN COALESCE(excluded.${c}, agg_staging.${c}) ELSE agg_staging.${c} END`;
-  const SUM_COLS = ['qty', 'base_amt', 'base_wgt', 'a0_amt', 'a0_wgt', 'a1_amt', 'a1_wgt',
-    'a2_amt', 'a2_wgt', 'a3_amt', 'a3_wgt', 'cost_amt', 'cost_wgt', 'tgt_amt', 'tgt_wgt'];
+  // 数量・出荷単価・実績原価は送りが分かれても足し込む（数量は影響額の計算に使う）
+  const SUM_COLS = ['qty', 'base_amt', 'base_wgt', 'cost_amt', 'cost_wgt'];
+  // A基準・目標値はリストの単価そのもの。amt に単価、wgt に「値あり」の印(1)を入れ、
+  // 案件へ重ねるときの amt÷wgt がそのまま単価になる
+  const PRICE_COLS = ['a0', 'a1', 'a2', 'a3', 'tgt'];
+  // 送りが分かれても足し合わせず、数量の一番多い側の単価を残す（無い側は補う）
+  const keepPrice = (c) => `
+    ${c}_amt = CASE
+        WHEN excluded.${c}_wgt > 0
+             AND (agg_staging.${c}_wgt = 0 OR excluded.top_qty > agg_staging.top_qty)
+          THEN excluded.${c}_amt
+        ELSE agg_staging.${c}_amt END,
+    ${c}_wgt = CASE WHEN excluded.${c}_wgt > 0 OR agg_staging.${c}_wgt > 0 THEN 1 ELSE 0 END`;
   const vals = [...acc.values()].map((a) =>
-    [a.ent, a.model, a.qty, a.base, a.baseW, a.a0, a.a0W, a.a1, a.a1W,
-      a.a2, a.a2W, a.a3, a.a3W, a.cost, a.costW, a.tgt, a.tgtW,
+    [a.ent, a.model, a.qty, a.base, a.baseW,
+      a.a0 ?? 0, a.a0 != null ? 1 : 0, a.a1 ?? 0, a.a1 != null ? 1 : 0,
+      a.a2 ?? 0, a.a2 != null ? 1 : 0, a.a3 ?? 0, a.a3 != null ? 1 : 0,
+      a.cost, a.costW, a.tgt ?? 0, a.tgt != null ? 1 : 0,
       a.d0, a.d1, a.d2, a.d3, a.r0, a.r1, a.r2, a.r3,
       a.branch, a.office, a.person,
       a.corp_group, a.industry, a.customer_name, a.model_name,
@@ -2768,7 +2789,9 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   if (vals.length) {
     await db.run(
       `INSERT INTO agg_staging
-         (ent_cd, model_code, ${SUM_COLS.join(', ')},
+         (ent_cd, model_code, qty, base_amt, base_wgt,
+          a0_amt, a0_wgt, a1_amt, a1_wgt, a2_amt, a2_wgt, a3_amt, a3_wgt,
+          cost_amt, cost_wgt, tgt_amt, tgt_wgt,
           d0_max, d1_max, d2_max, d3_max, r0_no, r1_no, r2_no, r3_no,
           branch, office, sales_person,
           corp_group, industry, customer_name, model_name,
@@ -2777,6 +2800,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
        VALUES ${vals.map(() => `(${'?,'.repeat(39)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          ${SUM_COLS.map((c) => `${c} = agg_staging.${c} + excluded.${c}`).join(', ')},
+         ${PRICE_COLS.map(keepPrice).join(', ')},
          ${[0, 1, 2, 3].map((n) => keepWithDate(`r${n}_no`, `d${n}_max`)).join(', ')},
          ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
          ${keepNewer('final_date')},
@@ -2793,7 +2817,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
 
 api.post('/agg-import/finish', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
-  // 集約した結果を案件へ重ねる。単価は数量での加重平均。
+  // 集約した結果を案件へ重ねる。A基準・目標値はリストの単価そのもの
+  // （amt÷wgt は wgt=1 のためファイルの値がそのまま入る）。
   // 実績にある法人×品目だけが対象（案件の土台は実績）。
   const stamp = now();
   // 現状の単価・数量は価格調査（当月実績）が正なので、ここでは触らない。
