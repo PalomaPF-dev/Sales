@@ -135,8 +135,9 @@ interface FlowBar {
 
 /**
  * まとめの表と同じ数字を滝チャートで出す。
- * 7月実績 → プラスを除き → マイナスを戻し → 値上げ前当初 → 計画 の流れ。
- * 途中の増減は宙に浮く本で、全体の本（実績・当初・計画）だけ0から立てる。
+ * 7月実績 → プラスを除き → マイナスを戻し → 値上げ前当初 の流れ。
+ * 計画（A基準）はグラフには出さず、下の表で見る。
+ * 途中の増減は宙に浮く本で、全体の本（実績・当初）だけ0から立てる。
  */
 function FlowChart({ bars }: { bars: FlowBar[] }) {
   const COLOR = {
@@ -730,7 +731,7 @@ export default function Dashboard() {
             Math.abs(v) >= 1e8
               ? `${(v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 1 })}億`
               : `${Math.round(v / 1e4).toLocaleString()}万`;
-          // 7月実績 → プラスを除く → マイナスを戻す → 値上げ前当初 → 計画（8月・9月）
+          // 7月実績 → プラスを除く → マイナスを戻す → 値上げ前当初
           const bars: FlowBar[] = [
             {
               label: `${actLabel} 実績`, kind: '実績', total: num(t?.base_amt) / months,
@@ -752,14 +753,6 @@ export default function Dashboard() {
                 sub: `${num(t?.deals).toLocaleString()}件`,
               },
             ] : []),
-            // 計画は当月（8月）と翌月（9月）だけ。先の月は下の表で見る
-            ...([[m0, num(t?.a0_amt), num(data.aMonths?.cnt_m0)],
-                 [m1, num(t?.a1_amt), num(data.aMonths?.cnt_m1)]] as [string, number, number][])
-              .map(([label, amt, cnt]) => ({
-                label: `${label} 計画`, kind: '計画' as const, total: amt / months,
-                gain: pre == null ? null : (amt - pre) / months,
-                sub: `申請 ${cnt.toLocaleString()}件`,
-              })),
           ];
           return <FlowChart bars={bars} />;
         })()}
