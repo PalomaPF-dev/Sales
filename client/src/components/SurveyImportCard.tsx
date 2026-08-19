@@ -88,7 +88,7 @@ export default function SurveyImportCard({ anchorYm, onDone }:
         ファイルは 得意先×納入先×商品 の細かい単位なので、
         <strong>得意先×商品へ集約（数量で加重平均）します</strong>。
         <strong>この取込が案件一覧の土台</strong>で、ファイルに無い案件は削除されます
-        （決定単価（B基準）など画面で入れた値は、残る案件ではそのまま残ります）。
+        （商談結果など画面で入れた値は、残る案件ではそのまま残ります）。
         <strong>この取込を先に行い、そのあとにマスタ登録（A基準）</strong>を重ねてください。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>

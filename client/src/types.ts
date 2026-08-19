@@ -80,6 +80,9 @@ export interface Deal {
   r2_agreed_price: number | null;   // ❸ 合意単価
   r2_raise_unit: number | null;     // ❹ ❸−❶
   r2_applied_ym: string | null;     // 適用年月
+  nego_result?: string | null;      // 商談結果（○=合意 / △=交渉中 / ×=不可）
+  final_date?: string | null;       // 最終確定日
+  final_price?: number | null;      // 最終確定単価
   r2_done: number;
   r2_state: RoundState;
 

@@ -131,7 +131,7 @@ export default function DealDetail() {
             <dt>出荷数量</dt><dd>{d.qty == null ? '—' : Number(d.qty).toLocaleString()}</dd>
           </dl>
 
-          <div className="section-title">A基準（申請単価）とB基準</div>
+          <div className="section-title">A基準（申請単価）と目標値</div>
           <dl className="kv">
             {([
               [meta?.aggMeta?.m0 || '当月', d.a_price_m0, d.a_date_m0, d.a_ringi_m0],
@@ -155,8 +155,16 @@ export default function DealDetail() {
                   </dd>
                 </Fragment>
               ))}
-            <dt>決定単価（B基準）</dt>
-            <dd>{d.b_price == null ? '未入力' : `¥${yen(d.b_price)}`}</dd>
+            <dt>目標値（第2弾新値上げ単価）</dt>
+            <dd>{d.r2_target_price == null ? '—' : `¥${yen(d.r2_target_price)}`}</dd>
+            <dt>商談結果</dt>
+            <dd>{d.nego_result || '—'}</dd>
+            <dt>最終確定</dt>
+            <dd>
+              {d.final_price == null && !d.final_date ? '—'
+                : `${d.final_price == null ? '' : `¥${yen(d.final_price)}`}`
+                  + `${d.final_date ? `（${d.final_date}）` : ''}`}
+            </dd>
             {(me.role === 'admin' || me.role === 'developer') && d.cost_price != null && (
               <>
                 <dt>実績原価（管理者のみ）</dt>

@@ -388,7 +388,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-19-product-name';
+const SCHEMA_VERSION = '2026-08-20-negotiation';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -575,6 +575,13 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN master_price REAL',
     // マスタ分（値決めどおりに出た分）の数量と金額。A基準はこれに対して当てる
     'ALTER TABLE deals ADD COLUMN product_name TEXT',
+    // 値上げ交渉（商談結果・最終確定日）。最終確定単価は使われていなかった
+    // 取込時代の final_price の枠をそのまま使う
+    'ALTER TABLE deals ADD COLUMN nego_result TEXT',
+    'ALTER TABLE deals ADD COLUMN final_date TEXT',
+    // マスタ登録の作業表に目標値・商談結果の列を足したので作り直す
+    // （取込のたびに空にする表なので、落としても失うデータは無い）
+    'DROP TABLE IF EXISTS agg_staging',
     'ALTER TABLE deals ADD COLUMN plan_qty REAL',
     'ALTER TABLE deals ADD COLUMN plan_amount DOUBLE PRECISION',
     // 価格調査（当月実績）の過去最新単価と受注日
@@ -615,7 +622,7 @@ async function beforeSchema() {
   // 列を1つでも足したら、その列を並びに含めた形へ作り直す必要がある。
   // 一番あとに足した列がビューに無ければ、旧構成とみなして落とす。
   try {
-    await db.get('SELECT product_name, plan_qty, plan_amount, master_price FROM deal_calc LIMIT 1');
+    await db.get('SELECT nego_result, final_date, product_name, plan_qty FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

@@ -11,7 +11,7 @@ const aggClient = () => import('../aggImportClient');
  *
  * 取り込むと案件は 得意先×納入先×商品 の単位になり、
  * 出荷単価・数量・A基準（向こう3か月の申請単価）が入る。
- * 2回目からは同じ単位の行を上書きし、区分・合意・決定単価（B基準）は残す。
+ * 2回目からは同じ単位の行を上書きし、区分・合意・交渉の入力値は残す。
  */
 export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -86,7 +86,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
         （まとまりの中で一番新しい日）。「ＷＦ申請番号」の列があれば<strong>稟議No</strong>も入り、
         案件一覧のA基準にカーソルを合わせると見えます。
         先に「価格調査（実単価）」を取り込んでおいてください（案件の土台になります）。
-        決定単価（B基準）など画面で入れた値は残ります。
+        商談結果など画面で入れた値は、ファイル側に値が無ければ残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />

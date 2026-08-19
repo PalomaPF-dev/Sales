@@ -34,6 +34,12 @@ export interface AggRow {
   a_ringi_m1: string | null;
   a_ringi_m2: string | null;
   a_ringi_m3: string | null;
+  // 第2弾新値上げ単価（目標値）と、商談結果・最終確定日・最終確定単価。
+  // 列の無いファイルでは null（画面で入れた値がそのまま残る）
+  target_price: unknown;
+  nego_result: string | null;
+  final_date: string | null;
+  final_price: unknown;
 }
 
 export interface AggParsed {
@@ -205,10 +211,16 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     base_price: findLike('出荷単価'),
     qty: findLike('売上数'),
     cost_price: find('実績原価'),
+    // 第2弾新値上げ単価（目標値）と、商談の結果。列の無い版では -1 のまま
+    target_price: findLike('第2弾') >= 0 ? findLike('第2弾') : findLike('目標値'),
+    nego_result: findLike('商談結果'),
+    final_date: findLike('最終確定日'),
+    final_price: findLike('最終確定単価'),
   };
   // 担当・支店・地区・原価は任意（無いファイルでも取り込める）
   const OPTIONAL = new Set(['cost_price', 'sales_person', 'office', 'branch',
-    'delivery_code', 'delivery_name', 'gas_type', 'category_name', 'list_price']);
+    'delivery_code', 'delivery_name', 'gas_type', 'category_name', 'list_price',
+    'target_price', 'nego_result', 'final_date', 'final_price']);
   const missing = Object.entries(col)
     .filter(([k, i]) => i < 0 && !OPTIONAL.has(k))
     .map(([k]) => k);
@@ -266,6 +278,10 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       a_ringi_m1: txt(r, ringiOf(m1)) || null,
       a_ringi_m2: txt(r, ringiOf(m2)) || null,
       a_ringi_m3: txt(r, ringiOf(m3)) || null,
+      target_price: at(r, col.target_price),
+      nego_result: txt(r, col.nego_result) || null,
+      final_date: col.final_date >= 0 ? toYmd(r[col.final_date]) : null,
+      final_price: at(r, col.final_price),
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');

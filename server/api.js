@@ -1688,6 +1688,9 @@ const SORTABLE = new Map([
   ['r2_agreed_price', 'r2_agreed_price'],
   ['r2_raise_unit', 'r2_raise_unit'],
   ['r2_applied_ym', 'r2_applied_ym'],
+  ['nego_result', 'nego_result'],
+  ['final_date', 'final_date'],
+  ['final_price', 'final_price'],
   ['r2_state', 'r2_state'],
   ['price_type_code', 'price_type_code'],
   ['kubun', 'kubun'],
@@ -2059,7 +2062,12 @@ api.get('/deals/:id', wrap(async (req, res) => {
 const EDITABLE = [
   'r2_agreed_price', 'r2_applied_ym', 'r2_done',
   'price_type_code',
+  // 値上げ交渉（営業担当者が入力する）
+  'nego_result', 'final_date', 'final_price',
 ];
+
+/** 商談結果の選択肢。○=合意 / △=交渉中 / ×=不可 */
+const NEGO_RESULTS = ['○', '△', '×'];
 
 // 目標値上げ単価は管理者だけが直せる。
 // 誰でも直せると目標そのものが動いてしまい、進捗の意味が無くなるため。
@@ -2114,10 +2122,20 @@ function buildDealUpdate(body, deal, user) {
   for (const f of EDITABLE) {
     if (!(f in body)) continue;
     let v = body[f];
-    if (f.endsWith('_agreed_price')) v = toPrice(v);
+    if (f.endsWith('_agreed_price') || f === 'final_price') v = toPrice(v);
     else if (f.endsWith('_applied_ym')) v = normalizeYm(v);
     else if (f.endsWith('_done')) v = v ? 1 : 0;
-    else v = nv(v);
+    else if (f === 'nego_result') {
+      v = String(v ?? '').trim() || null;
+      if (v != null && !NEGO_RESULTS.includes(v)) {
+        throw new Error(`商談結果は ${NEGO_RESULTS.join(' / ')} から選んでください`);
+      }
+    } else if (f === 'final_date') {
+      v = String(v ?? '').trim() || null;
+      if (v != null && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        throw new Error('最終確定日は「2026-08-20」の形式で入力してください');
+      }
+    } else v = nv(v);
     sets.push(`${f} = ?`);
     params.push(v);
   }
@@ -2638,6 +2656,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       a0: 0, a1: 0, a2: 0, a3: 0, cost: 0,
       d0: null, d1: null, d2: null, d3: null,
       r0: null, r1: null, r2: null, r3: null,
+      tgt: 0, tgtW: 0, nego: null, fdate: null, fprice: null,
       branch: null, office: null, person: null, top: Number.NEGATIVE_INFINITY,
     };
     // 支店・営業所・担当者は、数量の一番多い行（主な納入先）を代表にする
@@ -2654,10 +2673,22 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     a.a2 += num(r.a_price_m2) * qty;
     a.a3 += num(r.a_price_m3) * qty;
     a.cost += num(r.cost_price) * qty;
-    takeApproval(a, 'd0', 'r0', ymd(r.a_date_m0), txt2(r.a_ringi_m0));
-    takeApproval(a, 'd1', 'r1', ymd(r.a_date_m1), txt2(r.a_ringi_m1));
-    takeApproval(a, 'd2', 'r2', ymd(r.a_date_m2), txt2(r.a_ringi_m2));
-    takeApproval(a, 'd3', 'r3', ymd(r.a_date_m3), txt2(r.a_ringi_m3));
+    // 承認日・稟議Noは、その月の申請単価が入っている行からだけ拾う。
+    // 単価が無いのに承認日だけが残るのはおかしいため
+    if (num(r.a_price_m0) > 0) takeApproval(a, 'd0', 'r0', ymd(r.a_date_m0), txt2(r.a_ringi_m0));
+    if (num(r.a_price_m1) > 0) takeApproval(a, 'd1', 'r1', ymd(r.a_date_m1), txt2(r.a_ringi_m1));
+    if (num(r.a_price_m2) > 0) takeApproval(a, 'd2', 'r2', ymd(r.a_date_m2), txt2(r.a_ringi_m2));
+    if (num(r.a_price_m3) > 0) takeApproval(a, 'd3', 'r3', ymd(r.a_date_m3), txt2(r.a_ringi_m3));
+    // 第2弾新値上げ単価（目標値）。数量で加重平均する
+    const tgt = num(r.target_price);
+    if (tgt > 0) { a.tgt += tgt * (qty > 0 ? qty : 1); a.tgtW += qty > 0 ? qty : 1; }
+    // 商談結果・最終確定単価は数量の一番多い行を代表に、最終確定日は一番新しい日を残す
+    if (qty >= a.top) {
+      if (txt2(r.nego_result)) a.nego = txt2(r.nego_result);
+      if (num(r.final_price) > 0) a.fprice = num(r.final_price);
+    }
+    const fd = ymd(r.final_date);
+    if (fd && (!a.fdate || fd > a.fdate)) a.fdate = fd;
     acc.set(key, a);
   }
 
@@ -2675,14 +2706,17 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   const vals = [...acc.values()].map((a) =>
     [a.ent, a.model, a.qty, a.base, a.a0, a.a1, a.a2, a.a3, a.cost, a.d0, a.d1, a.d2, a.d3,
       a.r0, a.r1, a.r2, a.r3,
-      a.branch, a.office, a.person, Number.isFinite(a.top) ? a.top : 0]);
+      a.branch, a.office, a.person,
+      a.tgt, a.tgtW, a.nego, a.fdate, a.fprice,
+      Number.isFinite(a.top) ? a.top : 0]);
   if (vals.length) {
     await db.run(
       `INSERT INTO agg_staging
          (ent_cd, model_code, qty, base_amt, a0_amt, a1_amt, a2_amt, a3_amt, cost_amt,
           d0_max, d1_max, d2_max, d3_max, r0_no, r1_no, r2_no, r3_no,
-          branch, office, sales_person, top_qty)
-       VALUES ${vals.map(() => `(${'?,'.repeat(20)}?)`).join(',')}
+          branch, office, sales_person,
+          tgt_amt, tgt_wgt, nego_result, final_date, final_price, top_qty)
+       VALUES ${vals.map(() => `(${'?,'.repeat(25)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          qty = agg_staging.qty + excluded.qty,
          base_amt = agg_staging.base_amt + excluded.base_amt,
@@ -2691,9 +2725,13 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
          a2_amt = agg_staging.a2_amt + excluded.a2_amt,
          a3_amt = agg_staging.a3_amt + excluded.a3_amt,
          cost_amt = agg_staging.cost_amt + excluded.cost_amt,
+         tgt_amt = agg_staging.tgt_amt + excluded.tgt_amt,
+         tgt_wgt = agg_staging.tgt_wgt + excluded.tgt_wgt,
          ${[0, 1, 2, 3].map((n) => keepWithDate(`r${n}_no`, `d${n}_max`)).join(', ')},
          ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
-         ${['branch', 'office', 'sales_person', 'top_qty'].map(keepTop).join(', ')}`,
+         ${keepNewer('final_date')},
+         ${['branch', 'office', 'sales_person', 'nego_result', 'final_price', 'top_qty']
+           .map(keepTop).join(', ')}`,
       vals.flat()
     );
   }
@@ -2727,6 +2765,13 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       branch = s.branch,
       office = s.office,
       sales_person = s.sales_person,
+      -- 第2弾新値上げ単価（目標値）。ファイルに値があれば上書き、無ければ今のまま
+      r2_target_price = COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
+                                 deals.r2_target_price),
+      -- 商談結果・最終確定日・最終確定単価。画面で入れた値はファイルに無ければ残る
+      nego_result = COALESCE(s.nego_result, deals.nego_result),
+      final_date = COALESCE(s.final_date, deals.final_date),
+      final_price = COALESCE(s.final_price, deals.final_price),
       updated_at = ?
     FROM agg_staging s
     WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);

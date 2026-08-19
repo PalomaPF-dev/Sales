@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS deals (
   rate            REAL,   -- AA 掛け率
   base_price      REAL,   -- AB 出荷単価（❶ 値上げ前単価）
   ship_amount     REAL,   -- AF 出荷金額
-  final_price     REAL,   -- AM 最終単価
+  final_price     REAL,   -- 最終確定単価（旧・取込のAM最終単価の枠を使う）
   voucher_no      TEXT,   -- AP 売上伝票NO
   quote_no        TEXT,   -- AQ 見積伝票番号
   order_date      TEXT,   -- AR 受注日
@@ -172,6 +172,10 @@ CREATE TABLE IF NOT EXISTS deals (
   price_type_code INTEGER REFERENCES price_types(code), -- マスター単価種別（6種）
   -- 交渉の進捗。営業担当者が案件一覧で合意単価と適用年月を入れ、完了にする
   r2_applied_ym   TEXT,   -- 値上げの適用年月（YYYY-MM）
+  -- 値上げ交渉（営業担当者が入力）。商談結果は ○（合意）/△（交渉中）/×（不可）
+  nego_result     TEXT,
+  final_date      TEXT,   -- 最終確定日
+
   r2_done         INTEGER NOT NULL DEFAULT 0,
   updated_at      TEXT
 );
@@ -232,6 +236,13 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   branch       TEXT,
   office       TEXT,
   sales_person TEXT,
+  -- 第2弾新値上げ単価（目標値）。数量で加重平均する
+  tgt_amt      REAL NOT NULL DEFAULT 0,
+  tgt_wgt      REAL NOT NULL DEFAULT 0,
+  -- 商談結果・最終確定日・最終確定単価（数量の一番多い行を代表にする）
+  nego_result  TEXT,
+  final_date   TEXT,
+  final_price  REAL,
   top_qty      REAL,
   PRIMARY KEY (ent_cd, model_code)
 );

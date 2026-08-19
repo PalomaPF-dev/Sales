@@ -8,17 +8,17 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings, IconUsers } from './components/icons';
+import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
 const Deals = lazy(() => import('./pages/Deals'));
 const DealDetail = lazy(() => import('./pages/DealDetail'));
 const CorpDetail = lazy(() => import('./pages/CorpDetail'));
-const Settings = lazy(() => import('./pages/Settings'));
+
 const Users = lazy(() => import('./pages/Users'));
 const ImportPage = lazy(() => import('./pages/ImportPage'));
-const Simulation = lazy(() => import('./pages/Simulation'));
+
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -113,7 +113,7 @@ export default function App() {
     );
   }
 
-  const canConfig = ['planning', 'admin', 'developer'].includes(user.role);
+
   const isAdmin = user.role === 'admin' || user.role === 'developer';
 
   return (
@@ -136,11 +136,10 @@ export default function App() {
           <nav>
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
-            {canConfig && <NavLink to="/simulation"><IconDashboard /><span className="lbl">シミュレーション</span></NavLink>}
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
-            {canConfig && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
-            {isAdmin && <NavLink to="/users"><IconUsers /><span className="lbl">管理者画面</span></NavLink>}
+            {/* 設定（ユーザー管理など）。管理者だけに見せる */}
+            {isAdmin && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
           </nav>
           <div className="spacer" />
           <div className="userbox">
@@ -164,8 +163,7 @@ export default function App() {
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={<ImportPage />} />
-              <Route path="/simulation" element={<Simulation />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
               <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />
             </Routes>

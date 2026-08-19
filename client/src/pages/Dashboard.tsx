@@ -265,7 +265,7 @@ function AmtCell({ amt, base, months, note, noteTitle }: {
 
 // 集計表の並び替えの対象。月の列は「その月の値上げ額（A基準額−現状額）」で並べる
 // （A基準額そのものだと規模の大きい区分が常に上に来て、値上げの大小が見えないため）
-type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'mp' | 'a0' | 'a1' | 'a2' | 'a3' | 'bsim'
+type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'mp' | 'a0' | 'a1' | 'a2' | 'a3'
   | `act${number}` | `gp${number}` | `gm${number}`;
 
 function sortValue(r: AbRow, col: SortCol): number | string {
@@ -292,7 +292,6 @@ function sortValue(r: AbRow, col: SortCol): number | string {
     case 'a1': return num(r.a1_amt) - pre;
     case 'a2': return num(r.a2_amt) - pre;
     case 'a3': return num(r.a3_amt) - pre;
-    case 'bsim': return num(r.bsim_amt) - pre;
     default: return 0;
   }
 }
@@ -302,15 +301,13 @@ function sortValue(r: AbRow, col: SortCol): number | string {
  * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
  * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
  */
-function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link, view, withBsim }: {
+function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link, view }: {
   head: string; rows: AbRow[]; total?: AbRow;
   months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
   /** その行の品目を、売上改善額の向きで絞った案件一覧のURL（合計行は渡らない） */
   link?: (name: string | null | undefined, kind: 'plus' | 'minus') => string;
   /** 出す内容。act=実績（売上改善額）、plan=計画（A基準） */
   view: 'act' | 'plan';
-  /** 想定B基準を出すか。法人ごとに決める値なので法人別のときだけ出す */
-  withBsim?: boolean;
 }) {
   // 未指定のときはサーバーの並び（現状額の大きい順）のまま
   const [sort, setSort] = useState<{ col: SortCol; desc: boolean } | null>(null);
@@ -392,12 +389,6 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
                 <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額</small></Th>
                 <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額</small></Th>
                 <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額</small></Th>
-                {withBsim && (
-                  <Th col="bsim" right
-                      title="法人ごとに決めた妥結の見通し（A基準の何%）で試算した場合。決定単価が入っている案件はその単価。想定の値上げ額で並びます">
-                    想定B基準<br /><small>想定額 / 値上げ額</small>
-                  </Th>
-                )}
               </>
             )}
           </tr>
@@ -466,7 +457,6 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
                     <AmtCell amt={num(r.a1_amt)} base={pre} months={months} />
                     <AmtCell amt={num(r.a2_amt)} base={pre} months={months} />
                     <AmtCell amt={num(r.a3_amt)} base={pre} months={months} />
-                    {withBsim && <AmtCell amt={num(r.bsim_amt)} base={pre} months={months} />}
                   </>
                 )}
               </tr>
@@ -887,7 +877,7 @@ export default function Dashboard() {
         </div>
         <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
                  total={t} months={months} actYms={data.abActYms}
-                 m0={m0} m1={m1} m2={m2} m3={m3} view={view} withBsim={tab === 'corp'}
+                 m0={m0} m1={m1} m2={m2} m3={m3} view={view}
                  link={(name, kind) => dealsLink(kind, { [tab]: name ?? '' })} />
       </div>
     </div>

@@ -3,7 +3,7 @@ import XLSX from 'xlsx';
 /**
  * 案件一覧の内容をそのままExcelにする。
  *
- * 列は画面と同じ並び（基本情報 → 実績（価格調査） → A基準 → B基準 → 値上げ幅 → 交渉）。
+ * 列は画面と同じ並び（基本情報 → 実績（価格調査） → A基準・目標値 → 値上げ幅 → 交渉）。
  * 絞り込みは呼び出し側（/deals/export）で効かせているので、
  * ここには絞り込み済みの行だけが渡ってくる。
  *
@@ -71,23 +71,16 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     ['営業所', (r) => r.office],
     ['担当者', (r) => r.sales_person],
 
-    // 実績（価格調査）。値上げ前 → 当月のマスタ単価 → 実際に出た単価
+    // 実績（価格調査）。値上げ前 → 当月の実単価と、その上がり幅・数量
     ['過去最新単価', (r) => round(r.past_price)],
     ['過去最新受注日', (r) => r.past_date],
-    [`マスタ単価（${actLabel}）`, (r) => round(r.master_price)],
-    ['上がり幅（マスタ単価−過去）', (r) => {
-      if (mPrice(r) == null || r.past_price == null) return '';
-      return round(Number(mPrice(r)) - Number(r.past_price));
-    }],
     [`実単価（${actLabel}）`, (r) => round(effPrice(r))],
-    [`数量 合計（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
-    [`金額 合計（${actLabel}）`, (r) => round(r.master_amount)],
-    [`数量 マスタ（${actLabel}）`, (r) => (planQty(r) == null ? '' : round(Number(planQty(r)), 2))],
-    [`金額 マスタ（${actLabel}）`, (r) => round(r.plan_amount)],
-    ['実勢差（実単価−マスタ単価）', (r) => {
-      if (effPrice(r) == null || r.master_price == null) return '';
-      return round(Number(effPrice(r)) - Number(r.master_price));
+    ['上がり幅（実単価−過去）', (r) => {
+      if (effPrice(r) == null || r.past_price == null) return '';
+      return round(Number(effPrice(r)) - Number(r.past_price));
     }],
+    [`数量（${actLabel}）`, (r) => (monthlyQty(r) == null ? '' : round(Number(monthlyQty(r)), 2))],
+    [`金額（${actLabel}）`, (r) => round(r.master_amount)],
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
     [`A基準 ${m0}`, (r) => round(r.a_price_m0)],
@@ -102,9 +95,7 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     [`A基準 ${m3}`, (r) => round(r.a_price_m3)],
     [`承認日 ${m3}`, (r) => r.a_date_m3],
     [`稟議No ${m3}`, (r) => r.a_ringi_m3],
-
-    // B基準（実際の決定単価。アプリで入力する）
-    ['決定単価（B基準）', (r) => round(r.b_price)],
+    ['目標値（第2弾新値上げ単価）', (r) => round(r.r2_target_price)],
 
     // 値上げ幅（A基準 − 実績）と、月あたりの値上げ額
     [`値上げ幅 ${m0}`, diff('a_price_m0')],
@@ -117,7 +108,10 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
       return round((a - Number(mPrice(r))) * Number(planQty(r)));
     }],
 
-    // 交渉
+    // 交渉（営業担当者が入力する）
+    ['商談結果', (r) => r.nego_result],
+    ['最終確定日', (r) => r.final_date],
+    ['最終確定単価', (r) => round(r.final_price)],
     ['適用年月', (r) => r.r2_applied_ym],
     ['状態', (r) => STATE_LABELS[r.r2_state] ?? ''],
     ['交渉状況（法人）', (r) => CORP_STATUS_LABELS[r.corp_status] ?? ''],
@@ -141,7 +135,7 @@ function round(v, digits = 0) {
  * 「まとめ」「器具区分別」「支店別」「法人別」をシートに分ける。
  *
  * 金額はすべて1か月あたり（期間合計の列は出さない。営業部の管理表の
- * 形式に合わせた）。想定B基準は法人別のシートにだけ出す。
+ * 形式に合わせた）。
  */
 export function buildDashboardWorkbook(data, opts = {}) {
   const months = Number(data.months) > 0 ? Number(data.months) : 12;
@@ -240,7 +234,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
   // 実績（価格調査の実単価）は月ごとに出す。その月に実単価のあった品目だけの
   // 集計なので、比べる現状額もその品目ぶん（実績の現状額）を並べて入れる
   const abActYms = Array.isArray(data.abActYms) ? data.abActYms : [];
-  const head = (first, withBsim) => [
+  const head = (first) => [
     first, '件数', '数量（月平均）',
     '現状額 合計（月あたり）',
     'うちマスタ（月あたり）',
@@ -255,9 +249,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
     `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
     `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`, `${m2} 値上げ率`,
     `${m3} A基準額（月あたり）`, `${m3} 値上げ額（月あたり）`, `${m3} 値上げ率`,
-    ...(withBsim ? ['想定B基準（月あたり）'] : []),
   ];
-  const line = (r, withBsim) => {
+  const line = (r) => {
     // 現状額は当月の金額（合計）。A基準（計画）は値上げ前当初と比べる
     const b = n(r.base_amt);
     const g = n(r.gain_plus_1) + n(r.gain_minus_1);
@@ -284,22 +277,19 @@ export function buildDashboardWorkbook(data, opts = {}) {
       round(n(r.a1_amt) / months), round((n(r.a1_amt) - pre) / months), rate(n(r.a1_amt)),
       round(n(r.a2_amt) / months), round((n(r.a2_amt) - pre) / months), rate(n(r.a2_amt)),
       round(n(r.a3_amt) / months), round((n(r.a3_amt) - pre) / months), rate(n(r.a3_amt)),
-      ...(withBsim ? [round(n(r.bsim_amt) / months)] : []),
     ];
   };
   const widths = [22, 8, 12, 18, 20,
     ...abActYms.flatMap(() => [18, 20, 18, 10, 20, 12, 20, 12, 12]),
     18, 18, 10, 18, 18, 10, 18, 18, 10, 18, 18, 10];
-  for (const [sheet, label, rows, withBsim] of [
-    ['器具区分別', '器具区分', data.abByEquip ?? [], false],
-    ['支店別', '支店', data.abByBranch ?? [], false],
-    ['法人別', '法人', data.abByCorp ?? [], true],
+  for (const [sheet, label, rows] of [
+    ['器具区分別', '器具区分', data.abByEquip ?? []],
+    ['支店別', '支店', data.abByBranch ?? []],
+    ['法人別', '法人', data.abByCorp ?? []],
   ]) {
     addSheet(sheet,
-      [head(label, withBsim),
-        ...rows.map((r) => line(r, withBsim)),
-        line({ ...t, name: '合計' }, withBsim)],
-      withBsim ? [...widths, 18] : widths);
+      [head(label), ...rows.map((r) => line(r)), line({ ...t, name: '合計' })],
+      widths);
   }
 
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });

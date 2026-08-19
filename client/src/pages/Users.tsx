@@ -226,9 +226,19 @@ export default function Users() {
     }
   };
 
+  // 設定は管理者だけが開ける（メニューにも出さないが、URL直打ちも防ぐ）
+  if (!['admin', 'developer'].includes(me.role)) {
+    return (
+      <div>
+        <h1 className="page-title">設定</h1>
+        <div className="alert error">この画面を開けるのは管理者のみです</div>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <h1 className="page-title">管理者画面（ユーザー）</h1>
+      <h1 className="page-title">設定</h1>
       <p className="page-sub">
         管理者のみが利用できます。ログインIDの発行・名簿の一括取込・登録内容の編集・利用停止・削除を行います。
         交渉履歴などの記録が残っている方は削除できません（「停止」にすればログインできなくなり、記録は残ります）。

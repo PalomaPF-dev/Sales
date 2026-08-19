@@ -53,8 +53,6 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isDev = me.role === 'developer';
-  // B基準（実際の決定単価）は同課（営業企画）と管理者が入れる
-  const canB = ['planning', 'admin', 'developer'].includes(me.role);
 
   // Excelでの一括取込
   const bulkFileRef = useRef<HTMLInputElement>(null);
@@ -187,7 +185,9 @@ export default function Deals() {
     setMsg(null);
     setDraft({
       r2_applied_ym: d.r2_applied_ym ?? '',
-      b_price: d.b_price == null ? '' : String(d.b_price),
+      nego_result: d.nego_result ?? '',
+      final_date: d.final_date ?? '',
+      final_price: d.final_price == null ? '' : String(d.final_price),
       qty: d.qty == null ? '' : String(d.qty),
       // 開発者は取込のズレ（法人名・器種・支店・営業所・出荷単価など）も一覧から直せる
       corp_name: d.corp_name ?? '',
@@ -245,8 +245,14 @@ export default function Deals() {
       setMsg({ kind: 'error', text: '適用年月は「2026-04」の形式で入力してください' });
       return;
     }
-    const ok = await patch(d.id, { r2_applied_ym: ym === '' ? null : ym });
-    if (ok) setMsg({ kind: 'ok', text: '適用年月を保存しました' });
+    const fp = (draft.final_price ?? '').trim();
+    const ok = await patch(d.id, {
+      r2_applied_ym: ym === '' ? null : ym,
+      nego_result: draft.nego_result?.trim() || null,
+      final_date: draft.final_date?.trim() || null,
+      final_price: fp === '' ? null : Number(fp),
+    });
+    if (ok) setMsg({ kind: 'ok', text: '値上げ交渉の内容を保存しました' });
   };
 
   // 現状は価格調査の当月実績（単価・数量）。過去最新単価と比べると、
@@ -257,11 +263,8 @@ export default function Deals() {
   const effPrice = (d: Deal) => d.master_avg_price ?? null;
   /** 当月のマスタ単価（値決めの単価）。A基準はこれと比べる。無い行は実単価で代用 */
   const mPrice = (d: Deal) => d.master_price ?? d.master_avg_price ?? null;
-  /** 当月の数量（合計） */
+  /** 当月の数量 */
   const monthlyQty = (d: Deal) => (d.master_qty == null ? null : Number(d.master_qty));
-  /** マスタ分の数量（値決めどおりに出た分）。A基準の値上げ額はこれに対して出す */
-  const planQty = (d: Deal) =>
-    (d.plan_qty ?? d.master_qty) == null ? null : Number(d.plan_qty ?? d.master_qty);
 
   /**
    * 差額を「＋1,000 / +2.5%」の形で出す小さな部品。
@@ -278,41 +281,15 @@ export default function Deals() {
   };
 
   /**
-   * 実単価とマスタ単価の差。値決め（マスタ単価）に対して、
-   * 実際にいくらで出たかを表す。見積ぶんがあると下回る。
-   */
-  const mpDiff = (d: Deal) => {
-    const act = effPrice(d);
-    const mp = d.master_price;
-    if (act == null || mp == null) return '—';
-    return diffCell(Number(act) - Number(mp), Number(mp),
-      `${actLabel}の実単価 ${yen(act)} − ${actLabel}のマスタ単価 ${yen(mp)}\n`
-      + '実単価は 金額 ÷ 数量。見積ぶんが混ざると値決めより下がります');
-  };
-
-  /**
-   * 売上改善額 =（当月のマスタ単価 − 過去最新単価）× マスタ分の数量。
-   * ダッシュボードのプラス・マイナスの内訳は、これを足し合わせたもの。
-   */
-  const gainAmt = (d: Deal) => {
-    const now = mPrice(d);
-    const past = d.past_price;
-    const qty = planQty(d);
-    if (now == null || past == null || qty == null) return null;
-    return (Number(now) - Number(past)) * Number(qty);
-  };
-
-  /**
-   * 値上げ前（過去最新単価）から当月のマスタ単価までに、実際に上がった幅。
-   * どちらも値決めの単価なので、そのまま比べられる。
+   * 値上げ前（過去最新単価）から当月の実単価までに、実際に上がった幅。
    * どちらかが無い行は出さない（比べる相手が無いため）。
    */
   const actDiff = (d: Deal) => {
-    const now = mPrice(d);
+    const now = effPrice(d);
     const past = d.past_price;
     if (now == null || past == null) return '—';
     return diffCell(Number(now) - Number(past), Number(past),
-      `${actLabel}のマスタ単価 ${yen(now)} − 過去最新単価 ${yen(past)}`
+      `${actLabel}の実単価 ${yen(now)} − 過去最新単価 ${yen(past)}`
       + (d.past_date ? `（過去最新受注日 ${d.past_date}）` : ''));
   };
 
@@ -333,7 +310,8 @@ export default function Deals() {
     ].filter(Boolean).join('\n');
     return (
       <span title={tip || undefined}>
-        {yen(price)}
+        {/* 0は「未申請」の印なので出さない */}
+        {price == null || Number(price) <= 0 ? '—' : yen(price)}
         {day && <div className="sub">{day}{ringi ? ' ※' : ''}</div>}
       </span>
     );
@@ -361,14 +339,6 @@ export default function Deals() {
     );
   };
 
-  /** B基準（決定単価）の保存。欄を離れた時点で、変わっていた場合だけ送る */
-  const saveB = async (d: Deal) => {
-    const v = (draft.b_price ?? '').trim();
-    if (v === (d.b_price == null ? '' : String(d.b_price))) return;
-    const ok = await patch(d.id, { b_price: v === '' ? null : Number(v) });
-    if (ok) setMsg({ kind: 'ok', text: v === '' ? '決定単価（B基準）を未入力に戻しました' : '決定単価（B基準）を保存しました' });
-  };
-
     const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
@@ -377,16 +347,12 @@ export default function Deals() {
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
         <strong>価格調査（{actLabel}実績）の得意先×商品</strong>を土台に、価格を比較します。
-        <strong>過去最新単価</strong>（値上げ前）から<strong>{actLabel}のマスタ単価</strong>までが実際の値上がり、
-        そこから先の<strong>A基準</strong>が今後の計画です。どちらも<strong>値決めの単価どうし</strong>で比べています。
-        <strong>{actLabel}の実単価</strong>（金額÷数量）は実際に出た単価で、見積ぶんが混ざるとマスタ単価より下がります。
-        A基準はマスタ登録の申請単価（当月と向こう3か月。法人×品目へ数量加重平均で集約）、
-        B基準は実際の決定単価（営業企画・管理者が入力）です。
-        A基準の下段はその単価の<strong>承認日</strong>（まとまりの中で一番新しい登録日）で、絞り込みにも使えます。
-        <strong>値上げ幅</strong>は<strong>{actLabel}のマスタ単価</strong>を比べるもとにした差額で、
-        <strong>値上げ額はマスタ分の数量</strong>（値決めどおりに出た分）に対して出します。
-        月ごとに単価が変わるため当月から4か月分を並べ、
-        値上げ額（幅×月平均の数量）は絞り込んだ全件の合計を上に出します。
+        実績は<strong>過去最新単価</strong>（値上げ前）と<strong>{actLabel}の実単価</strong>（金額÷数量）の比較で、
+        その先の<strong>A基準</strong>（マスタ登録の申請単価。当月と向こう3か月）が今後の計画、
+        隣の<strong>目標値</strong>が第2弾新値上げ単価です。
+        A基準の下段はその単価の<strong>承認日</strong>（申請単価のある月だけ入ります）で、絞り込みにも使えます。
+        <strong>値上げ幅</strong>は「A基準 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
+        <strong>商談結果・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -601,18 +567,16 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={8} className="grp">基本情報</th>
-              <th colSpan={7} className="grp sep"
-                  title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}のマスタ単価までが、実際に上がった分。`
-                    + `実単価は 金額÷数量 で、見積ぶんが混ざるとマスタ単価より下がります`}>
+              <th colSpan={4} className="grp sep"
+                  title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}の実単価までが、実際に上がった分です`}>
                 実績<small>（価格調査 {actLabel}）</small>
               </th>
-              <th colSpan={4} className="grp sep">A基準（申請単価・数量加重平均／下段は承認日）</th>
-              <th className="num grp sep">B基準</th>
+              <th colSpan={5} className="grp sep">A基準（申請単価／下段は承認日）・目標値</th>
               <th colSpan={4} className="grp sep"
                   title={`その月のA基準 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
                 値上げ幅（A基準−{actLabel}マスタ単価）
               </th>
-              <th colSpan={2} className="grp sep">値上げ交渉</th>
+              <th colSpan={5} className="grp sep">値上げ交渉（営業担当者が入力）</th>
               <th className="grp"></th>
             </tr>
             <tr>
@@ -630,37 +594,32 @@ export default function Deals() {
                   title="値上げ前の単価。カーソルを合わせると受注日が出ます">
                 過去最新単価
               </Th>
-              <Th col="master_price" className="num" title={`${actLabel}のマスタ単価（値決めの単価）`}>
-                {actLabel}マスタ単価
+              <Th col="hist_avg_price" className="num"
+                  title={`${actLabel}の実単価（金額÷数量）`}>
+                {actLabel}単価
               </Th>
-              <th className="num" title={`${actLabel}のマスタ単価 − 過去最新単価。実際に上がった幅`}>
+              <th className="num" title={`${actLabel}の実単価 − 過去最新単価。実際に上がった幅`}>
                 上がり幅<br /><small>過去→{actLabel}</small>
               </th>
-              <th className="num" title="上がり幅 × マスタ分の数量。ダッシュボードの内訳はこれを足したものです">
-                売上改善額<br /><small>幅×マスタ数量</small>
-              </th>
-              <Th col="hist_avg_price" className="num"
-                  title={`${actLabel}の実単価（金額÷数量）。実績の正`}>
-                {actLabel}実単価
-              </Th>
-              <Th col="hist_qty" className="num"
-                  title={`${actLabel}の数量（合計）。下段はマスタ分（値決めどおりに出た分）で、`
-                    + 'A基準の値上げ額はこちらに対して出します'}>
-                数量<br /><small>合計 / マスタ</small>
-              </Th>
-              <th className="num" title={`${actLabel}の実単価 − ${actLabel}のマスタ単価。見積ぶんで下がった分`}>
-                実勢差<br /><small>実−マスタ</small>
-              </th>
+              <Th col="hist_qty" className="num" title={`${actLabel}の数量`}>数量</Th>
               <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
               <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
-              <Th col="b_price" className="num sep">決定単価</Th>
+              <Th col="r2_target_price" className="num"
+                  title="第2弾新値上げ単価（目標値）。マスタ登録のファイルから入ります">
+                目標値<br /><small>第2弾</small>
+              </Th>
               <th className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</th>
-              <Th col="r2_applied_ym" className="num sep">適用年月</Th>
+              <Th col="nego_result" className="sep" title="商談の結果。○=合意 / △=交渉中 / ×=不可">
+                商談結果
+              </Th>
+              <Th col="final_date" className="num">最終確定日</Th>
+              <Th col="final_price" className="num">最終確定単価</Th>
+              <Th col="r2_applied_ym" className="num">適用年月</Th>
               <Th col="r2_state">状態</Th>
               <th></th>
             </tr>
@@ -704,61 +663,58 @@ export default function Deals() {
                   <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
 
-                  {/* 実績（価格調査）。過去最新単価 → 当月のマスタ単価（上がり幅）、
-                      その横に実際に出た単価（実単価）・数量・値決めとの差 */}
+                  {/* 実績（価格調査）。過去最新単価 → 当月の実単価と、その上がり幅・数量 */}
                   <td className="num sep"
                       title={d.past_date ? `過去最新受注日 ${d.past_date}` : undefined}>
                     {d.past_price == null ? '—' : yen(d.past_price)}
                     {d.past_date && <div className="sub">{dateLabel(d.past_date)}</div>}
                   </td>
-                  <td className="num">{d.master_price == null ? '—' : yen(d.master_price)}</td>
-                  <td className="num">{actDiff(d)}</td>
-                  <td className="num">
-                    {gainAmt(d) == null ? '—' : (
-                      <span style={Number(gainAmt(d)) < 0
-                        ? { color: '#c2410c', fontWeight: 700 }
-                        : Number(gainAmt(d)) > 0 ? { fontWeight: 700 } : undefined}>
-                        {Number(gainAmt(d)) === 0 ? '0'
-                          : `${Number(gainAmt(d)) < 0 ? '−' : '＋'}${yen(Math.abs(Number(gainAmt(d))))}`}
-                      </span>
-                    )}
-                  </td>
                   <td className="num">{effPrice(d) == null ? '—' : yen(effPrice(d))}</td>
+                  <td className="num">{actDiff(d)}</td>
                   <td className="num">
                     {monthlyQty(d) == null ? '—'
                       : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
-                    {planQty(d) != null && planQty(d) !== monthlyQty(d) && (
-                      <div className="sub">
-                        {Number(planQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
-                      </div>
-                    )}
                   </td>
-                  <td className="num">{mpDiff(d)}</td>
 
                   {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日。
-                      カーソルで承認日と稟議Noが見える */}
+                      カーソルで承認日と稟議Noが見える。隣は第2弾の目標値 */}
                   <td className="num sep">{aCell(d.a_price_m0, d.a_date_m0, d.a_ringi_m0)}</td>
                   <td className="num">{aCell(d.a_price_m1, d.a_date_m1, d.a_ringi_m1)}</td>
                   <td className="num">{aCell(d.a_price_m2, d.a_date_m2, d.a_ringi_m2)}</td>
                   <td className="num">{aCell(d.a_price_m3, d.a_date_m3, d.a_ringi_m3)}</td>
+                  <td className="num">{d.r2_target_price == null ? '—' : yen(d.r2_target_price)}</td>
 
-                  {/* B基準: 実際の決定単価。同課（営業企画）と管理者が入れる */}
-                  <td className="num sep">
-                    {isEditing && canB ? (
-                      <input type="number" className="cell" value={draft.b_price}
-                        onChange={(e) => setDraft({ ...draft, b_price: e.target.value })}
-                        onBlur={() => saveB(d)} />
-                    ) : yen(d.b_price)}
-                  </td>
-
-                  {/* 値上げ幅 = その月のA基準 − 実績の平均出荷単価。単価は月ごとに変わる */}
+                  {/* 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価は月ごとに変わる */}
                   <td className="num sep">{aDiff(d, d.a_price_m0, ymLabel(meta?.aggMeta?.m0, '当月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m1, ymLabel(meta?.aggMeta?.m1, '翌月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
 
-                  {/* 値上げ交渉（適用年月・状態） */}
-                  <td className="num sep">
+                  {/* 値上げ交渉。商談結果・最終確定日・最終確定単価・適用年月（営業担当者が入力） */}
+                  <td className="sep">
+                    {isEditing ? (
+                      <select className="cell" value={draft.nego_result}
+                        onChange={(e) => setDraft({ ...draft, nego_result: e.target.value })}>
+                        <option value="">—</option>
+                        <option value="○">○ 合意</option>
+                        <option value="△">△ 交渉中</option>
+                        <option value="×">× 不可</option>
+                      </select>
+                    ) : (d.nego_result || '—')}
+                  </td>
+                  <td className="num">
+                    {isEditing ? (
+                      <input type="date" className="cell" value={draft.final_date}
+                        onChange={(e) => setDraft({ ...draft, final_date: e.target.value })} />
+                    ) : (dateLabel(d.final_date) ?? '—')}
+                  </td>
+                  <td className="num">
+                    {isEditing ? (
+                      <input type="number" className="cell" value={draft.final_price}
+                        onChange={(e) => setDraft({ ...draft, final_price: e.target.value })} />
+                    ) : (d.final_price == null ? '—' : yen(d.final_price))}
+                  </td>
+                  <td className="num">
                     {isEditing ? (
                       <input type="month" className="cell" value={draft.r2_applied_ym}
                         onChange={(e) => setDraft({ ...draft, r2_applied_ym: e.target.value })} />
@@ -793,17 +749,13 @@ export default function Deals() {
       {isDev ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
           開発者のため、「入力」で取込項目
-          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価）と
-          決定単価（B基準）を直せます。変更は入力欄を離れた時点で保存されます。
+          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価）も直せます。
+          変更は入力欄を離れた時点で保存されます。
           コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
-        </p>
-      ) : canB ? (
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          「入力」から決定単価（B基準）と適用年月を入れられます（変更は入力欄を離れた時点で保存されます）。
         </p>
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          決定単価（B基準）の入力は営業企画・管理者が行います。
+          「入力」から商談結果・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
         </p>
       )}
     </div>
