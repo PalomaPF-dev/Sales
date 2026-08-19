@@ -43,6 +43,26 @@ function normalizePgUrl(raw) {
       );
       return u.toString();
     }
+    // Supabaseのトランザクションプーラー（ポート6543）は接続時のスキーマ指定を
+    // 受け付けない。同じホストのポート5432がセッションプーラーで、こちらは
+    // 指定が効くため読み替える。
+    if (u.hostname.endsWith('.pooler.supabase.com') && u.port === '6543') {
+      u.port = '5432';
+      console.warn(
+        'DATABASE_URL がSupabaseのトランザクションプーラー（6543番）だったため、'
+        + 'セッションプーラー（5432番）へ読み替えました。'
+      );
+      return u.toString();
+    }
+    // Supabaseの直接接続（db.xxx.supabase.co）はIPv6のみで、VercelからはIPv6で
+    // 届かない。つながらない時に原因が分かるように、先に注意を出しておく
+    if (process.env.VERCEL && /^db\..+\.supabase\.co$/.test(u.hostname)) {
+      console.warn(
+        'DATABASE_URL がSupabaseの直接接続です。VercelはIPv6非対応のため届かない'
+        + 'ことがあります。届かない場合は「Session pooler」の接続文字列'
+        + '（aws-0-〜.pooler.supabase.com:5432）に差し替えてください。'
+      );
+    }
   } catch {
     // URL形式でない（host=/var/run/... 等）場合はそのまま使う
   }
@@ -217,6 +237,9 @@ function createPostgresDb() {
   types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 
   const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(PG_URL) || PG_URL.includes('host=/');
+  // Supabaseは独自CAの証明書のため、公開CAでの検証（ssl: true）が通らない。
+  // sslmode=require 相当（暗号化のみ・検証なし）で接続する。Neonは公開CAなので検証する
+  const isSupabase = /\.supabase\.(co|com)[:/]/.test(PG_URL);
   const pool = new Pool({
     connectionString: PG_URL,
     max: Number(process.env.DB_POOL_MAX || 5),
@@ -224,7 +247,7 @@ function createPostgresDb() {
     // マネージドDBはTLS必須のことが多い。社内CAで検証が通らない場合は
     // DB_SSL_NO_VERIFY=true で緩められるようにしておく。
     ssl: isLocal ? false
-      : (String(process.env.DB_SSL_NO_VERIFY).toLowerCase() === 'true'
+      : (isSupabase || String(process.env.DB_SSL_NO_VERIFY).toLowerCase() === 'true'
           ? { rejectUnauthorized: false }
           : true),
     // 専用スキーマを既定の検索先にする
@@ -236,7 +259,9 @@ function createPostgresDb() {
     if (/unsupported startup parameter/i.test(String(e?.message || ''))) {
       return new DbConfigError(
         '接続先がプーラー（PgBouncer）経由のため、本アプリが必要とする接続時のスキーマ指定を受け付けません。'
-        + 'プーラーを経由しない接続文字列（ホスト名に -pooler や pooler. が付かない直接接続）に差し替えてください。'
+        + 'Neonならホスト名に -pooler の付かない直接接続、'
+        + 'SupabaseならSession pooler（aws-0-〜.pooler.supabase.com の5432番。6543番は不可）'
+        + 'の接続文字列に差し替えてください。'
       );
     }
     return e;
@@ -452,7 +477,8 @@ async function preparePostgresSchema() {
   throw new DbConfigError(
     `テーブルの作成先が「${row?.schema ?? '不明'}」になっており、想定の「${PG_SCHEMA}」が適用されていません。`
     + ' 接続プーラー（PgBouncer等）を経由すると接続時のオプションが無視されることがあります。'
-    + ' プーラーを経由しない接続文字列（Neonの場合はホスト名に -pooler が付かない方）をお試しください。'
+    + ' Neonならホスト名に -pooler の付かない直接接続、SupabaseならSession pooler'
+    + '（5432番。6543番は不可）の接続文字列をお試しください。'
   );
 }
 
