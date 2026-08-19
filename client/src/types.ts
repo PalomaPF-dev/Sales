@@ -162,6 +162,14 @@ export const CORP_STATUS_NAMES: Record<string, string> = {
   declined: '値上げ不可',
 };
 
+/** 商談結果の記号と意味 */
+export const NEGO_LABELS: Record<string, string> = {
+  '〇': '合意',
+  '□': '広域待ち',
+  '△': '否決',
+  '×': '本社へ相談',
+};
+
 export const ROLE_NAMES: Record<string, string> = {
   sales: '営業担当者',
   branch_manager: '支店長',

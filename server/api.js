@@ -2066,8 +2066,23 @@ const EDITABLE = [
   'nego_result', 'final_date', 'final_price',
 ];
 
-/** 商談結果の選択肢。○=合意 / △=交渉中 / ×=不可 */
-const NEGO_RESULTS = ['○', '△', '×'];
+/** 商談結果の選択肢。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談 */
+const NEGO_RESULTS = ['〇', '□', '△', '×'];
+
+/**
+ * 商談結果の記号の表記ゆれをそろえる。Excelの取込値をそのまま生かすため、
+ * 丸（○/〇/◯）・バツ（×/✕/Ｘ/x）などのどれで来ても同じ記号として扱う。
+ * 選択肢に無い文字はそのまま返す（取込では弾かず、入っていた値を残す）
+ */
+function normNegoResult(v) {
+  const t = String(v ?? '').trim();
+  if (!t) return null;
+  if (['○', '〇', '◯'].includes(t)) return '〇';
+  if (['□', '■'].includes(t)) return '□';
+  if (['△', '▲'].includes(t)) return '△';
+  if (['×', '✕', '✗', 'X', 'x', 'Ｘ'].includes(t)) return '×';
+  return t;
+}
 
 // 目標値上げ単価は管理者だけが直せる。
 // 誰でも直せると目標そのものが動いてしまい、進捗の意味が無くなるため。
@@ -2126,9 +2141,9 @@ function buildDealUpdate(body, deal, user) {
     else if (f.endsWith('_applied_ym')) v = normalizeYm(v);
     else if (f.endsWith('_done')) v = v ? 1 : 0;
     else if (f === 'nego_result') {
-      v = String(v ?? '').trim() || null;
+      v = normNegoResult(v);
       if (v != null && !NEGO_RESULTS.includes(v)) {
-        throw new Error(`商談結果は ${NEGO_RESULTS.join(' / ')} から選んでください`);
+        throw new Error('商談結果は 〇（合意）/ □（広域待ち）/ △（否決）/ ×（本社へ相談）から選んでください');
       }
     } else if (f === 'final_date') {
       v = String(v ?? '').trim() || null;
@@ -2684,7 +2699,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
     if (tgt > 0) { a.tgt += tgt * (qty > 0 ? qty : 1); a.tgtW += qty > 0 ? qty : 1; }
     // 商談結果・最終確定単価は数量の一番多い行を代表に、最終確定日は一番新しい日を残す
     if (qty >= a.top) {
-      if (txt2(r.nego_result)) a.nego = txt2(r.nego_result);
+      if (txt2(r.nego_result)) a.nego = normNegoResult(r.nego_result);
       if (num(r.final_price) > 0) a.fprice = num(r.final_price);
     }
     const fd = ymd(r.final_date);

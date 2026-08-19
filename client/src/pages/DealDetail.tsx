@@ -4,6 +4,7 @@ import { api, yen } from '../api';
 import { Card, CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
 import Attachments from '../components/Attachments';
 import { useUser } from '../user';
+import { NEGO_LABELS } from '../types';
 import type { CorpNegotiation, Deal, Meta } from '../types';
 
 interface DealRes {
@@ -158,7 +159,11 @@ export default function DealDetail() {
             <dt>目標値（第2弾新値上げ単価）</dt>
             <dd>{d.r2_target_price == null ? '—' : `¥${yen(d.r2_target_price)}`}</dd>
             <dt>商談結果</dt>
-            <dd>{d.nego_result || '—'}</dd>
+            <dd>
+              {d.nego_result
+                ? `${d.nego_result}${NEGO_LABELS[d.nego_result] ? `（${NEGO_LABELS[d.nego_result]}）` : ''}`
+                : '—'}
+            </dd>
             <dt>最終確定</dt>
             <dd>
               {d.final_price == null && !d.final_date ? '—'

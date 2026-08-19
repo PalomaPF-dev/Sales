@@ -108,7 +108,8 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
       return round((a - Number(mPrice(r))) * Number(planQty(r)));
     }],
 
-    // 交渉（営業担当者が入力する）
+    // 交渉（営業担当者が入力する）。商談結果は記号のまま出す
+    // （〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談）
     ['商談結果', (r) => r.nego_result],
     ['最終確定日', (r) => r.final_date],
     ['最終確定単価', (r) => round(r.final_price)],

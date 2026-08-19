@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
+import { NEGO_LABELS } from '../types';
 import type { Deal, Meta, RoundState } from '../types';
 import { RoundStateBadge } from '../components/ui';
 import SearchBox from '../components/SearchBox';
@@ -35,6 +36,16 @@ const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 /** A基準の月の見出し。「2026-09」→「9月」。取込前は仮の名前で出す */
 const ymLabel = (ym: string | undefined, fallback: string) =>
   ym && /^\d{4}-\d{2}$/.test(ym) ? `${Number(ym.slice(5, 7))}月` : fallback;
+
+/** 商談結果の表記ゆれをそろえる（○/〇、×/✕ など）。選択肢に無い文字はそのまま */
+const normNego = (v: string | null | undefined) => {
+  const t = String(v ?? '').trim();
+  if (['○', '〇', '◯'].includes(t)) return '〇';
+  if (['□', '■'].includes(t)) return '□';
+  if (['△', '▲'].includes(t)) return '△';
+  if (['×', '✕', '✗', 'X', 'x', 'Ｘ'].includes(t)) return '×';
+  return t;
+};
 
 /** 承認日（登録日）の表示。「2026-06-05」→「26/6/5」 */
 const dateLabel = (d: string | null | undefined) => {
@@ -185,7 +196,8 @@ export default function Deals() {
     setMsg(null);
     setDraft({
       r2_applied_ym: d.r2_applied_ym ?? '',
-      nego_result: d.nego_result ?? '',
+      // 取込ファイル由来の「○」などの表記ゆれも、選択肢の記号に揃えて出す
+      nego_result: normNego(d.nego_result),
       final_date: d.final_date ?? '',
       final_price: d.final_price == null ? '' : String(d.final_price),
       qty: d.qty == null ? '' : String(d.qty),
@@ -614,7 +626,8 @@ export default function Deals() {
               <th className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</th>
-              <Th col="nego_result" className="sep" title="商談の結果。○=合意 / △=交渉中 / ×=不可">
+              <Th col="nego_result" className="sep"
+                  title="商談の結果。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談">
                 商談結果
               </Th>
               <Th col="final_date" className="num">最終確定日</Th>
@@ -696,11 +709,16 @@ export default function Deals() {
                       <select className="cell" value={draft.nego_result}
                         onChange={(e) => setDraft({ ...draft, nego_result: e.target.value })}>
                         <option value="">—</option>
-                        <option value="○">○ 合意</option>
-                        <option value="△">△ 交渉中</option>
-                        <option value="×">× 不可</option>
+                        <option value="〇">〇 合意</option>
+                        <option value="□">□ 広域待ち</option>
+                        <option value="△">△ 否決</option>
+                        <option value="×">× 本社へ相談</option>
                       </select>
-                    ) : (d.nego_result || '—')}
+                    ) : (
+                      <span title={NEGO_LABELS[d.nego_result ?? ''] ?? undefined}>
+                        {d.nego_result || '—'}
+                      </span>
+                    )}
                   </td>
                   <td className="num">
                     {isEditing ? (
