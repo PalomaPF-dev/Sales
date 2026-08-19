@@ -82,7 +82,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       <p className="pt-note" style={{ marginTop: 0 }}>
         <strong>A基準（向こう3か月の申請単価）</strong>を取り込みます。
         マスタ登録は 得意先×納入先×商品 の細かい単位なので、
-        <strong>法人×品目へ集約（数量で加重平均）して</strong>、案件に重ねます。
+        <strong>法人×品目へ集約して</strong>、案件に重ねます。
+        A基準・目標値は<strong>リストの単価をそのまま</strong>使います
+        （加重平均はしません。数量は月あたりの値上げ額の計算にだけ使います）。
         「登録日」のあるファイルなら、A基準それぞれの<strong>承認日</strong>も一緒に入ります
         （まとまりの中で一番新しい日）。「ＷＦ申請番号」の列があれば<strong>稟議No</strong>も入り、
         案件一覧のA基準にカーソルを合わせると見えます。

@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS deals (
   r2_applied_ym   TEXT,   -- 値上げの適用年月（YYYY-MM）
   -- 値上げ交渉（営業担当者が入力）。商談結果は ○（合意）/△（交渉中）/×（不可）
   nego_result     TEXT,
+  nego_note       TEXT,   -- 商談メモ（商談結果の詳細。品目ごとに残す）
   final_date      TEXT,   -- 最終確定日
 
   r2_done         INTEGER NOT NULL DEFAULT 0,
@@ -216,9 +217,9 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   ent_cd     TEXT NOT NULL,
   model_code TEXT NOT NULL,
   qty        REAL NOT NULL DEFAULT 0,
-  -- 単価は「その単価が入っている行」だけの数量で加重平均する。
-  -- 全行の数量で割ると、未申請（単価なし）の行に引きずられて
-  -- ファイルの単価より低い値になってしまうため、単価ごとに重みを持つ
+  -- 出荷単価・実績原価は「その単価が入っている行」だけの数量で加重平均する。
+  -- A基準（a0〜a3）と目標値（tgt）は加重平均せず、リストの単価をそのまま
+  -- amt に、wgt には「値あり」の印(1)を入れる（amt÷wgt がそのまま単価になる）
   base_amt   REAL NOT NULL DEFAULT 0,
   base_wgt   REAL NOT NULL DEFAULT 0,
   a0_amt     REAL NOT NULL DEFAULT 0,
@@ -254,7 +255,7 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   gas_type      TEXT,
   equip_name    TEXT,
   category_name TEXT,
-  -- 第2弾新値上げ単価（目標値）。数量で加重平均する
+  -- 第2弾新値上げ単価（目標値）。リストの単価そのもの（wgt は値ありの印）
   tgt_amt      REAL NOT NULL DEFAULT 0,
   tgt_wgt      REAL NOT NULL DEFAULT 0,
   -- 商談結果・最終確定日・最終確定単価（数量の一番多い行を代表にする）
