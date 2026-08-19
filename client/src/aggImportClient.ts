@@ -79,19 +79,46 @@ function normHead(h: unknown): string {
  * 先頭シートが空（表紙だけ）のブックや、見出しの上に表題が載っている形式でも
  * 「シートが空です」で止まらず、目印の見出しがある行から読み始める。
  */
+function sheetRows(ws: XLSX.WorkSheet | undefined): unknown[][] {
+  if (!ws) return [];
+  const g: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  if (g.length) return g;
+  // データ範囲（!ref）が壊れて「空」に見えるファイルがある。
+  // セルの番地から範囲を数え直して、もう一度読む
+  let maxR = -1;
+  let maxC = -1;
+  for (const k of Object.keys(ws)) {
+    if (k.startsWith('!')) continue;
+    const a = XLSX.utils.decode_cell(k);
+    if (a.r > maxR) maxR = a.r;
+    if (a.c > maxC) maxC = a.c;
+  }
+  if (maxR < 0) return [];
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
+  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+}
+
 function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
   let fallback: unknown[][] | null = null;
   for (const name of wb.SheetNames) {
-    const g: unknown[][] = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null });
+    const g = sheetRows(wb.Sheets[name]);
     if (!g.length || !g.some((r) => (r ?? []).some((v) => v != null && v !== ''))) continue;
-    for (let i = 0; i < Math.min(10, g.length); i++) {
+    // 見出しの行を先頭50行から探す（表題や説明が上に載っている形式も読めるように）
+    for (let i = 0; i < Math.min(50, g.length); i++) {
       const heads = (g[i] ?? []).map((h) => normHead(h));
       if (needles.every((n) => heads.some((h) => h.includes(n)))) return g.slice(i);
     }
     fallback ??= g;
   }
   if (!fallback) {
-    throw new Error('どのシートにも行がありません。データの入ったシートを含むファイルをお使いください');
+    // どのシートからも読めなかった。原因を追えるよう、シートの中身を添える
+    const info = wb.SheetNames.map((n) => {
+      const ws = wb.Sheets[n];
+      const cells = ws ? Object.keys(ws).filter((k) => !k.startsWith('!')).length : 0;
+      return `${n}(セル${cells.toLocaleString()}個・範囲${ws?.['!ref'] ?? 'なし'})`;
+    }).join(' / ');
+    throw new Error(`どのシートからも行を読み取れませんでした。シートの中身: ${info}。`
+      + 'この文言を開発側に伝えてください');
   }
   return fallback;
 }
