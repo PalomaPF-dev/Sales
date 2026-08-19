@@ -84,7 +84,17 @@ function sheetRows(ws: XLSX.WorkSheet | undefined): unknown[][] {
   const g: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
   if (g.length) return g;
   // データ範囲（!ref）が壊れて「空」に見えるファイルがある。
-  // セルの番地から範囲を数え直して、もう一度読む
+  // 実際のセルから範囲を数え直して、もう一度読む
+  const dense = (ws as { '!data'?: { length: number }[][] })['!data'];
+  if (dense?.length) {
+    // dense（行の配列）のときは行数と一番長い行から範囲を作る
+    let maxC = 0;
+    for (const row of dense) maxC = Math.max(maxC, row?.length ?? 0);
+    if (!maxC) return [];
+    ws['!ref'] = XLSX.utils.encode_range(
+      { s: { r: 0, c: 0 }, e: { r: dense.length - 1, c: maxC - 1 } });
+    return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  }
   let maxR = -1;
   let maxC = -1;
   for (const k of Object.keys(ws)) {
@@ -115,7 +125,8 @@ function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
     const info = wb.SheetNames.map((n) => {
       const ws = wb.Sheets[n];
       const cells = ws ? Object.keys(ws).filter((k) => !k.startsWith('!')).length : 0;
-      return `${n}(セル${cells.toLocaleString()}個・範囲${ws?.['!ref'] ?? 'なし'})`;
+      const denseRows = (ws as unknown as { '!data'?: unknown[] } | undefined)?.['!data']?.length ?? 0;
+      return `${n}(セル${(cells + denseRows).toLocaleString()}・範囲${ws?.['!ref'] ?? 'なし'})`;
     }).join(' / ');
     throw new Error(`どのシートからも行を読み取れませんでした。シートの中身: ${info}。`
       + 'この文言を開発側に伝えてください');
@@ -126,7 +137,11 @@ function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
 /** 集約表を読み取り、送る行に変換する */
 export async function parseAggFile(file: File): Promise<AggParsed> {
   const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
+  // 大きいファイル向けの読み方。行の配列として持ち（dense）、
+  // 数式・書式文字列など取込に使わないものは読まない。数十MBでも数十秒で読める
+  const wb = XLSX.read(buf, {
+    type: 'array', dense: true, cellHTML: false, cellFormula: false, cellText: false,
+  });
   // 先頭シートが空でも、得意先コード・商品コードの見出しがあるシートを探して読む
   const grid = pickGrid(wb, ['得意先コード', '商品コード']);
 

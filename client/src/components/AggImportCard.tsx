@@ -28,7 +28,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
     setErr('');
     if (!file) return;
     setBusy(true);
-    setProgress('ファイルを読み取っています...（十数万行のファイルは1分ほどかかります）');
+    const mb = Math.round(file.size / 1048576);
+    setProgress(`ファイルを読み取っています...（${mb}MB。数十MBのファイルは1〜2分かかります。`
+      + 'この間ブラウザが固まって見えますが、タブを閉じずにお待ちください）');
     try {
       // 描画を止めないよう、読み取り前に一呼吸置く
       await new Promise((r) => setTimeout(r, 50));
