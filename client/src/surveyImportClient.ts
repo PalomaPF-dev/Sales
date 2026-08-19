@@ -61,6 +61,27 @@ function normHead(h: unknown): string {
     .trim();
 }
 
+/**
+ * 中身のあるシートと見出しの行を選ぶ。
+ * 先頭シートが空（表紙だけ）のブックや、見出しの上に表題が載っている形式でも読める。
+ */
+function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
+  let fallback: unknown[][] | null = null;
+  for (const name of wb.SheetNames) {
+    const g: unknown[][] = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null });
+    if (!g.length || !g.some((r) => (r ?? []).some((v) => v != null && v !== ''))) continue;
+    for (let i = 0; i < Math.min(10, g.length); i++) {
+      const heads = (g[i] ?? []).map((h) => normHead(h));
+      if (needles.every((n) => heads.some((h) => h.includes(n)))) return g.slice(i);
+    }
+    fallback ??= g;
+  }
+  if (!fallback) {
+    throw new Error('どのシートにも行がありません。データの入ったシートを含むファイルをお使いください');
+  }
+  return fallback;
+}
+
 /** Excelの日付を「YYYY-MM-DD」へ。日付シリアルと文字列のどちらでも来る */
 function toYmd(v: unknown): string | null {
   if (v == null || v === '') return null;
@@ -89,9 +110,8 @@ function resolveYear(month: number, anchor: string | undefined): number {
 export async function parseSurveyFile(file: File, anchorYm?: string): Promise<SurveyParsed> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const grid: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  if (!grid.length) throw new Error('シートが空です');
+  // 先頭シートが空でも、得意先コード・商品コードの見出しがあるシートを探して読む
+  const grid = pickGrid(wb, ['得意先コード', '商品コード']);
 
   const headers = (grid[0] ?? []).map((h) => normHead(h));
   const find = (name: string) => headers.findIndex((h) => h === name);

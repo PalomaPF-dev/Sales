@@ -74,17 +74,46 @@ function normHead(h: unknown): string {
     .trim();
 }
 
+/**
+ * 中身のあるシートと見出しの行を選ぶ。
+ * 先頭シートが空（表紙だけ）のブックや、見出しの上に表題が載っている形式でも
+ * 「シートが空です」で止まらず、目印の見出しがある行から読み始める。
+ */
+function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
+  let fallback: unknown[][] | null = null;
+  for (const name of wb.SheetNames) {
+    const g: unknown[][] = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null });
+    if (!g.length || !g.some((r) => (r ?? []).some((v) => v != null && v !== ''))) continue;
+    for (let i = 0; i < Math.min(10, g.length); i++) {
+      const heads = (g[i] ?? []).map((h) => normHead(h));
+      if (needles.every((n) => heads.some((h) => h.includes(n)))) return g.slice(i);
+    }
+    fallback ??= g;
+  }
+  if (!fallback) {
+    throw new Error('どのシートにも行がありません。データの入ったシートを含むファイルをお使いください');
+  }
+  return fallback;
+}
+
 /** 集約表を読み取り、送る行に変換する */
 export async function parseAggFile(file: File): Promise<AggParsed> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const grid: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  if (!grid.length) throw new Error('シートが空です');
+  // 先頭シートが空でも、得意先コード・商品コードの見出しがあるシートを探して読む
+  const grid = pickGrid(wb, ['得意先コード', '商品コード']);
 
   const headers = (grid[0] ?? []).map((h) => normHead(h));
   const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
+  /** 複数の呼び方のどれかで探す（ファイルの版で見出しが揺れるため） */
+  const findAny = (...names: string[]) => {
+    for (const n of names) { const i = find(n); if (i >= 0) return i; }
+    return -1;
+  };
+  /** 2つの言葉を両方含む見出しを探す（「得意先実績計上支店名」の揺れ対策） */
+  const findBoth = (a: string, b: string) =>
+    headers.findIndex((h) => h.includes(a) && h.includes(b));
 
   /**
    * 月のまとまりを読む。見出しは「当月・マスタ単価・登録日(当月)・ＷＦ申請番号１…」の
@@ -121,20 +150,25 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     delivery_code: find('納入先コード'),
     delivery_name: find('納入先名'),
     model_code: find('商品コード'),
-    model_name: find('器種名'),
+    // 器種名／機種名は版によって呼び方が違う
+    model_name: findAny('器種名', '機種名'),
     gas_type: find('ガス種'),
-    equip_name: find('器具区分名'),
+    equip_name: findAny('器具区分名', '器具区分'),
     category_name: findLike('カテゴリー名'),
     list_price: find('標準単価'),
-    sales_person: find('得意先担当者名'),
-    office: find('得意先実績計上地区名'),
-    branch: find('得意先実績計上支店名'),
+    // 担当・支店・地区は無い版もある。無ければ空のまま（案件の値が残る）
+    sales_person: findAny('得意先担当者名', '得意先担当'),
+    office: findBoth('得意先', '地区') >= 0 ? findBoth('得意先', '地区') : findLike('地区名'),
+    branch: findBoth('得意先', '支店') >= 0 ? findBoth('得意先', '支店') : findLike('支店名'),
     base_price: findLike('出荷単価'),
     qty: findLike('売上数'),
     cost_price: find('実績原価'),
   };
+  // 担当・支店・地区・原価は任意（無いファイルでも取り込める）
+  const OPTIONAL = new Set(['cost_price', 'sales_person', 'office', 'branch',
+    'delivery_code', 'delivery_name', 'gas_type', 'category_name', 'list_price']);
   const missing = Object.entries(col)
-    .filter(([k, i]) => i < 0 && k !== 'cost_price')
+    .filter(([k, i]) => i < 0 && !OPTIONAL.has(k))
     .map(([k]) => k);
   if (missing.length) {
     throw new Error(`集約表の見出しが見つかりません: ${missing.join(', ')}。`
