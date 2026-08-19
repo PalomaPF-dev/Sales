@@ -245,6 +245,15 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   branch       TEXT,
   office       TEXT,
   sales_person TEXT,
+  -- 実績（価格調査）に無い品目を案件として追加するときに使う代表項目
+  corp_group    TEXT,
+  industry      TEXT,
+  customer_name TEXT,
+  model_name    TEXT,
+  product_name  TEXT,
+  gas_type      TEXT,
+  equip_name    TEXT,
+  category_name TEXT,
   -- 第2弾新値上げ単価（目標値）。数量で加重平均する
   tgt_amt      REAL NOT NULL DEFAULT 0,
   tgt_wgt      REAL NOT NULL DEFAULT 0,

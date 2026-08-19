@@ -13,6 +13,14 @@ export interface AggRow {
   customer_code: string;   // 案件の突き合わせに使う（得意先×商品）
   customer_name: string;
   model_code: string;
+  // 実績（価格調査）に無い品目を案件として追加するときに使う項目
+  corp_group: string;      // 企業グループ名（法人）
+  industry: string;        // 業種名
+  model_name: string;      // 器種名／機種名
+  product_name: string;    // 商品名
+  gas_type: string;        // ガス種（規格）
+  equip_name: string;      // 器具区分
+  category_name: string;   // カテゴリー名
   // 支店・営業所・担当者。法人×品目にまとめるときは数量の一番多い行を代表にする
   branch: string;
   office: string;
@@ -45,6 +53,9 @@ export interface AggRow {
 export interface AggParsed {
   rows: AggRow[];
   skippedRows: number;
+  /** 読めない行の内訳。得意先コードが空 / 商品コードが空（両方空なら両方に数える） */
+  skippedNoCust: number;
+  skippedNoModel: number;
   hasM0: boolean;      // 「当月」の列があるファイルか
   hasDates: boolean;   // 「登録日（〜）」の列があるファイルか
   hasRingi: boolean;   // 「稟議」の列があるファイルか
@@ -195,6 +206,10 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const col = {
     customer_code: find('得意先コード'),
     customer_name: find('得意先名'),
+    corp_group: findLike('企業グループ名') >= 0 ? findLike('企業グループ名')
+      : findLike('企業G名') >= 0 ? findLike('企業G名') : find('法人名'),
+    industry: find('業種名'),
+    product_name: find('商品名'),
     delivery_code: find('納入先コード'),
     delivery_name: find('納入先名'),
     model_code: find('商品コード'),
@@ -220,7 +235,8 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   // 担当・支店・地区・原価は任意（無いファイルでも取り込める）
   const OPTIONAL = new Set(['cost_price', 'sales_person', 'office', 'branch',
     'delivery_code', 'delivery_name', 'gas_type', 'category_name', 'list_price',
-    'target_price', 'nego_result', 'final_date', 'final_price']);
+    'target_price', 'nego_result', 'final_date', 'final_price',
+    'corp_group', 'industry', 'product_name']);
   const missing = Object.entries(col)
     .filter(([k, i]) => i < 0 && !OPTIONAL.has(k))
     .map(([k]) => k);
@@ -251,15 +267,31 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const at = (r: unknown[], i: number) => (i >= 0 ? r[i] : null);
   const rows: AggRow[] = [];
   let skippedRows = 0;
+  let noCust = 0;
+  let noModel = 0;
   for (let i = 1; i < grid.length; i++) {
     const r = grid[i] ?? [];
     const cust = txt(r, col.customer_code);
     const model = txt(r, col.model_code);
-    if (!cust || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
+    if (!cust || !model) {
+      if (r.some((v) => v != null && v !== '')) {
+        skippedRows++;
+        if (!cust) noCust++;
+        if (!model) noModel++;
+      }
+      continue;
+    }
     rows.push({
       customer_code: cust,
       customer_name: txt(r, col.customer_name),
       model_code: model,
+      corp_group: txt(r, col.corp_group),
+      industry: txt(r, col.industry),
+      model_name: txt(r, col.model_name),
+      product_name: txt(r, col.product_name),
+      gas_type: txt(r, col.gas_type),
+      equip_name: txt(r, col.equip_name),
+      category_name: txt(r, col.category_name),
       branch: txt(r, col.branch),
       office: txt(r, col.office),
       sales_person: txt(r, col.sales_person),
@@ -295,7 +327,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     basePeriod: headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price],
   };
   return {
-    rows, skippedRows, meta,
+    rows, skippedRows, skippedNoCust: noCust, skippedNoModel: noModel, meta,
     hasM0: Boolean(m0),
     hasDates: m3!.date >= 0,
     hasRingi: ringiOf(m3) >= 0,
@@ -305,10 +337,12 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
 const CHUNK = 500;
 
 export interface AggResult {
-  matched: number;      // 法人を照合できた行
-  unmatched: number;    // 実績側に無い法人の行（重ねられない）
+  matched: number;      // 読み取れた行
+  unmatched: number;    // 得意先コード等が空で取り込めなかった行
   covered: number;      // A基準が入った案件の数
-  total: number;        // 案件の総数（実績の法人×品目）
+  total: number;        // 案件の総数
+  /** 実績（価格調査）に無く、マスタ登録から新しく追加した案件の数 */
+  added: number;
 }
 
 /**
@@ -335,8 +369,8 @@ export async function sendAggImport(
     unmatched += r.unmatched;
     opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
   }
-  const fin = await api<{ covered: number; total: number }>('/agg-import/finish', {
+  const fin = await api<{ covered: number; total: number; added?: number }>('/agg-import/finish', {
     method: 'POST', body: JSON.stringify({}),
   });
-  return { matched, unmatched, covered: fin.covered, total: fin.total };
+  return { matched, unmatched, covered: fin.covered, total: fin.total, added: fin.added ?? 0 };
 }

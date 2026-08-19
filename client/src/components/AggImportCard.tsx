@@ -74,8 +74,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
           A基準を重ねました: 案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}件にA基準が入りました
-          （法人を照合できた行 {result.matched.toLocaleString()}
-          {result.unmatched > 0 && ` ・ 実績に無い法人の行 ${result.unmatched.toLocaleString()}`}）
+          （読み取れた行 {result.matched.toLocaleString()}
+          {result.added > 0 && ` ・ 実績に無い品目を案件として追加 ${result.added.toLocaleString()}件`}
+          {result.unmatched > 0 && ` ・ 取り込めない行 ${result.unmatched.toLocaleString()}`}）
         </div>
       )}
       <p className="pt-note" style={{ marginTop: 0 }}>
@@ -98,7 +99,10 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
                 .filter(Boolean).join('・')} ／ 出荷単価 {parsed.p.meta.basePeriod}）
               {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.hasRingi ? ' ・ 稟議Noあり' : ''}
-              {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
+              {parsed.p.skippedRows > 0
+                && ` ・ 読めない行 ${parsed.p.skippedRows}件`
+                  + `（得意先コード空 ${parsed.p.skippedNoCust}件`
+                  + ` / 商品コード空 ${parsed.p.skippedNoModel}件）`}
             </span>
             <button className="btn" onClick={run} disabled={busy}>取り込む</button>
           </>

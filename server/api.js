@@ -2674,14 +2674,26 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       d0: null, d1: null, d2: null, d3: null,
       r0: null, r1: null, r2: null, r3: null,
       tgt: 0, tgtW: 0, nego: null, fdate: null, fprice: null,
-      branch: null, office: null, person: null, top: Number.NEGATIVE_INFINITY,
+      branch: null, office: null, person: null,
+      corp_group: null, industry: null, customer_name: null, model_name: null,
+      product_name: null, gas_type: null, equip_name: null, category_name: null,
+      top: Number.NEGATIVE_INFINITY,
     };
-    // 支店・営業所・担当者は、数量の一番多い行（主な納入先）を代表にする
+    // 支店・営業所・担当者などの名前は、数量の一番多い行（主な納入先）を代表にする
     if (qty > a.top) {
       a.top = qty;
       a.branch = String(r.branch ?? '').trim() || null;
       a.office = String(r.office ?? '').trim() || null;
       a.person = String(r.sales_person ?? '').trim() || null;
+      // 実績（価格調査）に無い品目を案件として追加するときに使う
+      a.corp_group = txt2(r.corp_group);
+      a.industry = txt2(r.industry);
+      a.customer_name = txt2(r.customer_name);
+      a.model_name = txt2(r.model_name);
+      a.product_name = txt2(r.product_name);
+      a.gas_type = txt2(r.gas_type);
+      a.equip_name = txt2(r.equip_name);
+      a.category_name = txt2(r.category_name);
     }
     a.qty += qty;
     // 単価は「その単価が入っている行」だけで加重平均する。
@@ -2735,6 +2747,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       a.a2, a.a2W, a.a3, a.a3W, a.cost, a.costW, a.tgt, a.tgtW,
       a.d0, a.d1, a.d2, a.d3, a.r0, a.r1, a.r2, a.r3,
       a.branch, a.office, a.person,
+      a.corp_group, a.industry, a.customer_name, a.model_name,
+      a.product_name, a.gas_type, a.equip_name, a.category_name,
       a.nego, a.fdate, a.fprice,
       Number.isFinite(a.top) ? a.top : 0]);
   if (vals.length) {
@@ -2743,14 +2757,19 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
          (ent_cd, model_code, ${SUM_COLS.join(', ')},
           d0_max, d1_max, d2_max, d3_max, r0_no, r1_no, r2_no, r3_no,
           branch, office, sales_person,
+          corp_group, industry, customer_name, model_name,
+          product_name, gas_type, equip_name, category_name,
           nego_result, final_date, final_price, top_qty)
-       VALUES ${vals.map(() => `(${'?,'.repeat(31)}?)`).join(',')}
+       VALUES ${vals.map(() => `(${'?,'.repeat(39)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          ${SUM_COLS.map((c) => `${c} = agg_staging.${c} + excluded.${c}`).join(', ')},
          ${[0, 1, 2, 3].map((n) => keepWithDate(`r${n}_no`, `d${n}_max`)).join(', ')},
          ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
          ${keepNewer('final_date')},
-         ${['branch', 'office', 'sales_person', 'nego_result', 'final_price', 'top_qty']
+         ${['branch', 'office', 'sales_person',
+            'corp_group', 'industry', 'customer_name', 'model_name',
+            'product_name', 'gas_type', 'equip_name', 'category_name',
+            'nego_result', 'final_price', 'top_qty']
            .map(keepTop).join(', ')}`,
       vals.flat()
     );
@@ -2796,6 +2815,40 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     FROM agg_staging s
     WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
 
+  // 実績（価格調査）に無い品目も、案件として追加する。
+  // 当月の実績（単価・数量・金額）は空のまま。翌月以降の価格調査で
+  // 実績が入る可能性があるため、A基準だけでも一覧に載せておく。
+  // 次の価格調査の取込で作り直されて消えても、マスタ登録を重ね直せばまた載る
+  const ins = await db.run(`
+    INSERT INTO deals (agg_key, hist_ent_cd, corp_code, corp_name, customer_code,
+      customer_name, industry, model_code, model_name, product_name, gas_type,
+      equip_name, category_name,
+      a_price_m0, a_price_m1, a_price_m2, a_price_m3,
+      a_date_m0, a_date_m1, a_date_m2, a_date_m3,
+      a_ringi_m0, a_ringi_m1, a_ringi_m2, a_ringi_m3,
+      r2_target_price, nego_result, final_date, final_price,
+      branch, office, sales_person, updated_at)
+    SELECT s.ent_cd || '|' || s.model_code, s.ent_cd,
+      COALESCE(NULLIF(s.corp_group, ''), s.ent_cd),
+      COALESCE(NULLIF(s.corp_group, ''), s.customer_name),
+      s.ent_cd, s.customer_name, s.industry,
+      s.model_code, s.model_name, s.product_name, s.gas_type,
+      s.equip_name, s.category_name,
+      CASE WHEN s.a0_wgt > 0 THEN s.a0_amt / s.a0_wgt END,
+      CASE WHEN s.a1_wgt > 0 THEN s.a1_amt / s.a1_wgt END,
+      CASE WHEN s.a2_wgt > 0 THEN s.a2_amt / s.a2_wgt END,
+      CASE WHEN s.a3_wgt > 0 THEN s.a3_amt / s.a3_wgt END,
+      s.d0_max, s.d1_max, s.d2_max, s.d3_max,
+      s.r0_no, s.r1_no, s.r2_no, s.r3_no,
+      CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
+      s.nego_result, s.final_date, s.final_price,
+      s.branch, s.office, s.sales_person, ?
+    FROM agg_staging s
+    WHERE NOT EXISTS (
+      SELECT 1 FROM deals d
+       WHERE d.hist_ent_cd = s.ent_cd AND d.model_code = s.model_code)`, [stamp]);
+  const added = Number(ins?.changes ?? 0);
+
   const [{ covered }, { total }, { groups }] = await Promise.all([
     db.get('SELECT COUNT(*) AS covered FROM deals WHERE a_price_m3 IS NOT NULL'),
     db.get('SELECT COUNT(*) AS total FROM deals'),
@@ -2804,7 +2857,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   await db.run('DELETE FROM agg_staging');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
   invalidateMetaCache();
-  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups) });
+  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added });
 }));
 
 // ---- 価格調査（実単価）の取込 ----
