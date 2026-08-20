@@ -3096,8 +3096,9 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   const hvals = [...hist.values()];
   if (hvals.length) {
     const stamp = now();
-    for (let i = 0; i < hvals.length; i += 200) {
-      const part = hvals.slice(i, i + 200);
+    // 遠くのDBでは1文あたりの往復が積み上がるため、できるだけ大きくまとめて送る
+    for (let i = 0; i < hvals.length; i += 2000) {
+      const part = hvals.slice(i, i + 2000);
       await db.run(
         `INSERT INTO master_price_history (ent_cd, model_code, ym, price, source, updated_at)
          VALUES ${part.map(() => "(?,?,?,?,'agg',?)").join(',')}
@@ -3210,7 +3211,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     db.get('SELECT COUNT(*) AS groups FROM agg_staging'),
   ]);
   await db.run('DELETE FROM agg_staging');
-  try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
+  // ここでは行を消さないため VACUUM は不要（毎日の取込なので、時間のかかる
+  // 掃除を毎回走らせない。行が消える売上高の取込側にだけ残す）
   invalidateMetaCache();
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added });
 }));

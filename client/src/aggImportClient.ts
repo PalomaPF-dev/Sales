@@ -156,9 +156,27 @@ function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
   return fallback;
 }
 
+/**
+ * ファイルを読み取る。Excelで開いたままのファイルはWindowsがロックしていて
+ * ブラウザから読めない（NotReadableError）。原因が分かる文言に置き換える。
+ */
+export async function readFileBuffer(file: File): Promise<ArrayBuffer> {
+  try {
+    return await file.arrayBuffer();
+  } catch (e) {
+    const name = (e as DOMException)?.name ?? '';
+    if (name === 'NotReadableError' || /could not be read|permission/i.test(String((e as Error)?.message ?? ''))) {
+      throw new Error('ファイルを読み取れませんでした。Excelでこのファイルを開いたままだと読めません。'
+        + 'Excelを閉じてから、もう一度ファイルを選び直してください。'
+        + '（ネットワークドライブ上のファイルは、一度デスクトップなどへコピーすると確実です）');
+    }
+    throw e;
+  }
+}
+
 /** 集約表を読み取り、送る行に変換する */
 export async function parseAggFile(file: File): Promise<AggParsed> {
-  const buf = await file.arrayBuffer();
+  const buf = await readFileBuffer(file);
   // 大きいファイル向けの読み方。行の配列として持ち（dense）、
   // 数式・書式文字列など取込に使わないものは読まない。数十MBでも数十秒で読める
   const wb = XLSX.read(buf, {
