@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, jstDateTime } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
 
 /**
  * お問い合わせ（ポータルと同じ仕様）。
- * ログイン中の利用者が管理者へ問い合わせを送り、回答をここで受け取る。
+ * ログイン中の利用者が本社（営業企画部）へ問い合わせを送り、回答をここで受け取る。
  * 回答が付くと未読になり、開いて「確認しました」で既読になる。
+ *
+ * 回答担当者（本社・管理者）には、このページに「届いたお問い合わせ」が出る。
+ * 通知メールのリンク（/contact?inquiry=12）から開くと、その1件が開いた状態になる。
  */
 
 interface Inquiry {
@@ -35,8 +39,18 @@ const INQUIRY_CATEGORIES = [
 
 const dt = (s: string | null | undefined) => jstDateTime(s);
 
+/** 回答担当。本社（営業企画部）と管理者。サーバーの INQUIRY_ROLES と揃える */
+const INQUIRY_STAFF = ['planning', 'admin', 'developer'];
+
 export default function Contact() {
   const me = useUser();
+  const staff = INQUIRY_STAFF.includes(me.role);
+  const [params, setParams] = useSearchParams();
+  // メールのリンクで指定された問い合わせ（その1件を開いて回答欄を出す）
+  const picked = Number(params.get('inquiry') || 0) || null;
+  const [inbox, setInbox] = useState<Inquiry[]>([]);
+  const [replyDraft, setReplyDraft] = useState<Record<number, string>>({});
+  const pickedRef = useRef<HTMLDivElement>(null);
   const [category, setCategory] = useState('');
   const [message, setMessage] = useState('');
   const [rows, setRows] = useState<Inquiry[]>([]);
@@ -48,7 +62,33 @@ export default function Contact() {
       .then((r) => setRows(r.rows))
       .catch((e) => setMsg({ kind: 'error', text: e.message }));
   };
+  const loadInbox = () => {
+    if (!staff) return;
+    api<Inquiry[]>('/inquiries').then(setInbox).catch(() => {});
+  };
   useEffect(load, []);
+  useEffect(loadInbox, [staff]);
+
+  // 通知メールから開いたときは、その問い合わせまで画面を送る
+  useEffect(() => {
+    if (picked && inbox.length) pickedRef.current?.scrollIntoView({ block: 'center' });
+  }, [picked, inbox.length]);
+
+  /** 回答を送る／対応状態を変える（回答すると本人に未読の知らせが出る） */
+  const patchInquiry = async (id: number, body: Record<string, unknown>) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api(`/inquiries/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      setReplyDraft((prev) => ({ ...prev, [id]: '' }));
+      if ('reply' in body) setMsg({ kind: 'ok', text: '回答しました。送信者の画面に知らせが出ます。' });
+      loadInbox();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const send = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,9 +120,75 @@ export default function Contact() {
     <div>
       <h1 className="page-title">お問い合わせ</h1>
       <p className="page-sub">
-        アプリの不明点・不具合・要望などを管理者へ送れます。回答はこのページに届きます。
+        アプリの不明点・不具合・要望などを本社（営業企画部）へ送れます。回答はこのページに届きます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
+
+      {/* 回答担当者（本社 営業企画部・管理者）だけに出る。届いた問い合わせへの回答 */}
+      {staff && (
+        <Card title={`届いたお問い合わせ（未対応 ${inbox.filter((q) => q.status === 'open').length}件）`}>
+          {inbox.length === 0 ? (
+            <p className="pt-note" style={{ margin: 0 }}>届いているお問い合わせはありません。</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {inbox.map((q) => (
+                <div key={q.id} ref={q.id === picked ? pickedRef : undefined}
+                     style={{ border: q.id === picked ? '2px solid var(--accent)' : '1px solid var(--border)',
+                              borderRadius: 10, padding: 12 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                    <span className="badge blue">{q.category}</span>
+                    {q.status === 'resolved'
+                      ? <span className="badge green">対応済み</span>
+                      : <span className="badge yellow">未対応</span>}
+                    <strong>{q.name}</strong>
+                    <span style={{ color: 'var(--muted)' }}>{q.login_id ?? 'IDなし'} ・ {dt(q.created_at)}</span>
+                  </div>
+                  <p style={{ margin: '8px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{q.message}</p>
+                  {q.reply && (
+                    <div style={{ marginTop: 10, background: 'var(--accent-soft)', borderRadius: 8, padding: '10px 12px' }}>
+                      <div style={{ fontSize: 12, color: 'var(--ink-2)', fontWeight: 700 }}>
+                        回答済み{q.replied_by ? `（${q.replied_by}）` : ''}
+                        {q.replied_at && <span style={{ fontWeight: 400, marginLeft: 8, color: 'var(--muted)' }}>{dt(q.replied_at)}</span>}
+                        {!q.read_at && <span className="badge gray" style={{ marginLeft: 8 }}>本人未読</span>}
+                      </div>
+                      <p style={{ margin: '6px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{q.reply}</p>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                    <textarea rows={2} value={replyDraft[q.id] ?? ''} disabled={busy}
+                      placeholder={q.reply ? '回答を書き直す' : '回答を入力（送信者の画面に届きます）'}
+                      style={{ flex: '1 1 320px', minWidth: 220, border: '1px solid var(--baseline)',
+                               borderRadius: 9, padding: '8px 10px', font: 'inherit', resize: 'vertical' }}
+                      onChange={(e) => setReplyDraft((prev) => ({ ...prev, [q.id]: e.target.value }))} />
+                    <button className="btn sm" disabled={busy || !(replyDraft[q.id] ?? '').trim()}
+                      onClick={() => patchInquiry(q.id, { reply: (replyDraft[q.id] ?? '').trim() })}>
+                      回答する
+                    </button>
+                    <button className="btn secondary sm" disabled={busy}
+                      onClick={() => patchInquiry(q.id, { status: q.status === 'open' ? 'resolved' : 'open' })}>
+                      {q.status === 'open' ? '対応済みにする' : '未対応に戻す'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="pt-note" style={{ marginTop: 12 }}>
+            ログイン画面から届く「ログインできない」もここに入ります。
+            パスワードを忘れた方には、「設定」のユーザー一覧で「PW再設定」を押して未設定に戻し、
+            本人にログイン画面の「パスワード設定」から決め直すよう回答してください。
+          </p>
+          {picked && (
+            <p className="pt-note" style={{ marginBottom: 0 }}>
+              メールから開いたため、1件を枠で示しています。
+              <button className="btn secondary sm" style={{ marginLeft: 8 }}
+                onClick={() => { params.delete('inquiry'); setParams(params, { replace: true }); }}>
+                すべて表示
+              </button>
+            </p>
+          )}
+        </Card>
+      )}
 
       <Card title="お問い合わせを送る">
         <form onSubmit={send} style={{ maxWidth: 640 }}>
@@ -105,7 +211,7 @@ export default function Contact() {
               onChange={(e) => setMessage(e.target.value)} />
           </label>
           <button className="btn" type="submit" disabled={busy}>
-            {busy ? '送信中...' : '管理者へ送信'}
+            {busy ? '送信中...' : '本社（営業企画部）へ送信'}
           </button>
         </form>
       </Card>

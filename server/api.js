@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import multer from 'multer';
 import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
+import { sendMail, inquiryMail } from './mail.js';
 import {
   addBatchCount, assertNotDuplicate, buildRow, createBatch, importWorkbook,
   isSkippableRow, summarizeWarnings, upsertRows, validateMapping,
@@ -210,6 +211,41 @@ function requireRole(req, res, roles) {
 }
 
 /** 管理者だけが触れる操作（ユーザー管理・決裁者設定） */
+/**
+ * 問い合わせの回答担当。本社（営業企画部）と管理者が対応する。
+ * 通知メールもこの人たちの「メール」宛に送る。
+ */
+const INQUIRY_ROLES = ['planning', 'admin', 'developer'];
+const isInquiryStaff = (role) => INQUIRY_ROLES.includes(String(role ?? ''));
+
+function requireInquiryStaff(req, res) {
+  if (!requireLogin(req, res)) return false;
+  if (!isInquiryStaff(req.user.role)) {
+    res.status(403).json({ error: 'この操作は本社（営業企画部）と管理者のみ実行できます' });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 届いた問い合わせを回答担当者へメールで知らせる。
+ * メールを設定している本社・管理者が宛先。送れなくても問い合わせの受付は続ける。
+ */
+async function notifyInquiry(row) {
+  try {
+    const staff = await db.all(
+      `SELECT email FROM users
+        WHERE active = 1 AND email IS NOT NULL AND email <> ''
+          AND role IN (${INQUIRY_ROLES.map(() => '?').join(',')})`, INQUIRY_ROLES);
+    const extra = String(process.env.MAIL_NOTIFY_TO ?? '').split(',');
+    const to = [...staff.map((u) => u.email), ...extra];
+    const { subject, html } = inquiryMail(row);
+    await sendMail({ to, subject, html });
+  } catch (e) {
+    console.warn('[inquiry] 通知メールを送れませんでした', e?.message ?? e);
+  }
+}
+
 function requireAdmin(req, res) {
   if (!requireLogin(req, res)) return false;
   if (!isAdminRole(req.user.role)) {
@@ -601,7 +637,7 @@ api.get('/admin/users', wrap(async (req, res) => {
   // 一覧が出るまでに20秒以上かかっていた（数え直しは3回の集計で済む）
   const [rows, all, byBranch, byPerson] = await Promise.all([
     db.all(`
-      SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.active, u.login_id,
+      SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.email, u.active, u.login_id,
              u.last_login_at, u.must_change_password, u.locked_until,
              CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password
         FROM users u ORDER BY u.id`),
@@ -628,7 +664,7 @@ api.get('/admin/users', wrap(async (req, res) => {
 
 api.post('/admin/users', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { name, role, branch, office, title, loginId } = req.body || {};
+  const { name, role, branch, office, title, email, loginId } = req.body || {};
   if (!name || !role || !loginId) {
     return res.status(400).json({ error: '氏名・権限・ログインID（社員番号）は必須です' });
   }
@@ -643,9 +679,9 @@ api.post('/admin/users', wrap(async (req, res) => {
 
   // パスワードは発行しない。本人が初回ログイン時に「パスワード設定」から自分で決める
   const { lastInsertRowid } = await db.run(
-    `INSERT INTO users (name, role, branch, office, title, login_id, password_hash, must_change_password)
-     VALUES (?,?,?,?,?,?,NULL,0)`,
-    [name, role, nv(branch), nv(office), nv(title), loginId]
+    `INSERT INTO users (name, role, branch, office, title, email, login_id, password_hash, must_change_password)
+     VALUES (?,?,?,?,?,?,?,NULL,0)`,
+    [name, role, nv(branch), nv(office), nv(title), nv(email), loginId]
   );
   res.status(201).json({ id: Number(lastInsertRowid), loginId });
 }));
@@ -677,7 +713,7 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
   const sets = [];
   const params = [];
   for (const [field, col] of [['name', 'name'], ['role', 'role'], ['branch', 'branch'],
-    ['office', 'office'], ['title', 'title']]) {
+    ['office', 'office'], ['title', 'title'], ['email', 'email']]) {
     if (field in (req.body || {})) { sets.push(`${col} = ?`); params.push(nv(req.body[field])); }
   }
   if ('loginId' in (req.body || {})) {
@@ -702,7 +738,7 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
   await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
   if (req.body?.active === false) await destroyUserSessions(user.id);
   res.json(await db.get(
-    `SELECT id, name, role, branch, office, title, active, login_id, last_login_at,
+    `SELECT id, name, role, branch, office, title, email, active, login_id, last_login_at,
              CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
      FROM users WHERE id = ?`, [user.id]));
 }));
@@ -1180,16 +1216,18 @@ api.post('/inquiries', wrap(async (req, res) => {
     }
   }
 
-  await db.run(
+  const ins = await db.run(
     `INSERT INTO inquiries (user_id, login_id, name, category, message, status, created_at)
      VALUES (?,?,?,?,?, 'open', ?)`,
     [req.user?.id ?? null, loginId, name, category, message, now()]
   );
+  // 受付はここで完了。回答担当者への通知は待たせずに送る
   res.status(201).json({ ok: true });
+  await notifyInquiry({ id: ins?.lastInsertRowid, login_id: loginId, name, category, message });
 }));
 
 api.get('/inquiries', wrap(async (req, res) => {
-  if (!requireAdmin(req, res)) return;
+  if (!requireInquiryStaff(req, res)) return;
   // 未対応を上に、その中では新しい順
   const rows = await db.all(`
     SELECT * FROM inquiries
@@ -1220,7 +1258,7 @@ api.patch('/inquiries/mine/:id/read', wrap(async (req, res) => {
 }));
 
 api.patch('/inquiries/:id', wrap(async (req, res) => {
-  if (!requireAdmin(req, res)) return;
+  if (!requireInquiryStaff(req, res)) return;
   const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
   if (!row) return res.status(404).json({ error: '問い合わせが見つかりません' });
 
@@ -1256,6 +1294,7 @@ const USER_HEADER_MAP = {
   '氏名': 'name', '名前': 'name', '担当者名': 'name', 'name': 'name',
   '役割': 'role', '権限': 'role', 'ロール': 'role', 'role': 'role',
   '役職': 'title', 'title': 'title',
+  'メール': 'email', 'メールアドレス': 'email', 'email': 'email', 'mail': 'email',
   '支店': 'branch', '支店名': 'branch', '管轄': 'branch', 'branch': 'branch',
   '営業所': 'office', '営業所名': 'office', '部署': 'office', 'office': 'office',
   '有効': 'active',
@@ -1333,6 +1372,7 @@ function parseUserRows(buffer) {
       branch,
       office: nv(cell('office')),
       title: nv(cell('title')),
+      email: nv(cell('email')),
       active: activeRaw === '' ? true : parseFlag(activeRaw),
     });
   }
@@ -1383,17 +1423,18 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
     }
     if (existing) {
       await db.run(
-        'UPDATE users SET name = ?, role = ?, branch = ?, office = ?, title = ?, active = ? WHERE id = ?',
-        [r.name, r.role, r.branch, r.office, r.title, r.active ? 1 : 0, existing.id]
+        `UPDATE users SET name = ?, role = ?, branch = ?, office = ?, title = ?,
+                          email = COALESCE(?, email), active = ? WHERE id = ?`,
+        [r.name, r.role, r.branch, r.office, r.title, r.email, r.active ? 1 : 0, existing.id]
       );
       updated.push({ id: existing.id, loginId: r.loginId, name: r.name });
       continue;
     }
     // パスワードは発行しない。本人が初回ログイン時に「パスワード設定」から自分で決める
     const { lastInsertRowid } = await db.run(
-      `INSERT INTO users (name, role, branch, office, title, login_id, password_hash, must_change_password, active)
-       VALUES (?,?,?,?,?,?,NULL,0,?)`,
-      [r.name, r.role, r.branch, r.office, r.title, r.loginId, r.active ? 1 : 0]
+      `INSERT INTO users (name, role, branch, office, title, email, login_id, password_hash, must_change_password, active)
+       VALUES (?,?,?,?,?,?,?,NULL,0,?)`,
+      [r.name, r.role, r.branch, r.office, r.title, r.email, r.loginId, r.active ? 1 : 0]
     );
     created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name });
   }
@@ -1407,16 +1448,16 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
 api.get('/admin/users/template', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const rows = [
-    ['ログインID（社員番号）', '支店（管轄）', '営業所（部署）', '役職', '氏名', '権限', '有効'],
-    ['100001', '東京中央', '東京中央営業所', '主任', '山田 太郎', '営業担当者', '〇'],
-    ['100002', '東京中央', '', '支店長', '鈴木 一郎', '支店長', '〇'],
-    ['100003', '本社', '広域営業部', '課長', '田中 次郎', '広域担当', '〇'],
-    ['100004', '本社', '営業企画部', '部長', '佐藤 三郎', '本社', '〇'],
-    ['100005', '本社', '', 'システム管理', '高橋 四郎', '管理者', '〇'],
+    ['ログインID（社員番号）', '支店（管轄）', '営業所（部署）', '役職', '氏名', '権限', 'メール（問い合わせ通知）', '有効'],
+    ['100001', '東京中央', '東京中央営業所', '主任', '山田 太郎', '営業担当者', '', '〇'],
+    ['100002', '東京中央', '', '支店長', '鈴木 一郎', '支店長', '', '〇'],
+    ['100003', '本社', '広域営業部', '課長', '田中 次郎', '広域担当', '', '〇'],
+    ['100004', '本社', '営業企画部', '部長', '佐藤 三郎', '本社', 'kikaku@example.co.jp', '〇'],
+    ['100005', '本社', '', 'システム管理', '高橋 四郎', '管理者', 'admin@example.co.jp', '〇'],
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 6 }];
+  ws['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 26 }, { wch: 6 }];
   XLSX.utils.book_append_sheet(wb, ws, 'ユーザー');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   branch     TEXT,               -- 支店（管轄）
   office     TEXT,               -- 営業所（部署）
   title      TEXT,               -- 役職（表示用。権限には影響しない）
+  email      TEXT,               -- 通知の宛先（回答担当者に届く）
   active     INTEGER NOT NULL DEFAULT 1,
   login_id   TEXT,               -- ログインID（社内で一意）
   password_hash TEXT,            -- scrypt形式。NULLの間はログイン不可
