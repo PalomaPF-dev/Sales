@@ -255,11 +255,22 @@ export default function Users() {
             既に登録済みのログインIDは内容を更新する
           </label>
           <div className="grow" style={{ flex: 1 }} />
-          <a className="btn secondary sm" href="/api/admin/users/template">記入例をダウンロード</a>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a className="btn secondary sm" href="/api/admin/users/export">いまの一覧を出力</a>
+            <a className="btn secondary sm" href="/api/admin/users/template">記入例をダウンロード</a>
+          </div>
         </div>
+        <p className="pt-note" style={{ marginTop: 10, marginBottom: 0 }}>
+          メールなどをまとめて入れ直すときは、<strong>「いまの一覧を出力」</strong>で登録済みの内容を
+          Excelに出し、必要な欄を書き足してから
+          <strong>「既に登録済みのログインIDは内容を更新する」</strong>に印を付けて取り込んでください
+          （記入例と同じ列で出るため、そのまま取り込めます）。
+          メール欄を空のままにした人は、いまの設定が消えずに残ります。
+        </p>
         <p className="pt-note" style={{ marginTop: 10 }}>
           列: <code>ログインID（社員番号）</code> / <code>支店（管轄）</code> / <code>営業所（部署）</code> /
-          <code>役職</code> / <code>氏名</code> / <code>権限</code>（任意で <code>有効</code>）。
+          <code>役職</code> / <code>氏名</code> / <code>権限</code>
+          （任意で <code>メール（問い合わせ通知）</code> / <code>有効</code>）。
           ログインIDと氏名以外は省略できます（権限を省くと営業担当者）。
           権限は <strong>営業担当者</strong>（自分の支店のみ閲覧・値上げ交渉の入力のみ）／
           <strong>支店長</strong>・<strong>広域担当</strong>（全支店を閲覧）／
