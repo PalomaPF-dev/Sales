@@ -63,6 +63,8 @@ export interface Deal {
   a_ringi_m1?: string | null;
   a_ringi_m2?: string | null;
   a_ringi_m3?: string | null;
+  /** マスタ単価の月別実績（YYYY-MM → 単価）。4月〜取込前日。一覧の実績列に使う */
+  hist_prices?: Record<string, number> | null;
   b_price?: number | null;          // B基準: 実際の決定単価
   master_avg_price?: number | null; // 当月の実単価（価格調査。金額÷数量。見積ぶんで下がる）
   master_price?: number | null;     // 当月のマスタ単価（値決めの単価。A基準はこれと比べる）
@@ -148,7 +150,8 @@ export interface Meta {
   states: { code: RoundState; name: string }[];
   corpStatuses: { code: string; name: string }[];
   /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
-  aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string; filename?: string } | null;
+  aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string;
+    filename?: string; histMonths?: string[] } | null;
   /** 価格調査（当月実績）の取込情報。ym は当月（例 2026-07） */
   actualMeta?: { ym?: string; filename?: string; updatedAt?: string } | null;
 }

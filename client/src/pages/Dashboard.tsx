@@ -95,7 +95,7 @@ const VIEWS = [
   { key: 'plan' as const, label: '計画（マスタ登録単価）' },
 ];
 
-/** 集計表の切り替え。列が多いので縦に並べず、タブで出し分ける */
+/** 値上げ額の内訳。器具区分別・支店別・法人別をそれぞれ別のカードで出す */
 const TABS = [
   { key: 'equip' as const, label: '器具区分別', head: '器具区分', title: '器具区分別の値上げ額' },
   { key: 'branch' as const, label: '支店別', head: '支店', title: '支店別の値上げ額' },
@@ -468,6 +468,41 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
   );
 }
 
+/**
+ * 値上げ額の内訳カード。器具区分別・支店別・法人別で1枚ずつ使い、
+ * カードの中の切り替えで実績（売上改善額）と計画（マスタ登録単価）を出し分ける。
+ */
+function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link }: {
+  title: string; head: string; rows: AbRow[]; total?: AbRow;
+  months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
+  link: (name: string | null | undefined, kind: 'plus' | 'minus') => string;
+}) {
+  const [view, setView] = useState<'act' | 'plan'>('act');
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>
+          {title}
+          <span style={{ marginLeft: 8, fontSize: 12.5, fontWeight: 400, color: 'var(--muted)' }}>
+            {rows.length.toLocaleString()}件
+          </span>
+        </h3>
+        {/* 実績と計画の切り替え。両方並べると横に長くなるため、カードの中で出し分ける */}
+        <div className="seg" style={{ marginLeft: 'auto' }}>
+          {VIEWS.map((v) => (
+            <button key={v.key} className={view === v.key ? 'on' : ''}
+                    onClick={() => setView(v.key)}>
+              {v.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <AbTable head={head} rows={rows} total={total} months={months} actYms={actYms}
+               m0={m0} m1={m1} m2={m2} m3={m3} view={view} link={link} />
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<DashboardRes | null>(null);
@@ -557,11 +592,6 @@ export default function Dashboard() {
   const months = data.months || 1;
   const actYm = data.actuals?.[0]?.ym ?? '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
-  // 表の切り替え。既定は器具区分別（URLの tab で切り替える）
-  const tab = (['equip', 'branch', 'corp'] as const).includes(get('tab') as never)
-    ? (get('tab') as 'equip' | 'branch' | 'corp') : 'equip';
-  // 出す内容（実績 / 計画）。既定は実績。選んだ内容はURLに残る
-  const view: 'act' | 'plan' = get('view') === 'plan' ? 'plan' : 'act';
   const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
     (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
@@ -694,39 +724,7 @@ export default function Dashboard() {
                : undefined} />
       </div>
 
-      {/*
-        器具区分別・支店別・法人別はどれも列が多いため、縦に並べず切り替えで出す。
-        まず器具区分・支店・法人を選んで値上げ額を見られるよう、まとめより先（上）に置く。
-        選んだタブはURLに残るので、開き直しても同じ表が出る。
-      */}
-      <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>{TABS.find((x) => x.key === tab)?.title}</h3>
-          {/* 出す内容の切り替え。実績と計画を分けて、横スクロールせずに端まで見えるようにする */}
-          <div className="seg">
-            {VIEWS.map((v) => (
-              <button key={v.key} className={view === v.key ? 'on' : ''}
-                      onClick={() => setParam('view', v.key === 'act' ? '' : v.key)}>
-                {v.label}
-              </button>
-            ))}
-          </div>
-          <div className="seg" style={{ marginLeft: 'auto' }}>
-            {TABS.map((x) => (
-              <button key={x.key} className={tab === x.key ? 'on' : ''}
-                      onClick={() => setParam('tab', x.key === 'equip' ? '' : x.key)}>
-                {x.label}
-                <span style={{ marginLeft: 6, opacity: 0.7 }}>{rowsOf(x.key).length.toLocaleString()}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <AbTable head={TABS.find((x) => x.key === tab)?.head ?? ''} rows={rowsOf(tab)}
-                 total={t} months={months} actYms={data.abActYms}
-                 m0={m0} m1={m1} m2={m2} m3={m3} view={view}
-                 link={(name, kind) => dealsLink(kind, { [tab]: name ?? '' })} />
-      </div>
-
+      {/* まとめ（実績と計画）を値上げ額の内訳より先（上）に置く */}
       <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
         <p className="pt-note" style={{ marginTop: 0 }}>
           <strong>当初</strong>は値上げ前の金額で、{actLabel}の金額（合計）から
@@ -881,6 +879,17 @@ export default function Dashboard() {
           </tbody>
         </table>
       </Card>
+
+      {/*
+        値上げ額の内訳。器具区分別・支店別・法人別をそれぞれ別のカードで縦に並べ、
+        カードの中の切り替えで実績（売上改善額）と計画（マスタ登録単価）を見る。
+      */}
+      {TABS.map((x) => (
+        <AbCard key={x.key} title={x.title} head={x.head} rows={rowsOf(x.key)}
+                total={t} months={months} actYms={data.abActYms}
+                m0={m0} m1={m1} m2={m2} m3={m3}
+                link={(name, kind) => dealsLink(kind, { [x.key]: name ?? '' })} />
+      ))}
 
     </div>
   );

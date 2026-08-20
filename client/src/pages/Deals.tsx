@@ -21,7 +21,12 @@ interface DealsRes {
   page: number;
   size: number;
   months: number;        // 当月ぶん（=1）。金額はそのまま1か月あたり
+  /** マスタ単価の月別実績の月（YYYY-MM、4月〜取込前日）。実績列の見出しに使う */
+  histMonths?: string[];
 }
+
+/** マスタ登録単価のまとまりに並べる月。実績（月別履歴）と計画（当月〜3か月後） */
+type MonthCol = { kind: 'hist'; ym: string } | { kind: 'plan'; n: 0 | 1 | 2 | 3 };
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
   'aState', 'act', 'aDateYm', 'aDateOp', 'gain'] as const;
@@ -65,6 +70,10 @@ export default function Deals() {
   const isDev = me.role === 'developer';
   // 本社（と管理者）。目標単価をこの画面から直接入力できる
   const isHq = ['planning', 'admin', 'developer'].includes(me.role);
+
+  // マスタ登録単価のまとまりの表示位置。実績（4月〜）と計画（当月〜3か月後）を
+  // ◀▶で1か月ずつずらして見る。null は既定（計画の先頭 = 当月から）
+  const [mOff, setMOff] = useState<number | null>(null);
 
   // 商談結果の一括入力。商談結果の左のチェックで品目を選び、まとめて同じ結果を入れる
   const [sel, setSel] = useState<Set<number>>(new Set());
@@ -433,6 +442,31 @@ export default function Deals() {
     const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
 
+  // ---- マスタ登録単価のまとまり（実績 → 計画）----
+  // 4月〜取込前日の実績（月別履歴）に続けて、当月（本日時点）〜3か月後の計画を並べる。
+  // 列が多くなるため5列の窓で見せ、◀▶で実績と計画を行き来する。既定は計画の先頭（当月）
+  const histMonths = data?.histMonths ?? meta?.aggMeta?.histMonths ?? [];
+  const PLAN_FALLBACK = ['当月', '翌月', '翌々月', '3か月後'] as const;
+  const planLabel = (n: 0 | 1 | 2 | 3) => {
+    const ym = [meta?.aggMeta?.m0, meta?.aggMeta?.m1, meta?.aggMeta?.m2, meta?.aggMeta?.m3][n];
+    return ymLabel(ym, PLAN_FALLBACK[n]);
+  };
+  const mCols: MonthCol[] = [
+    ...histMonths.map((ym) => ({ kind: 'hist' as const, ym })),
+    ...([0, 1, 2, 3] as const).map((n) => ({ kind: 'plan' as const, n })),
+  ];
+  const M_WIN = 5;
+  const mMax = Math.max(0, mCols.length - M_WIN);
+  const mAt = Math.min(mOff ?? Math.min(histMonths.length, mMax), mMax);
+  const visCols = mCols.slice(mAt, mAt + M_WIN);
+
+  /** 計画（当月〜3か月後の申請単価）の1マス。承認日・稟議Noつき */
+  const planCell = (d: Deal, n: 0 | 1 | 2 | 3) => aCell(
+    [d.a_price_m0, d.a_price_m1, d.a_price_m2, d.a_price_m3][n],
+    [d.a_date_m0, d.a_date_m1, d.a_date_m2, d.a_date_m3][n],
+    [d.a_ringi_m0, d.a_ringi_m1, d.a_ringi_m2, d.a_ringi_m3][n],
+  );
+
   return (
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
@@ -441,8 +475,9 @@ export default function Deals() {
         <strong>売上高（{actLabel}）</strong>はこのベースへ単価・数量を突合して重なり、
         突合で当たらなかった品目は<strong>{actLabel}実績無し</strong>として載ります（数量の欄に出ます）。
         売上高にだけある行も案件として残るため、売上高の合計は必ずファイルと一致します。
-        <strong>マスタ登録単価</strong>は当月（本日時点）と向こう3か月の申請単価で、
-        下段はその<strong>承認日</strong>（申請単価のある月だけ入ります）。絞り込みにも使えます。
+        <strong>マスタ登録単価</strong>は、4月からの<strong>月別実績</strong>（当月は取込前日まで）と、
+        当月（本日時点）からの<strong>計画</strong>（申請単価。下段は承認日）を並べます。
+        見出しの<strong>◀ 実績／計画 ▶</strong>で表示する月を1か月ずつずらせます（既定は当月の計画から）。
         隣の<strong>目標単価</strong>は本社が設定します。
         <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
         <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
@@ -693,7 +728,18 @@ export default function Deals() {
                   title={`売上高（${actLabel}）の実績。ベース（価格調査（毎日更新））へ単価・数量を突合しています`}>
                 売上高<small>（{actLabel}）</small>
               </th>
-              <th colSpan={5} className="grp sep">マスタ登録単価（下段は承認日）・目標単価</th>
+              <th colSpan={visCols.length + 1} className="grp sep">
+                マスタ登録単価（実績→計画・下段は承認日）・目標単価
+                {mCols.length > M_WIN && (
+                  <span style={{ marginLeft: 8, whiteSpace: 'nowrap' }}
+                        title="◀で過去の実績、▶で先の計画へ1か月ずつずらせます">
+                    <button className="mnav" disabled={mAt <= 0}
+                      onClick={() => setMOff(Math.max(0, mAt - 1))}>◀ 実績</button>
+                    <button className="mnav" disabled={mAt >= mMax}
+                      onClick={() => setMOff(Math.min(mMax, mAt + 1))}>計画 ▶</button>
+                  </span>
+                )}
+              </th>
               <th colSpan={4} className="grp sep"
                   title={`その月のマスタ登録単価 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
                 値上げ幅（マスタ登録単価−{actLabel}マスタ単価）
@@ -733,13 +779,23 @@ export default function Deals() {
                   title={`${actLabel}の数量。0は${actLabel}の出荷が無かった品目（出荷無）`}>
                 数量
               </Th>
-              <Th col="a_price_m0" className="num sep"
-                  title="当月のマスタ登録単価（毎日更新のファイルの本日時点の値）">
-                {ymLabel(meta?.aggMeta?.m0, '当月')}<br /><small>本日時点</small>
-              </Th>
-              <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
-              <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
-              <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
+              {visCols.map((c, i) => c.kind === 'hist' ? (
+                <th key={c.ym} className={`num${i === 0 ? ' sep' : ''}`}
+                    title={c.ym === meta?.aggMeta?.m0
+                      ? `${c.ym} のマスタ単価の実績（取り込んだ前日までの値）`
+                      : `${c.ym} のマスタ単価の実績`}>
+                  {ymLabel(c.ym, c.ym)}実績
+                  {c.ym === meta?.aggMeta?.m0 && <><br /><small>前日まで</small></>}
+                </th>
+              ) : (
+                <Th key={`p${c.n}`} col={`a_price_m${c.n}`} className={`num${i === 0 ? ' sep' : ''}`}
+                    title={c.n === 0
+                      ? '当月の計画（毎日更新のファイルの本日時点の申請単価）'
+                      : `${planLabel(c.n)}の計画（申請単価）`}>
+                  {planLabel(c.n)}計画
+                  {c.n === 0 && <><br /><small>本日時点</small></>}
+                </Th>
+              ))}
               <Th col="r2_target_price" className="num"
                   title={`目標単価（本社にて設定）。下段は目標の値上げ幅（目標単価 − ${actLabel}のマスタ単価）`}>
                 目標単価<br /><small>本社設定</small>
@@ -840,12 +896,17 @@ export default function Deals() {
                         : Number(monthlyQty(d)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                   </td>
 
-                  {/* A基準（マスタ登録の申請単価: 当月・翌月・翌々月・3か月後）。下段は承認日。
-                      カーソルで承認日と稟議Noが見える。隣は第2弾の目標値 */}
-                  <td className="num sep">{aCell(d.a_price_m0, d.a_date_m0, d.a_ringi_m0)}</td>
-                  <td className="num">{aCell(d.a_price_m1, d.a_date_m1, d.a_ringi_m1)}</td>
-                  <td className="num">{aCell(d.a_price_m2, d.a_date_m2, d.a_ringi_m2)}</td>
-                  <td className="num">{aCell(d.a_price_m3, d.a_date_m3, d.a_ringi_m3)}</td>
+                  {/* マスタ登録単価（実績 → 計画）。◀▶で表示中の月が変わる。
+                      実績は月別履歴の値、計画は申請単価（下段は承認日）。隣は目標単価 */}
+                  {visCols.map((c, i) => c.kind === 'hist' ? (
+                    <td key={c.ym} className={`num${i === 0 ? ' sep' : ''}`}>
+                      {d.hist_prices?.[c.ym] == null ? '—' : yen(d.hist_prices[c.ym])}
+                    </td>
+                  ) : (
+                    <td key={`p${c.n}`} className={`num${i === 0 ? ' sep' : ''}`}>
+                      {planCell(d, c.n)}
+                    </td>
+                  ))}
                   {/* 目標単価。下段に目標の値上げ幅（目標単価 − 当月のマスタ単価）を添える。
                       本社・管理者は「入力」からここで直接入れられる */}
                   <td className="num">

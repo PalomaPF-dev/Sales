@@ -2180,7 +2180,7 @@ api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
-  const { months, masterMonths: mMonths } = await loadImportMeta();
+  const { months, masterMonths: mMonths, aggMeta } = await loadImportMeta();
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
     // 値上げ幅は「その月のA基準 − 当月のマスタ単価」× マスタ分の数量。
@@ -2217,7 +2217,28 @@ api.get('/deals', wrap(async (req, res) => {
   ]);
   attachStandardMatch(rows, await loadStandardIndex());
   hideCost(rows, req.user);
-  res.json({ rows, totals, page, size, months, masterMonths: mMonths });
+  // マスタ単価の月別実績（4月〜取込前日）。一覧のマスタ登録単価のまとまりに
+  // 実績も並べるため、このページの行のぶんだけまとめて読んで行に添える
+  const histMonths = Array.isArray(aggMeta?.histMonths) ? aggMeta.histMonths : [];
+  const keyed = rows.filter((r) => r.hist_ent_cd && r.model_code);
+  if (histMonths.length && keyed.length) {
+    try {
+      const hrows = await db.all(`
+        SELECT ent_cd, model_code, ym, price FROM master_price_history
+         WHERE ${keyed.map(() => '(ent_cd = ? AND model_code = ?)').join(' OR ')}`,
+        keyed.flatMap((r) => [r.hist_ent_cd, r.model_code]));
+      const byKey = new Map();
+      for (const h of hrows) {
+        const k = `${h.ent_cd}|${h.model_code}`;
+        if (!byKey.has(k)) byKey.set(k, {});
+        byKey.get(k)[h.ym] = h.price;
+      }
+      for (const r of rows) {
+        r.hist_prices = byKey.get(`${r.hist_ent_cd}|${r.model_code}`) ?? null;
+      }
+    } catch { /* 履歴の表が無い旧DBでは実績列を出さない */ }
+  }
+  res.json({ rows, totals, page, size, months, masterMonths: mMonths, histMonths });
 }));
 
 /**
