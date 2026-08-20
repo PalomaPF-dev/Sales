@@ -4,6 +4,7 @@ import { api, fetchMe, logout } from './api';
 import type { User } from './types';
 import { ROLE_NAMES } from './types';
 import { UserContext } from './user';
+import { MobileContext } from './view';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
@@ -193,6 +194,7 @@ export default function App() {
 
   return (
     <UserContext.Provider value={user}>
+     <MobileContext.Provider value={isMobile}>
       <div className={`layout${sideOpen ? '' : ' side-hidden'}${isMobile ? ' mobile' : ''}`}>
         {user.authDisabled && (
           <div className="auth-off-banner">
@@ -290,6 +292,7 @@ export default function App() {
           </Suspense>
         </main>
       </div>
+     </MobileContext.Provider>
     </UserContext.Provider>
   );
 }

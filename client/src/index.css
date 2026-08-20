@@ -572,21 +572,10 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 .auth-off-banner ~ .main { padding-top: 46px; }
 .view-mobile .auth-off-banner ~ .main { padding-top: 92px; }
 
-/* 見出し・カードを詰めて、1画面に入る情報を増やす。
-   画面の使い方の説明は長く、スマホでは1画面を占めてしまうため折りたたむ
-   （「…」を押すと開く） */
-.view-mobile .page-title { font-size: 18px; }
-.view-mobile .page-sub {
-  font-size: 12px; margin-bottom: 12px;
-  max-height: 3.6em; overflow: hidden; position: relative; cursor: pointer;
-}
-.view-mobile .page-sub::after {
-  content: '…（押すと全文）'; position: absolute; right: 0; bottom: 0;
-  background: linear-gradient(90deg, rgba(248,250,252,0), var(--page) 30%);
-  padding-left: 18px; color: var(--accent); font-weight: 600;
-}
-.view-mobile .page-sub.open { max-height: none; }
-.view-mobile .page-sub.open::after { content: none; }
+/* 見出しを詰めて、1画面に入る情報を増やす。
+   画面の使い方の説明は長く、スマホでは邪魔になるため出さない */
+.view-mobile .page-title { font-size: 18px; margin-bottom: 10px; }
+.view-mobile .page-sub { display: none; }
 .view-mobile .card { padding: 12px; border-radius: 10px; }
 /* 絞り込みは2列に並べる。縦一列だと画面が長くなりすぎるため。
    検索だけは横幅いっぱいを使う。
@@ -603,8 +592,8 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 .view-mobile .filters .fld { font-size: 12px; }
 /* 数字の入力欄で画面が拡大されないよう、文字は16px以上にする（iOS） */
 .view-mobile input, .view-mobile select, .view-mobile textarea { font-size: 16px; }
-/* KPIのタイルは1〜2列に */
-.view-mobile .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* カードは横に並べず、上から順に縦に積む（1枚ずつ大きく読めるように） */
+.view-mobile .tiles { grid-template-columns: 1fr; gap: 10px; }
 /* 表は横スクロールで見る（指でなぞって動かせる） */
 .view-mobile .tbl-scroll { -webkit-overflow-scrolling: touch; }
 .view-mobile .tbl { font-size: 12px; }
