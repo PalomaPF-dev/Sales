@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../api';
+import { api, jstDateTime } from '../api';
 import { Card } from './ui';
 import { useUser } from '../user';
 
@@ -91,7 +91,7 @@ export default function Attachments({
                 </td>
                 <td className="num">{humanSize(a.size)}</td>
                 <td>{a.uploaded_by_name || '—'}</td>
-                <td>{a.uploaded_at?.slice(0, 16).replace('T', ' ')}</td>
+                <td>{jstDateTime(a.uploaded_at)}</td>
                 <td>
                   {(['planning', 'admin', 'developer'].includes(me.role) || a.uploaded_by_name === me.name) && (
                     <button className="btn secondary sm" onClick={() => remove(a)}>削除</button>
