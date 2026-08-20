@@ -75,10 +75,14 @@ export default function Deals() {
   // ◀▶で1か月ずつずらして見る。null は既定（計画の先頭 = 当月から）
   const [mOff, setMOff] = useState<number | null>(null);
 
-  // 商談結果の一括入力。商談結果の左のチェックで品目を選び、まとめて同じ結果を入れる
+  // 値上げ交渉の一括入力。商談結果の左のチェックで品目を選び、
+  // 入力の項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）をまとめて入れる
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [selNego, setSelNego] = useState('');
   const [selNote, setSelNote] = useState('');
+  const [selFinalDate, setSelFinalDate] = useState('');
+  const [selFinalPrice, setSelFinalPrice] = useState('');
+  const [selAppliedYm, setSelAppliedYm] = useState('');
 
   const toggleSel = (id: number) => {
     setSel((prev) => {
@@ -88,13 +92,27 @@ export default function Deals() {
     });
   };
 
-  /** 選んだ品目に商談結果（とメモ）を一括で入れる */
+  /** 一括入力で送る内容。書き入れた項目だけを対象にし、空欄の項目は変更しない */
+  const bulkBody = () => {
+    const body: Record<string, unknown> = {};
+    if (selNego) body.nego_result = selNego;
+    if (selNote.trim()) body.nego_note = selNote.trim();
+    if (selFinalDate) body.final_date = selFinalDate;
+    if (selFinalPrice.trim() !== '') body.final_price = Number(selFinalPrice);
+    if (selAppliedYm) body.r2_applied_ym = selAppliedYm;
+    return body;
+  };
+
+  /** 選んだ品目へ、値上げ交渉の入力をまとめて入れる */
   const applyBulkNego = async () => {
-    if (!sel.size || !selNego) return;
+    const body = bulkBody();
+    if (!sel.size || !Object.keys(body).length) return;
+    if (selAppliedYm && !YM_RE.test(selAppliedYm)) {
+      setMsg({ kind: 'error', text: '適用年月は「2026-04」の形式で入れてください' });
+      return;
+    }
     setBusy(true);
     setMsg(null);
-    const body: Record<string, unknown> = { nego_result: selNego };
-    if (selNote.trim()) body.nego_note = selNote.trim();
     let done = 0;
     try {
       for (const id of sel) {
@@ -105,9 +123,13 @@ export default function Deals() {
         });
         done += 1;
       }
-      setMsg({ kind: 'ok', text: `${done.toLocaleString()}件に商談結果「${selNego}」を入れました` });
+      setMsg({ kind: 'ok', text: `${done.toLocaleString()}件に一括入力しました（空欄の項目は変更していません）` });
       setSel(new Set());
+      setSelNego('');
       setSelNote('');
+      setSelFinalDate('');
+      setSelFinalPrice('');
+      setSelAppliedYm('');
     } catch (e) {
       setMsg({
         kind: 'error',
@@ -481,7 +503,7 @@ export default function Deals() {
         隣の<strong>目標単価</strong>は本社が設定します。
         <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
         <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
-        商談結果の左のチェックで品目を選ぶと、<strong>商談結果とメモをまとめて一括入力</strong>できます。
+        商談結果の左のチェックで品目を選ぶと、<strong>入力の項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）をまとめて一括入力</strong>できます（空欄の項目は変更されません）。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -635,25 +657,40 @@ export default function Deals() {
         </div>
       )}
 
-      {/* 商談結果の一括入力。商談結果の左のチェックで品目を選び、同じ結果とメモをまとめて入れる */}
+      {/* 値上げ交渉の一括入力。商談結果の左のチェックで品目を選び、
+          入力と同じ項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）を
+          まとめて入れる。書き入れた項目だけが対象で、空欄の項目は変更しない */}
       {data && (
-        <div className="toolbar">
+        <div className="toolbar" style={{ flexWrap: 'wrap', rowGap: 8 }}>
           <span className="count">
             選択 <b>{sel.size.toLocaleString()}</b>件
-            {sel.size === 0 && <span style={{ color: 'var(--muted)' }}>（商談結果の左のチェックで品目を選ぶと、商談結果をまとめて入れられます）</span>}
+            {sel.size === 0 && <span style={{ color: 'var(--muted)' }}>（商談結果の左のチェックで品目を選ぶと、入力の項目をまとめて入れられます）</span>}
           </span>
-          <select value={selNego} onChange={(e) => setSelNego(e.target.value)} disabled={!sel.size}>
-            <option value="">商談結果を選ぶ</option>
+          <select value={selNego} onChange={(e) => setSelNego(e.target.value)} disabled={!sel.size}
+                  title="商談結果">
+            <option value="">商談結果</option>
             <option value="〇">〇 合意</option>
             <option value="□">□ 広域待ち</option>
             <option value="△">△ 否決</option>
             <option value="×">× 本社へ相談</option>
           </select>
           <input type="text" value={selNote} disabled={!sel.size}
-            placeholder="商談メモ（任意。商談結果の詳細）"
-            style={{ flex: '1 1 220px', minWidth: 180 }}
+            placeholder="商談メモ（商談結果の詳細）"
+            style={{ flex: '1 1 200px', minWidth: 160 }}
             onChange={(e) => setSelNote(e.target.value)} />
-          <button className="btn sm" disabled={busy || !sel.size || !selNego} onClick={applyBulkNego}>
+          <input type="date" value={selFinalDate} disabled={!sel.size}
+            title="最終確定日" style={{ width: 140 }}
+            onChange={(e) => setSelFinalDate(e.target.value)} />
+          <input type="number" value={selFinalPrice} disabled={!sel.size}
+            placeholder="最終確定単価" title="最終確定単価" style={{ width: 120 }}
+            onChange={(e) => setSelFinalPrice(e.target.value)} />
+          <input type="month" value={selAppliedYm} disabled={!sel.size}
+            title="適用年月" style={{ width: 140 }}
+            onChange={(e) => setSelAppliedYm(e.target.value)} />
+          <button className="btn sm"
+                  disabled={busy || !sel.size || Object.keys(bulkBody()).length === 0}
+                  title="書き入れた項目だけを、選んだ品目すべてに入れます（空欄の項目は変更しません）"
+                  onClick={applyBulkNego}>
             選択した品目へ一括入力
           </button>
         </div>
@@ -1014,7 +1051,7 @@ export default function Deals() {
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
           「入力」から商談結果・商談メモ・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
-          商談結果の左のチェックで品目を選ぶと、商談結果とメモをまとめて入れられます。
+          商談結果の左のチェックで品目を選ぶと、入力の項目をまとめて一括入力できます（空欄の項目は変更されません）。
           {isHq && ' 本社・管理者は目標単価も「入力」から設定できます。'}
         </p>
       )}

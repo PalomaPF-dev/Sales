@@ -2176,6 +2176,23 @@ const effMonthlyQty = () => 'COALESCE(CAST(master_qty AS FLOAT), 0)';
 /** マスタ分（値決めどおりに出た分）の数量。A基準の値上げ額はこれに対して出す */
 const planMonthlyQty = () => 'COALESCE(CAST(plan_qty AS FLOAT), CAST(master_qty AS FLOAT), 0)';
 
+/**
+ * 一覧の実績列に出す月。ファイルに「N月実績」の列が無くても、
+ * 毎日の取込で月別履歴（master_price_history）に当月の値が貯まるため、
+ * そこにある月を実績の月として使う。一覧のたびに数えないよう1分だけ使い回す。
+ */
+let histMonthsCache = { until: 0, months: [] };
+async function histMonthsFromHistory() {
+  if (histMonthsCache.until > Date.now()) return histMonthsCache.months;
+  let months = [];
+  try {
+    const rows = await db.all('SELECT ym FROM master_price_history GROUP BY ym ORDER BY ym');
+    months = rows.map((r) => String(r.ym)).filter((ym) => /^\d{4}-\d{2}$/.test(ym));
+  } catch { /* 履歴の表が無い旧DBでは実績列を出さない */ }
+  histMonthsCache = { until: Date.now() + 60_000, months };
+  return months;
+}
+
 api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -2218,8 +2235,10 @@ api.get('/deals', wrap(async (req, res) => {
   attachStandardMatch(rows, await loadStandardIndex());
   hideCost(rows, req.user);
   // マスタ単価の月別実績（4月〜取込前日）。一覧のマスタ登録単価のまとまりに
-  // 実績も並べるため、このページの行のぶんだけまとめて読んで行に添える
-  const histMonths = Array.isArray(aggMeta?.histMonths) ? aggMeta.histMonths : [];
+  // 実績も並べるため、このページの行のぶんだけまとめて読んで行に添える。
+  // ファイルに実績列が無いときは、履歴に貯まっている月を使う
+  let histMonths = Array.isArray(aggMeta?.histMonths) ? aggMeta.histMonths : [];
+  if (!histMonths.length) histMonths = await histMonthsFromHistory();
   const keyed = rows.filter((r) => r.hist_ent_cd && r.model_code);
   if (histMonths.length && keyed.length) {
     try {

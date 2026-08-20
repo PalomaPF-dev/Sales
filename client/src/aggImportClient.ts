@@ -216,6 +216,13 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const monthCols = (labels: string[]) => {
     let at = -1;
     for (const l of labels) { at = find(l); if (at >= 0) break; }
+    // 完全一致で見つからないときは、その言葉を含む見出しも許す
+    // （「本日時点マスタ単価」のように1マスへまとめた版のため。
+    //   「登録日(当月)」「N月実績」など別物の列は除く）
+    if (at < 0) {
+      at = headers.findIndex((h) => labels.some((l) => l && h.includes(l))
+        && !/登録日|稟議|申請番号|実績|数量|金額|出荷/.test(h));
+    }
     if (at < 0) return null;
     let end = headers.length;
     for (let i = at + 1; i < headers.length; i++) {
@@ -228,7 +235,8 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     const price = within((h) => h.includes('マスタ単価'));
     return {
       at,
-      price: price >= 0 ? price : at + 1,
+      // 「本日時点マスタ単価」のように見出しが1マスの版は、その列自体が単価
+      price: price >= 0 ? price : (headers[at].includes('マスタ単価') ? at : at + 1),
       date: within((h) => h.includes('登録日')),
       ringi: within((h) => RINGI_RE.test(h)),
     };
@@ -305,11 +313,22 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const ringiOf = (m: { ringi: number } | null) =>
     (m && m.ringi >= 0 ? m.ringi : globalRingi);
 
-  // 月の見出し（当月など）の実際の月。行を読む前に決めておく
+  // 月の見出し（当月など）の実際の月。行を読む前に決めておく。
+  // 当月は、見出しが単価と1マスの版だと下の行に日付が無いため、
+  // 必須の翌月から1か月戻して決める（日付のある版でも同じ月になる）
   const first = grid[1] ?? [];
+  const prevYm = (ym: string) => {
+    const m = /^(\d{4})-(\d{2})$/.exec(ym);
+    if (!m) return '';
+    let y = Number(m[1]);
+    let mo = Number(m[2]) - 1;
+    if (mo <= 0) { mo = 12; y -= 1; }
+    return `${y}-${String(mo).padStart(2, '0')}`;
+  };
+  const m1Ym = serialToYm(first[m1!.at]);
   const metaBase = {
-    m0: m0 ? serialToYm(first[m0.at]) : '',
-    m1: serialToYm(first[m1!.at]),
+    m0: m0 ? (prevYm(m1Ym) || serialToYm(first[m0.at])) : '',
+    m1: m1Ym,
     m2: serialToYm(first[m2!.at]),
     m3: serialToYm(first[m3!.at]),
     basePeriod: col.base_price >= 0
@@ -322,7 +341,8 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   // （当月より後の月番号は前の年とみなす。売上高の取込と同じ規則）
   const histCols: { month: number; at: number }[] = [];
   headers.forEach((h, i) => {
-    const m = /^マスタ[ー]?単価\((\d{1,2})月実績\)$/.exec(h.replace(/[\s　]/g, ''));
+    // 「マスター単価(4月実績)」のほか、「4月実績」だけの見出しでも読む
+    const m = /^(?:マスタ[ー]?単価)?\(?(\d{1,2})月実績\)?$/.exec(h.replace(/[\s　]/g, ''));
     if (m) histCols.push({ month: Number(m[1]), at: i });
   });
   const m0m = /^(\d{4})-(\d{2})$/.exec(metaBase.m0);
