@@ -100,7 +100,8 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
             <span style={{ fontSize: 13 }}>
               {parsed.p.rows.length.toLocaleString()}行
               （{[parsed.p.meta.m0, parsed.p.meta.m1, parsed.p.meta.m2, parsed.p.meta.m3]
-                .filter(Boolean).join('・')} ／ 出荷単価 {parsed.p.meta.basePeriod}）
+                .filter(Boolean).join('・')}
+              {parsed.p.meta.basePeriod ? ` ／ 出荷単価 ${parsed.p.meta.basePeriod}` : ''}）
               {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.hasRingi ? ' ・ 稟議Noあり' : ''}
               {parsed.p.histMonths.length > 0

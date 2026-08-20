@@ -87,11 +87,12 @@ function serialToYm(v: unknown): string {
   return ymd ? ymd.slice(0, 7) : String(v ?? '').trim();
 }
 
-/** 見出しの表記ゆれを吸収する（全角数字・全角かっこ） */
+/** 見出しの表記ゆれを吸収する（全角数字・全角かっこ・「3カ月後/3ヶ月後」の揺れ） */
 function normHead(h: unknown): string {
   return String(h ?? '')
     .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/（/g, '(').replace(/）/g, ')')
+    .replace(/(\d)[カヶケ]月後/g, '$1か月後')
     .trim();
 }
 
@@ -186,9 +187,12 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
    * 「稟議」と書かれた形式でも読めるようにしている。登録日や稟議Noの無い古い形式も可。
    */
   const RINGI_RE = /稟議|申請番号/;
-  const MONTH_LABELS = ['当月', '翌月', '翌々月', '3か月後'];
-  const monthCols = (label: string) => {
-    const at = find(label);
+  // 月のまとまりの見出し。当月は「毎月」「本日時点」と書かれた版もある
+  const M0_LABELS = ['当月', '毎月', '本日時点'];
+  const MONTH_LABELS = [...M0_LABELS, '翌月', '翌々月', '3か月後'];
+  const monthCols = (labels: string[]) => {
+    let at = -1;
+    for (const l of labels) { at = find(l); if (at >= 0) break; }
     if (at < 0) return null;
     let end = headers.length;
     for (let i = at + 1; i < headers.length; i++) {
@@ -213,7 +217,8 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     corp_group: findLike('企業グループ名') >= 0 ? findLike('企業グループ名')
       : findLike('企業G名') >= 0 ? findLike('企業G名') : find('法人名'),
     industry: find('業種名'),
-    product_name: find('商品名'),
+    // 商品名の無い版は品目階層名で代用する
+    product_name: find('商品名') >= 0 ? find('商品名') : findLike('品目階層名'),
     delivery_code: find('納入先コード'),
     delivery_name: find('納入先名'),
     model_code: find('商品コード'),
@@ -223,10 +228,15 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     equip_name: findAny('器具区分名', '器具区分'),
     category_name: findLike('カテゴリー名'),
     list_price: find('標準単価'),
-    // 担当・支店・地区は無い版もある。無ければ空のまま（案件の値が残る）
-    sales_person: findAny('得意先担当者名', '得意先担当'),
-    office: findBoth('得意先', '地区') >= 0 ? findBoth('得意先', '地区') : findLike('地区名'),
+    // 担当・支店・営業所は無い版もある。無ければ空のまま（案件の値が残る）。
+    // 「得意先実績担当者名」「得意先実績計上営業所名」のような長い見出しの版も拾う
+    sales_person: findAny('得意先担当者名', '得意先担当') >= 0
+      ? findAny('得意先担当者名', '得意先担当') : findLike('担当者名'),
+    office: findBoth('得意先', '営業所') >= 0 ? findBoth('得意先', '営業所')
+      : findBoth('得意先', '地区') >= 0 ? findBoth('得意先', '地区')
+      : findLike('営業所名') >= 0 ? findLike('営業所名') : findLike('地区名'),
     branch: findBoth('得意先', '支店') >= 0 ? findBoth('得意先', '支店') : findLike('支店名'),
+    // 出荷単価・売上数の列が無い版もある（毎日更新版）。無ければ空のまま取り込む
     base_price: findLike('出荷単価'),
     qty: findLike('売上数'),
     cost_price: find('実績原価'),
@@ -236,24 +246,28 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     final_date: findLike('最終確定日'),
     final_price: findLike('最終確定単価'),
   };
-  // 担当・支店・地区・原価は任意（無いファイルでも取り込める）
+  // 担当・支店・営業所・原価・出荷単価・売上数は任意（無いファイルでも取り込める）
   const OPTIONAL = new Set(['cost_price', 'sales_person', 'office', 'branch',
     'delivery_code', 'delivery_name', 'gas_type', 'category_name', 'list_price',
     'target_price', 'nego_result', 'final_date', 'final_price',
-    'corp_group', 'industry', 'product_name']);
+    'corp_group', 'industry', 'product_name', 'base_price', 'qty']);
+  const LABELS: Record<string, string> = {
+    customer_code: '得意先コード', customer_name: '得意先名',
+    model_code: '商品コード', model_name: '器種名（機種名）', equip_name: '器具区分',
+  };
   const missing = Object.entries(col)
     .filter(([k, i]) => i < 0 && !OPTIONAL.has(k))
-    .map(([k]) => k);
+    .map(([k]) => LABELS[k] ?? k);
   if (missing.length) {
-    throw new Error(`集約表の見出しが見つかりません: ${missing.join(', ')}。`
+    throw new Error(`見出しが見つかりません: ${missing.join('・')}。`
       + '「得意先コード」「商品コード」「翌月」などの見出しがあるシートが必要です');
   }
 
   // 当月は無いファイルもある（8月6日版まで）。翌月・翌々月・3か月後は必須
-  const m0 = monthCols('当月');
-  const m1 = monthCols('翌月');
-  const m2 = monthCols('翌々月');
-  const m3 = monthCols('3か月後');
+  const m0 = monthCols(M0_LABELS);
+  const m1 = monthCols(['翌月']);
+  const m2 = monthCols(['翌々月']);
+  const m3 = monthCols(['3か月後']);
   const noMonth = [['翌月', m1], ['翌々月', m2], ['3か月後', m3]]
     .filter(([, v]) => !v).map(([k]) => k);
   if (noMonth.length) {
@@ -274,7 +288,9 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     m1: serialToYm(first[m1!.at]),
     m2: serialToYm(first[m2!.at]),
     m3: serialToYm(first[m3!.at]),
-    basePeriod: headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price],
+    basePeriod: col.base_price >= 0
+      ? (headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price])
+      : '',
   };
 
   // マスタ単価の実績（月別）。「マスター単価（4月実績）」…の列を読む。
@@ -335,8 +351,8 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       branch: txt(r, col.branch),
       office: txt(r, col.office),
       sales_person: txt(r, col.sales_person),
-      qty: r[col.qty],
-      base_price: r[col.base_price],
+      qty: at(r, col.qty),
+      base_price: at(r, col.base_price),
       cost_price: col.cost_price >= 0 ? r[col.cost_price] : null,
       a_price_m0: at(r, m0 ? m0.price : -1),
       a_price_m1: r[m1!.price],
