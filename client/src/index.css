@@ -536,3 +536,82 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 .tbl.deals .surplus { color: #15803d; }
 /* 目標（基準価格表）の3列のうち、選択中の区分の単価 */
 .tbl.deals .picked { font-weight: 700; color: var(--accent); }
+
+/* ───────── スマホ向けの見た目 ─────────
+   いちばん外側（html）に view-mobile の目印が付いたときだけ効く。
+   画面の幅で自動に切り替わるほか、「表示: スマホ／PC」で固定もできる。 */
+
+/* 上の帯（メニューと表示切替）。スマホ表示のときだけ出す */
+.mtop {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 60; height: 48px;
+  display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  background: var(--sidebar); color: #e2e8f0;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
+}
+.mtop-title { font-weight: 700; font-size: 15px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mtop-btn {
+  background: rgba(255, 255, 255, 0.1); border: 0; color: #e2e8f0; cursor: pointer;
+  border-radius: 8px; padding: 7px 10px; font-size: 15px; line-height: 1; flex-shrink: 0;
+}
+.mtop-btn.wide { font-size: 12px; padding: 8px 10px; }
+.auth-off-banner ~ .mtop { top: 34px; }
+/* 引き出しの外側。押すとメニューが閉じる */
+.drawer-back { position: fixed; inset: 0; z-index: 55; background: rgba(15, 23, 42, 0.45); }
+
+.view-mobile .layout { display: block; }
+/* メニューは重ねて出す引き出しにする（画面を横に食わない） */
+.view-mobile .sidebar {
+  position: fixed; z-index: 58; top: 0; bottom: 0; left: 0; width: 250px; height: 100vh;
+}
+.view-mobile .layout.side-hidden .sidebar { display: none; }
+.view-mobile .side-close-btn { font-size: 18px; }
+.view-mobile .side-open-btn { display: none; }
+/* 本文は上の帯のぶんだけ下げる。左右の余白も詰めて画面を広く使う */
+.view-mobile .main { max-width: none; padding: 60px 10px 40px; }
+.auth-off-banner ~ .main { padding-top: 46px; }
+.view-mobile .auth-off-banner ~ .main { padding-top: 92px; }
+
+/* 見出し・カードを詰めて、1画面に入る情報を増やす。
+   画面の使い方の説明は長く、スマホでは1画面を占めてしまうため折りたたむ
+   （「…」を押すと開く） */
+.view-mobile .page-title { font-size: 18px; }
+.view-mobile .page-sub {
+  font-size: 12px; margin-bottom: 12px;
+  max-height: 3.6em; overflow: hidden; position: relative; cursor: pointer;
+}
+.view-mobile .page-sub::after {
+  content: '…（押すと全文）'; position: absolute; right: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(248,250,252,0), var(--page) 30%);
+  padding-left: 18px; color: var(--accent); font-weight: 600;
+}
+.view-mobile .page-sub.open { max-height: none; }
+.view-mobile .page-sub.open::after { content: none; }
+.view-mobile .card { padding: 12px; border-radius: 10px; }
+/* 絞り込みは2列に並べる。縦一列だと画面が長くなりすぎるため。
+   検索だけは横幅いっぱいを使う。
+   （PC向けの「flex: 1 1 260px」は縦並びにすると高さ260pxの空白になるため、
+     ここで打ち消す） */
+.view-mobile .filters {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; align-items: end;
+  padding: 12px;
+}
+.view-mobile .filters > * { flex: none !important; min-width: 0 !important; width: auto !important; }
+.view-mobile .filters > *:first-child { grid-column: 1 / -1; }
+.view-mobile .filters select,
+.view-mobile .filters input { width: 100%; min-height: 38px; font-size: 16px; }
+.view-mobile .filters .fld { font-size: 12px; }
+/* 数字の入力欄で画面が拡大されないよう、文字は16px以上にする（iOS） */
+.view-mobile input, .view-mobile select, .view-mobile textarea { font-size: 16px; }
+/* KPIのタイルは1〜2列に */
+.view-mobile .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 表は横スクロールで見る（指でなぞって動かせる） */
+.view-mobile .tbl-scroll { -webkit-overflow-scrolling: touch; }
+.view-mobile .tbl { font-size: 12px; }
+.view-mobile .tbl th, .view-mobile .tbl td { padding: 6px 8px; }
+/* 上の操作列（一括入力など）は折り返す */
+.view-mobile .toolbar { flex-wrap: wrap; row-gap: 8px; }
+.view-mobile .toolbar input[type='text'] { flex: 1 1 100%; }
+/* ログイン画面も画面幅いっぱいに */
+.view-mobile .login-card { width: 100%; max-width: none; }
+.view-mobile .login-wrap { padding: 16px; }
