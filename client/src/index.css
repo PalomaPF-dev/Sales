@@ -431,6 +431,15 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 /* 商談結果の記号（〇・□・△・×）。小さいと見分けにくいため大きめに出す */
 .tbl.deals .nego-mark { font-size: 18px; font-weight: 700; line-height: 1; }
 
+/* マスタ登録単価の実績⇄計画の切り替え（◀▶で表示する月を1か月ずつずらす） */
+.tbl.deals th.grp .mnav {
+  border: 1px solid var(--baseline); background: var(--surface-1); color: var(--ink-2);
+  border-radius: 5px; padding: 1px 7px; font-size: 10.5px; line-height: 1.5;
+  cursor: pointer; margin-left: 3px; font-weight: 600;
+}
+.tbl.deals th.grp .mnav:hover:not(:disabled) { background: #eef2f7; }
+.tbl.deals th.grp .mnav:disabled { opacity: 0.35; cursor: default; }
+
 /* ---- 検索と候補 ---- */
 
 .searchbox { position: relative; }
