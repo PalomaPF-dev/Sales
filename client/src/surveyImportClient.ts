@@ -144,9 +144,10 @@ function resolveYear(month: number, anchor: string | undefined): number {
   return month <= am ? ay : ay - 1;
 }
 
-/** 価格調査のファイルを読み取り、送る行に変換する */
+/** 売上高のファイルを読み取り、送る行に変換する */
 export async function parseSurveyFile(file: File, anchorYm?: string): Promise<SurveyParsed> {
-  const buf = await file.arrayBuffer();
+  const { readFileBuffer } = await import('./aggImportClient');
+  const buf = await readFileBuffer(file);
   // 大きいファイル向けの読み方。行の配列として持ち（dense）、
   // 数式・書式文字列など取込に使わないものは読まない。数十MBでも数十秒で読める
   const wb = XLSX.read(buf, {
