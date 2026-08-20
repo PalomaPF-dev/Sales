@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api';
+import { api, jstDateTime } from '../api';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
 
@@ -33,7 +33,7 @@ const INQUIRY_CATEGORIES = [
   'その他',
 ];
 
-const dt = (s: string | null | undefined) => (s ? String(s).slice(0, 16).replace('T', ' ') : '');
+const dt = (s: string | null | undefined) => jstDateTime(s);
 
 export default function Contact() {
   const me = useUser();

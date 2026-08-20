@@ -53,3 +53,20 @@ export const yen = (v: number | null | undefined) =>
   v == null ? '—' : `${fmt.format(Math.round(v))}`;
 export const pct = (v: number | null | undefined) =>
   v == null ? '—' : `${v.toFixed(1)}%`;
+
+/**
+ * 日時の表示。記録は世界標準時（UTC）で持っているため、日本時間へ直して出す。
+ * 「2026-08-20T07:51:57.036Z」→「2026/08/20 16:51」。読めない値はそのまま返す。
+ */
+const JST = new Intl.DateTimeFormat('ja-JP', {
+  timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+});
+export const jstDateTime = (v: string | null | undefined) => {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  // 「2026-08-20 07:51:57」のようにタイムゾーンの無い値もUTCとして読む
+  const iso = /[Zz]|[+-]\d{2}:?\d{2}$/.test(s) ? s : `${s.replace(' ', 'T')}Z`;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? s : JST.format(d).replace(/\s+/g, ' ');
+};

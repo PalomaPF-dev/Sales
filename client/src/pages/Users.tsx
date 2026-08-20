@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../api';
+import { api, jstDateTime } from '../api';
 import { ROLE_NAMES } from '../types';
 import type { Meta } from '../types';
 import { Card } from '../components/ui';
@@ -485,7 +485,7 @@ export default function Users() {
                       <span className="badge red" style={{ marginLeft: 4 }}>ロック中</span>
                     )}
                   </td>
-                  <td>{u.last_login_at ? u.last_login_at.slice(0, 16).replace('T', ' ') : '—'}</td>
+                  <td>{u.last_login_at ? jstDateTime(u.last_login_at) : '—'}</td>
                   <td>{u.active ? <span className="badge green">有効</span> : <span className="badge gray">停止</span>}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn secondary sm" onClick={() => startEdit(u)}>編集</button>
@@ -525,7 +525,7 @@ export default function Users() {
                   <span className="badge blue">{q.category}</span>
                   <strong>{q.name}</strong>
                   {q.login_id && <code>{q.login_id}</code>}
-                  <span style={{ color: 'var(--muted)' }}>{String(q.created_at).slice(0, 16).replace('T', ' ')}</span>
+                  <span style={{ color: 'var(--muted)' }}>{jstDateTime(q.created_at)}</span>
                 </div>
                 <p style={{ margin: '8px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{q.message}</p>
                 {q.reply && (

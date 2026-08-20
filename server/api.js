@@ -35,6 +35,33 @@ const EXPORT_MAX_ROWS = process.env.VERCEL ? 6000 : 100000;
 
 const nv = (v) => (v === undefined ? null : v);
 const now = () => new Date().toISOString();
+
+/**
+ * 氏名の突合に使う「スペースを取り除いた形」を作るSQL。
+ * 名簿は「山田 太郎」、価格調査（毎日更新）は「山田　太郎」のように
+ * 姓名の間の空白が半角・全角・無しで揺れるため、そこを無視して突き合わせる。
+ */
+const nameKey = (col) => `replace(replace(replace(${col}, ' ', ''), '　', ''), '\t', '')`;
+
+/**
+ * ユーザーの氏名を、価格調査（毎日更新）の営業担当者の表記へ揃える。
+ * 空白を除いた形が同じなら、案件データ側の書き方に合わせて名簿側を直す。
+ * 取込のたびに呼び、名簿と案件の担当者名がずれ続けないようにする。
+ */
+async function alignUserNamesToDeals() {
+  try {
+    const r = await db.run(`
+      UPDATE users SET name = m.dname
+        FROM (SELECT ${nameKey('sales_person')} AS k, MIN(sales_person) AS dname
+                FROM deals
+               WHERE sales_person IS NOT NULL AND sales_person <> ''
+               GROUP BY ${nameKey('sales_person')}) m
+       WHERE ${nameKey('users.name')} = m.k AND users.name <> m.dname`);
+    return Number(r?.changes ?? 0);
+  } catch {
+    return 0;   // 案件が空のときなど。揃えられなくても取込は続ける
+  }
+}
 const today = () => new Date().toISOString().slice(0, 10);
 const num = (v) => (v == null ? 0 : Number(v));
 
@@ -570,17 +597,24 @@ api.get('/admin/users', wrap(async (req, res) => {
   // 支店・営業所の表記が案件データと合っていないと0件になり、
   // 本人からは「何も出ない」としか分からないため、管理側で気づけるようにする。
   const rows = await db.all(`
+    WITH total AS (SELECT COUNT(*) AS c FROM deals),
+         by_branch AS (SELECT branch, COUNT(*) AS c FROM deals GROUP BY branch),
+         by_person AS (SELECT ${nameKey('sales_person')} AS k, COUNT(*) AS c
+                         FROM deals
+                        WHERE sales_person IS NOT NULL AND sales_person <> ''
+                        GROUP BY ${nameKey('sales_person')})
     SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.active, u.login_id, u.last_login_at,
            u.must_change_password, u.locked_until,
            CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password,
            CASE
              WHEN u.role IN ('admin','developer','planning','branch_manager','wide_area')
-               THEN (SELECT COUNT(*) FROM deals)
+               THEN (SELECT c FROM total)
              ELSE
-               (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch)
+               COALESCE((SELECT c FROM by_branch b WHERE b.branch = u.branch), 0)
            END AS visible_deals,
-           -- 案件の担当者名との紐付け。氏名が案件データの担当者名と一致した件数
-           (SELECT COUNT(*) FROM deals d WHERE d.sales_person = u.name) AS person_deals
+           -- 案件の担当者名との紐付け。姓名の間の空白の違いは無視して数える
+           COALESCE((SELECT c FROM by_person p
+                      WHERE p.k = ${nameKey('u.name')}), 0) AS person_deals
     FROM users u ORDER BY u.id`);
   res.json(rows);
 }));
@@ -1357,7 +1391,9 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
     created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name });
   }
 
-  res.json({ created, updated, skipped, errors });
+  // 名簿の氏名を、案件データの営業担当者の表記へ揃える（空白の違いを吸収する）
+  const renamed = await alignUserNamesToDeals();
+  res.json({ created, updated, skipped, errors, renamed });
 }));
 
 /** 名簿の記入例。これを埋めてそのまま取り込める */
@@ -3272,6 +3308,9 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       [m0Ym, stamp]);
   }
 
+  // 名簿の氏名を、取り込んだ営業担当者の表記へ揃える（空白の違いを吸収する）
+  const renamed = await alignUserNamesToDeals();
+
   const [{ covered }, { total }, { groups }] = await Promise.all([
     db.get('SELECT COUNT(*) AS covered FROM deals WHERE a_price_m3 IS NOT NULL'),
     db.get('SELECT COUNT(*) AS total FROM deals'),
@@ -3281,7 +3320,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // ここでは行を消さないため VACUUM は不要（毎日の取込なので、時間のかかる
   // 掃除を毎回走らせない。行が消える売上高の取込側にだけ残す）
   invalidateMetaCache();
-  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added });
+  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added, renamed });
 }));
 
 // ---- 価格調査（実単価）の取込 ----
