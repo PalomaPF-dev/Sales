@@ -105,8 +105,13 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
               {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.hasRingi ? ' ・ 稟議Noあり' : ''}
               {parsed.p.histMonths.length > 0
-                ? ` ・ マスタ単価実績 ${parsed.p.histMonths[0]}〜${parsed.p.histMonths[parsed.p.histMonths.length - 1]}`
-                : ' ・ マスタ単価実績の列なし（当月単価を履歴に記録します）'}
+                ? <span title={`実績として読んだ列: ${parsed.p.histHeads.join(' / ')}`}>
+                    {` ・ マスタ単価実績 ${parsed.p.histMonths[0]}〜${parsed.p.histMonths[parsed.p.histMonths.length - 1]}`}
+                    {`（${parsed.p.histMonths.length}か月）`}
+                  </span>
+                : <strong style={{ color: 'var(--critical)' }}>
+                    {' ・ マスタ単価実績の列が見つかりません（「マスター単価（4月実績）」のような見出しの列）'}
+                  </strong>}
               {/* 交渉まわりの列の検出状況。見つからない列は取込で変更されないため、
                   最終確定日などが合わないときはまずここを確認してもらう */}
               {(() => {

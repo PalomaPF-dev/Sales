@@ -68,6 +68,8 @@ export interface AggParsed {
   negoCols: { target: boolean; nego: boolean; finalDate: boolean; finalPrice: boolean };
   /** 納入先名の列を見つけられたか（無いと案件一覧の納入先名が空のまま） */
   hasDelivery: boolean;
+  /** 実績として読んだ列の見出し。取込前に「どの列を実績にしたか」を確かめられる */
+  histHeads: string[];
   meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string; histMonths: string[] };
 }
 
@@ -232,11 +234,13 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       for (let i = at + 1; i < end; i++) if (pred(headers[i])) return i;
       return -1;
     };
-    const price = within((h) => h.includes('マスタ単価'));
+    // 「マスタ単価」「マスター単価」どちらの表記でも拾う（実績の列は除く）
+    const isPrice = (h: string) => /マスタ[ー]?単価/.test(h) && !/実績/.test(h);
+    const price = within(isPrice);
     return {
       at,
       // 「本日時点マスタ単価」のように見出しが1マスの版は、その列自体が単価
-      price: price >= 0 ? price : (headers[at].includes('マスタ単価') ? at : at + 1),
+      price: price >= 0 ? price : (isPrice(headers[at]) ? at : at + 1),
       date: within((h) => h.includes('登録日')),
       ringi: within((h) => RINGI_RE.test(h)),
     };
@@ -341,8 +345,12 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   // （当月より後の月番号は前の年とみなす。売上高の取込と同じ規則）
   const histCols: { month: number; at: number }[] = [];
   headers.forEach((h, i) => {
-    // 「マスター単価(4月実績)」のほか、「4月実績」だけの見出しでも読む
-    const m = /^(?:マスタ[ー]?単価)?\(?(\d{1,2})月実績\)?$/.exec(h.replace(/[\s　]/g, ''));
+    // 「N月実績」を含む見出しはすべて実績の列として読む
+    // （「マスター単価(4月実績)」「4月実績」「4月度実績」や、末尾に記号が付く版も拾う）。
+    // 数量・金額の実績は単価ではないため除く
+    const t = h.replace(/[\s　]/g, '');
+    if (/数量|金額|売上|台数/.test(t)) return;
+    const m = /(\d{1,2})月度?実績/.exec(t);
     if (m) histCols.push({ month: Number(m[1]), at: i });
   });
   const m0m = /^(\d{4})-(\d{2})$/.exec(metaBase.m0);
@@ -434,6 +442,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       finalPrice: col.final_price >= 0,
     },
     hasDelivery: col.delivery_name >= 0,
+    histHeads: histCols.map((c) => headers[c.at]),
   };
 }
 
