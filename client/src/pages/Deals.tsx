@@ -882,7 +882,8 @@ export default function Deals() {
                         <option value="×">× 本社へ相談</option>
                       </select>
                     ) : (
-                      <span title={NEGO_LABELS[d.nego_result ?? ''] ?? undefined}>
+                      <span className={d.nego_result ? 'nego-mark' : undefined}
+                            title={NEGO_LABELS[d.nego_result ?? ''] ?? undefined}>
                         {d.nego_result || '—'}
                       </span>
                     )}
