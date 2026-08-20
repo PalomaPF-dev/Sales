@@ -88,8 +88,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
         （加重平均はしません。数量は月あたりの値上げ額の計算にだけ使います）。
         「登録日」のあるファイルなら各月の<strong>承認日</strong>も一緒に入ります
         （まとまりの中で一番新しい日）。「ＷＦ申請番号」の列があれば<strong>稟議No</strong>も入ります。
-        <strong>毎日取り込み直す</strong>と、当月（本日時点）のマスタ単価が月別の実績履歴として残ります
-        （当月の履歴は「取り込んだ前日まで」の値になります）。
+        <strong>「マスター単価（4月実績）」…の列</strong>があれば、そのまま月別の実績履歴として入ります。
+        <strong>毎日取り込み直す</strong>と当月の履歴が最新の値で上書きされ、
+        「取り込んだ前日まで」の値が残ります（実績列の無いファイルでは当月単価を記録します）。
         商談結果など画面で入れた値は、ファイル側に値が無ければ残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -102,6 +103,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
                 .filter(Boolean).join('・')} ／ 出荷単価 {parsed.p.meta.basePeriod}）
               {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.hasRingi ? ' ・ 稟議Noあり' : ''}
+              {parsed.p.histMonths.length > 0
+                ? ` ・ マスタ単価実績 ${parsed.p.histMonths[0]}〜${parsed.p.histMonths[parsed.p.histMonths.length - 1]}`
+                : ' ・ マスタ単価実績の列なし（当月単価を履歴に記録します）'}
               {parsed.p.skippedRows > 0
                 && ` ・ 読めない行 ${parsed.p.skippedRows}件`
                   + `（得意先コード空 ${parsed.p.skippedNoCust}件`

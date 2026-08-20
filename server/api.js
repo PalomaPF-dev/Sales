@@ -2893,6 +2893,10 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         m0: String(meta.m0 ?? ''),
         m1: String(meta.m1 ?? ''), m2: String(meta.m2 ?? ''), m3: String(meta.m3 ?? ''),
         basePeriod: String(meta.basePeriod ?? ''), filename,
+        // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
+        histMonths: Array.isArray(meta.histMonths)
+          ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
+          : [],
         updatedAt: new Date().toISOString(),
       })]
     );
@@ -3071,7 +3075,39 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       vals.flat()
     );
   }
-  res.json({ matched, unmatched, groups: acc.size });
+  // マスタ単価の実績（月別）。「マスター単価（N月実績）」列の値をそのまま履歴へ入れる。
+  // 同じ月へ毎日取り込むと最新の値で上書きされ、「取り込んだ前日まで」の値が残る。
+  // 行が分かれているときは数量の一番多い行の値を採る（単価はまとまり内で同じはず）
+  const hist = new Map();
+  for (const r of rows) {
+    const ent = String(r.customer_code ?? '').trim();
+    const model = String(r.model_code ?? '').trim();
+    if (!ent || !model) continue;
+    const qty = num(r.qty);
+    for (const [ym, v] of Object.entries(r.hist_prices ?? {})) {
+      if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+      const price = num(v);
+      if (!(price > 0)) continue;
+      const key = `${ent}|${model}|${ym}`;
+      const cur = hist.get(key);
+      if (!cur || qty > cur.top) hist.set(key, { ent, model, ym, price, top: qty });
+    }
+  }
+  const hvals = [...hist.values()];
+  if (hvals.length) {
+    const stamp = now();
+    for (let i = 0; i < hvals.length; i += 200) {
+      const part = hvals.slice(i, i + 200);
+      await db.run(
+        `INSERT INTO master_price_history (ent_cd, model_code, ym, price, source, updated_at)
+         VALUES ${part.map(() => "(?,?,?,?,'agg',?)").join(',')}
+         ON CONFLICT (ent_cd, model_code, ym) DO UPDATE SET
+           price = excluded.price, source = excluded.source, updated_at = excluded.updated_at`,
+        part.flatMap((h) => [h.ent, h.model, h.ym, h.price, stamp]));
+    }
+  }
+
+  res.json({ matched, unmatched, groups: acc.size, histSaved: hvals.length });
 }));
 
 api.post('/agg-import/finish', wrap(async (req, res) => {
@@ -3150,9 +3186,13 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   const added = Number(ins?.changes ?? 0);
 
   // マスタ単価の実績（月別履歴）。当月（本日時点）の単価をその月の枠へ記録する。
-  // 毎日取り込むと同じ月が最新の値で上書きされ、「取り込んだ前日まで」の値が残る
+  // 毎日取り込むと同じ月が最新の値で上書きされ、「取り込んだ前日まで」の値が残る。
+  // ファイルに「マスター単価（N月実績）」の列があるときは、その値を取込時に
+  // 記録済みなので、ここでの当月の書き込みは行わない（実績の列の値を正とする）
   const { aggMeta } = await loadImportMeta();
-  const m0Ym = /^\d{4}-\d{2}$/.test(String(aggMeta?.m0 ?? '')) ? aggMeta.m0 : null;
+  const histMonths = Array.isArray(aggMeta?.histMonths) ? aggMeta.histMonths : [];
+  const m0Raw = /^\d{4}-\d{2}$/.test(String(aggMeta?.m0 ?? '')) ? aggMeta.m0 : null;
+  const m0Ym = m0Raw && !histMonths.includes(m0Raw) ? m0Raw : null;
   if (m0Ym) {
     await db.run(`
       INSERT INTO master_price_history (ent_cd, model_code, ym, price, source, updated_at)
