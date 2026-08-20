@@ -596,27 +596,34 @@ api.get('/admin/users', wrap(async (req, res) => {
   // 各利用者に何件見えるかも返す。
   // 支店・営業所の表記が案件データと合っていないと0件になり、
   // 本人からは「何も出ない」としか分からないため、管理側で気づけるようにする。
-  const rows = await db.all(`
-    WITH total AS (SELECT COUNT(*) AS c FROM deals),
-         by_branch AS (SELECT branch, COUNT(*) AS c FROM deals GROUP BY branch),
-         by_person AS (SELECT ${nameKey('sales_person')} AS k, COUNT(*) AS c
-                         FROM deals
-                        WHERE sales_person IS NOT NULL AND sales_person <> ''
-                        GROUP BY ${nameKey('sales_person')})
-    SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.active, u.login_id, u.last_login_at,
-           u.must_change_password, u.locked_until,
-           CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password,
-           CASE
-             WHEN u.role IN ('admin','developer','planning','branch_manager','wide_area')
-               THEN (SELECT c FROM total)
-             ELSE
-               COALESCE((SELECT c FROM by_branch b WHERE b.branch = u.branch), 0)
-           END AS visible_deals,
-           -- 案件の担当者名との紐付け。姓名の間の空白の違いは無視して数える
-           COALESCE((SELECT c FROM by_person p
-                      WHERE p.k = ${nameKey('u.name')}), 0) AS person_deals
-    FROM users u ORDER BY u.id`);
-  res.json(rows);
+  // 案件の件数は「支店ごと」「担当者ごと」に1回だけ数え、人との突き合わせは
+  // ここで行う。1人ずつ数え直すと17万件を人数ぶん走査してしまい、
+  // 一覧が出るまでに20秒以上かかっていた（数え直しは3回の集計で済む）
+  const [rows, all, byBranch, byPerson] = await Promise.all([
+    db.all(`
+      SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.active, u.login_id,
+             u.last_login_at, u.must_change_password, u.locked_until,
+             CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password
+        FROM users u ORDER BY u.id`),
+    db.get('SELECT COUNT(*) AS c FROM deals'),
+    db.all(`SELECT branch, COUNT(*) AS c FROM deals
+             WHERE branch IS NOT NULL AND branch <> '' GROUP BY branch`),
+    db.all(`SELECT ${nameKey('sales_person')} AS k, COUNT(*) AS c
+              FROM deals
+             WHERE sales_person IS NOT NULL AND sales_person <> ''
+             GROUP BY ${nameKey('sales_person')}`),
+  ]);
+  const total = Number(all?.c ?? 0);
+  const branchCount = new Map(byBranch.map((r) => [r.branch, Number(r.c)]));
+  const personCount = new Map(byPerson.map((r) => [r.k, Number(r.c)]));
+  // 突合の鍵はSQL側と同じ（姓名の間の空白の違いを無視する）
+  const key = (v) => String(v ?? '').replace(/[\s　]/g, '');
+  const ALL_BRANCHES = ['admin', 'developer', 'planning', 'branch_manager', 'wide_area'];
+  res.json(rows.map((u) => ({
+    ...u,
+    visible_deals: ALL_BRANCHES.includes(u.role) ? total : (branchCount.get(u.branch) ?? 0),
+    person_deals: personCount.get(key(u.name)) ?? 0,
+  })));
 }));
 
 api.post('/admin/users', wrap(async (req, res) => {
