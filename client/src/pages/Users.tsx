@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { ROLE_NAMES } from '../types';
+import type { Meta } from '../types';
 import { Card } from '../components/ui';
 import { useUser } from '../user';
 
@@ -72,6 +73,9 @@ export default function Users() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
   const [editing, setEditing] = useState<EditRow | null>(null);
+  // 支店（管轄）・営業所（部署）の候補。案件データにある実際の表記から選べるようにして、
+  // 表記ズレで「案件が見えません」になるのを防ぐ
+  const [meta, setMeta] = useState<Meta | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -81,6 +85,7 @@ export default function Users() {
     api<AdminInquiry[]>('/inquiries').then(setInquiries).catch(() => {});
   };
   useEffect(load, []);
+  useEffect(() => { api<Meta>('/meta').then(setMeta).catch(() => {}); }, []);
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -339,12 +344,13 @@ export default function Users() {
           </label>
           <label className="fld">
             支店（管轄）
-            <input type="text" value={form.branch}
+            <input type="text" value={form.branch} list="branch-list"
+              placeholder="案件の支店と同じ表記で"
               onChange={(e) => setForm({ ...form, branch: e.target.value })} />
           </label>
           <label className="fld">
             営業所（部署）
-            <input type="text" value={form.office}
+            <input type="text" value={form.office} list="office-list"
               onChange={(e) => setForm({ ...form, office: e.target.value })} />
           </label>
           <label className="fld">
@@ -390,8 +396,9 @@ export default function Users() {
                     setSel(on ? new Set(rows.filter((u) => u.id !== me.id).map((u) => u.id)) : new Set());
                   }} />
               </th>
-              <th>ID</th><th>ログインID<br /><small>（社員番号）</small></th><th>氏名</th><th>役職</th><th>権限</th>
-              <th>支店（管轄） / 営業所（部署）</th>
+              {/* 名簿（取込ファイル）と同じ並び。内部IDはログインIDがあるため出さない */}
+              <th>ログインID<br /><small>（社員番号）</small></th>
+              <th>支店（管轄）</th><th>営業所（部署）</th><th>役職</th><th>氏名</th><th>権限</th>
               <th title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数">
                 案件との紐付け
               </th>
@@ -403,29 +410,32 @@ export default function Users() {
               editing?.id === u.id ? (
                 <tr key={u.id} className="editing">
                   <td></td>
-                  <td>{u.id}</td>
                   <td>
                     <input type="text" value={editing.loginId} style={{ width: 110 }}
                       onChange={(e) => setEditing({ ...editing, loginId: e.target.value })} />
                   </td>
                   <td>
-                    <input type="text" value={editing.name} style={{ width: 120 }}
-                      onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+                    <input type="text" value={editing.branch} placeholder="支店（管轄）" style={{ width: 100 }}
+                      list="branch-list"
+                      onChange={(e) => setEditing({ ...editing, branch: e.target.value })} />
+                  </td>
+                  <td>
+                    <input type="text" value={editing.office} placeholder="営業所（部署）" style={{ width: 120 }}
+                      list="office-list"
+                      onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
                   </td>
                   <td>
                     <input type="text" value={editing.title} placeholder="役職" style={{ width: 90 }}
                       onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
                   </td>
                   <td>
+                    <input type="text" value={editing.name} style={{ width: 120 }}
+                      onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+                  </td>
+                  <td>
                     <select value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })}>
                       {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
-                  </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <input type="text" value={editing.branch} placeholder="支店（管轄）" style={{ width: 100 }}
-                      onChange={(e) => setEditing({ ...editing, branch: e.target.value })} />
-                    <input type="text" value={editing.office} placeholder="営業所（部署）" style={{ width: 120, marginLeft: 4 }}
-                      onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
                   </td>
                   <td colSpan={4} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
@@ -441,12 +451,12 @@ export default function Users() {
                       <input type="checkbox" checked={sel.has(u.id)} onChange={() => toggleSel(u.id)} />
                     )}
                   </td>
-                  <td>{u.id}</td>
                   <td><code>{u.login_id || '—'}</code></td>
-                  <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
+                  <td>{u.branch || '—'}</td>
+                  <td>{u.office || '—'}</td>
                   <td>{u.title || '—'}</td>
+                  <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
                   <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
-                  <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
                   {/* 案件データとの紐付け。支店の一致（閲覧範囲）と担当者名の一致をここで確かめる */}
                   <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                     閲覧 {Number(u.visible_deals ?? 0).toLocaleString()}件
@@ -551,6 +561,14 @@ export default function Users() {
           本人に「パスワード設定」から決め直すよう回答してください。
         </p>
       </Card>
+
+      {/* 支店（管轄）・営業所（部署）の候補。案件データにある実際の表記 */}
+      <datalist id="branch-list">
+        {(meta?.branches ?? []).map((b) => <option key={b.name} value={b.name} />)}
+      </datalist>
+      <datalist id="office-list">
+        {(meta?.offices ?? []).map((o) => <option key={`${o.branch}-${o.name}`} value={o.name} />)}
+      </datalist>
     </div>
   );
 }
