@@ -92,7 +92,7 @@ interface DashboardRes {
  */
 const VIEWS = [
   { key: 'act' as const, label: '実績（売上改善額）' },
-  { key: 'plan' as const, label: '計画（A基準）' },
+  { key: 'plan' as const, label: '計画（マスタ登録単価）' },
 ];
 
 /** 集計表の切り替え。列が多いので縦に並べず、タブで出し分ける */
@@ -360,7 +360,7 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
               数量<br /><small>月平均</small>
             </Th>
             <Th col="base" right
-                title="当月の金額（合計）そのもの。A基準の値上げ幅はここへ足します（1か月あたり）">
+                title="当月の金額（合計）そのもの。マスタ登録単価の値上げ幅はここへ足します（1か月あたり）">
               現状額（合計）<br /><small>月あたり</small>
             </Th>
             {view === 'act' && (
@@ -385,10 +385,10 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
             ])}
             {view === 'plan' && (
               <>
-                <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>A基準額 / 値上げ額</small></Th>
-                <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>A基準額 / 値上げ額</small></Th>
-                <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>A基準額 / 値上げ額</small></Th>
-                <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>A基準額 / 値上げ額</small></Th>
+                <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
+                <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
+                <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
+                <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
               </>
             )}
           </tr>
@@ -584,15 +584,15 @@ export default function Dashboard() {
         </button>
       </div>
       <p className="page-sub">
-        価格調査（{actLabel}実績）の<strong>品目件数</strong>を母数に、
-        マスタ登録（A基準）との突合件数と、
-        <strong>値上げ額</strong>（(A基準−{actLabel}のマスタ単価)×マスタ分の数量）を出します。
+        売上高（{actLabel}）の<strong>品目件数</strong>を母数に、
+        ベース（価格調査（毎日更新））との突合件数と、
+        <strong>値上げ額</strong>（(マスタ登録単価−{actLabel}のマスタ単価)×マスタ分の数量）を出します。
         <strong>値上げ前当初</strong>は、{actLabel}の金額（合計）から売上改善額を引いた額です。
         <strong>承認日</strong>は既定で<strong>当月以降に承認された単価だけ</strong>を見ています
         （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
         絞り込みで件数と値上げ額が変わります。
         下の表の<strong>現状額</strong>は{actLabel}の金額（合計）そのものです。
-        各月の<strong>A基準額</strong>は、そこへ「A基準 − {actLabel}のマスタ単価」×マスタ分の数量を
+        各月の<strong>マスタ登録単価額</strong>は、そこへ「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量を
         足した金額で、その差が値上げ額、現状額に対する割合が<strong>値上げ率</strong>です。
         金額はすべて<strong>1か月あたり</strong>です。
         表示範囲: <strong>{data.scope.label}</strong>
@@ -635,7 +635,7 @@ export default function Dashboard() {
           </select>
         </label>
         {/* 承認日での絞り込み（案件一覧と同じ。3か月後のA基準の承認日が基準） */}
-        <label className="fld" title={`${m3}のA基準の承認日で絞り込みます`}>
+        <label className="fld" title={`${m3}のマスタ登録単価の承認日で絞り込みます`}>
           承認日
           <div style={{ display: 'flex', gap: 6 }}>
             <input
@@ -687,7 +687,7 @@ export default function Dashboard() {
             </div>
           </div>
         )}
-        <Kpi label="マスタ登録（A基準あり）"
+        <Kpi label="マスタ登録単価あり"
              value={`${num(data.aMonths?.covered).toLocaleString()} / ${num(data.histTotals?.deals).toLocaleString()}件`}
              sub={num(data.histTotals?.deals) > 0
                ? `出荷実績の品目の ${(Math.round((num(data.aMonths?.covered) / num(data.histTotals?.deals)) * 1000) / 10).toLocaleString()}%`
@@ -734,15 +734,15 @@ export default function Dashboard() {
           引いたものです。上がった品目のプラスと、下がった品目のマイナスを合わせた額を引いています。
           <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
           <strong>計画</strong>は、この{actLabel}の金額（合計）へ
-          「A基準 − {actLabel}のマスタ単価」×マスタ分の数量を足したもので、
-          <strong>値上げ前当初と比べます</strong>（当初からA基準までの上がり幅が値上げ額）。
+          「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量を足したもので、
+          <strong>値上げ前当初と比べます</strong>（当初からマスタ登録単価までの上がり幅が値上げ額）。
           <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
           実績との差が見積ぶんなどにあたります。
           どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
           実績の行は<strong>過去最新単価のある品目だけ</strong>が対象のため、件数と金額がマスタ分より小さくなります
           （比べる相手の無い品目は値上げ額を出せないため）。
           計画の行は全品目が対象で、承認のある品目だけ
-          「A基準 − {actLabel}のマスタ単価」×マスタ分の数量 を足しています。
+          「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量 を足しています。
         </p>
         {/*
           同じ数字を、当初 → 実績 → 計画 の棒グラフでも出す。

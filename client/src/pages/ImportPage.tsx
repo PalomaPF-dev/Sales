@@ -61,24 +61,24 @@ export default function ImportPage() {
     <div>
       <h1 className="page-title">Excel取込</h1>
       <p className="page-sub">
-        <strong>①価格調査</strong>で案件の土台を作ります
-        （法人×品目に集約し、1-3月出荷単価・売上数と、月ごとの実際の単価が入ります）。
-        続けて<strong>②マスタ登録</strong>のA基準単価を重ねると、
-        計画（A基準）と実績を月の流れで比べられます。
-        A基準は毎日更新されるため、②は毎日の取り込み直しを前提にしています。
-        決定単価（B基準）など画面で入れた値は残ります。
+        <strong>①価格調査（毎日更新）</strong>が案件一覧の常のベースです
+        （マスタ登録単価・目標単価・出荷単価・売上数が入り、毎日の取り込み直しで
+        当月のマスタ単価が月別の実績履歴として残ります）。
+        <strong>②売上高（月次）</strong>を取り込むと、ベースへ単価・数量を突合して
+        その月の実績が重なります（売上高にだけある行も案件として残り、合計は必ず合います）。
+        商談結果など画面で入れた値は残ります。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       {canCheck ? (
         <>
-          <SurveyImportCard anchorYm={meta?.aggMeta?.m0} onDone={load} />
           <AggImportCard onDone={load} />
+          <SurveyImportCard anchorYm={meta?.aggMeta?.m0} onDone={load} />
         </>
       ) : (
-        <Card title="マスタ登録の取込">
+        <Card title="取込">
           <p className="pt-note" style={{ marginTop: 0 }}>
-            マスタ登録の取込は管理者が行います。最新の取込は下の履歴で確認できます。
+            価格調査（毎日更新）・売上高の取込は管理者が行います。
           </p>
         </Card>
       )}

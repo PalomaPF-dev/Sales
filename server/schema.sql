@@ -375,6 +375,21 @@ CREATE TABLE IF NOT EXISTS inquiries (
 CREATE INDEX IF NOT EXISTS idx_inquiries_user ON inquiries(user_id);
 CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
 
+-- マスタ単価の実績（月別履歴）。法人×品目×月ごとに1行。
+-- 価格調査（毎日更新）の取込で当月（本日時点）の単価を、
+-- 売上高（月次）の取込でその月のマスタ単価を記録する。
+-- 同じ月へ取込を重ねると最新の値で上書きされるため、
+-- 当月は「取り込んだ前日まで」の値になる。
+CREATE TABLE IF NOT EXISTS master_price_history (
+  ent_cd     TEXT NOT NULL,   -- 得意先（法人）コード
+  model_code TEXT NOT NULL,   -- 商品コード
+  ym         TEXT NOT NULL,   -- 月（YYYY-MM）
+  price      REAL,            -- その月のマスタ単価
+  source     TEXT,            -- agg=価格調査（毎日更新） / survey=売上高（月次）
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (ent_cd, model_code, ym)
+);
+
 -- 計算列ビュー
 --   単価だけの管理表のため、台数を掛けた金額は扱わない。
 --   ❹ r2_raise_unit = ❸合意単価 - ❶出荷単価

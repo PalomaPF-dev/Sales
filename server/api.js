@@ -1911,8 +1911,11 @@ function hideCost(rows, user) {
 const SORTABLE = new Map([
   ['corp_name', 'corp_name'],
   ['customer_name', 'customer_name'],
+  ['delivery_name', 'delivery_name'],
+  ['model_code', 'model_code'],
   ['model_name', 'model_name'],
   ['product_name', 'product_name'],
+  ['gas_type', 'gas_type'],
   ['equip_name', 'equip_name'],
   ['branch', 'branch'],
   ['office', 'office'],
@@ -2304,7 +2307,17 @@ api.get('/deals/:id', wrap(async (req, res) => {
         WHERE l.corp_code = ? ORDER BY COALESCE(l.contact_date, l.created_at) DESC, l.id DESC`,
         [deal.corp_code])
     : [];
-  res.json({ deal, negotiation: negotiation ?? null, logs });
+  // マスタ単価の実績（月別履歴）。4月〜取込時点（当月は取り込んだ前日まで）
+  let priceHistory = [];
+  if (deal.hist_ent_cd && deal.model_code) {
+    try {
+      priceHistory = await db.all(`
+        SELECT ym, price, source, updated_at FROM master_price_history
+         WHERE ent_cd = ? AND model_code = ? ORDER BY ym`,
+        [deal.hist_ent_cd, deal.model_code]);
+    } catch { /* 履歴の表が無い旧DBでは空のまま */ }
+  }
+  res.json({ deal, negotiation: negotiation ?? null, logs, priceHistory });
 }));
 
 // 値上げ交渉の項目。営業担当者を含む全権限が案件一覧から入れられる。
@@ -2868,14 +2881,8 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
 
 api.post('/agg-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
-  const filename = String(req.body?.filename ?? 'マスタ登録.xlsx');
-  const { c } = await db.get('SELECT COUNT(*) AS c FROM deals');
-  if (!Number(c)) {
-    return res.status(400).json({
-      error: '先に「価格調査（当月実績）」を取り込んでください。'
-        + '案件一覧は価格調査の得意先×商品が土台で、マスタ登録はそこへ重ねます',
-    });
-  }
+  const filename = String(req.body?.filename ?? '価格調査.xlsx');
+  // 価格調査（毎日更新）が案件一覧の土台。空のDBへも取り込める
   await db.run('DELETE FROM agg_staging');
   const meta = req.body?.meta;
   if (meta && typeof meta === 'object') {
@@ -3069,14 +3076,15 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
 
 api.post('/agg-import/finish', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
-  // 集約した結果を案件へ重ねる。A基準・目標値はリストの単価そのもの
+  // 集約した結果を案件へ重ねる。マスタ登録単価・目標単価はリストの単価そのもの
   // （amt÷wgt は wgt=1 のためファイルの値がそのまま入る）。
-  // 実績にある法人×品目だけが対象（案件の土台は実績）。
+  // 価格調査（毎日更新）が案件一覧の土台で、売上高（月次）はここへ突合して重なる。
   const stamp = now();
-  // 現状の単価・数量は価格調査（当月実績）が正なので、ここでは触らない。
-  // マスタ登録からはA基準（計画）と、支店・営業所・担当者だけを重ねる。
+  // 当月実績の単価・数量（master_*）は売上高の取込が正なので、ここでは触らない。
   await db.run(`
     UPDATE deals SET
+      base_price = CASE WHEN s.base_wgt > 0 THEN s.base_amt / s.base_wgt END,
+      qty = s.qty,
       a_price_m0 = CASE WHEN s.a0_wgt > 0 THEN s.a0_amt / s.a0_wgt END,
       a_price_m1 = CASE WHEN s.a1_wgt > 0 THEN s.a1_amt / s.a1_wgt END,
       a_price_m2 = CASE WHEN s.a2_wgt > 0 THEN s.a2_amt / s.a2_wgt END,
@@ -3113,7 +3121,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   const ins = await db.run(`
     INSERT INTO deals (agg_key, hist_ent_cd, corp_code, corp_name, customer_code,
       customer_name, industry, model_code, model_name, product_name, gas_type,
-      equip_name, category_name,
+      equip_name, category_name, base_price, qty,
       a_price_m0, a_price_m1, a_price_m2, a_price_m3,
       a_date_m0, a_date_m1, a_date_m2, a_date_m3,
       a_ringi_m0, a_ringi_m1, a_ringi_m2, a_ringi_m3,
@@ -3125,6 +3133,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       s.ent_cd, s.customer_name, s.industry,
       s.model_code, s.model_name, s.product_name, s.gas_type,
       s.equip_name, s.category_name,
+      CASE WHEN s.base_wgt > 0 THEN s.base_amt / s.base_wgt END, s.qty,
       CASE WHEN s.a0_wgt > 0 THEN s.a0_amt / s.a0_wgt END,
       CASE WHEN s.a1_wgt > 0 THEN s.a1_amt / s.a1_wgt END,
       CASE WHEN s.a2_wgt > 0 THEN s.a2_amt / s.a2_wgt END,
@@ -3139,6 +3148,21 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       SELECT 1 FROM deals d
        WHERE d.hist_ent_cd = s.ent_cd AND d.model_code = s.model_code)`, [stamp]);
   const added = Number(ins?.changes ?? 0);
+
+  // マスタ単価の実績（月別履歴）。当月（本日時点）の単価をその月の枠へ記録する。
+  // 毎日取り込むと同じ月が最新の値で上書きされ、「取り込んだ前日まで」の値が残る
+  const { aggMeta } = await loadImportMeta();
+  const m0Ym = /^\d{4}-\d{2}$/.test(String(aggMeta?.m0 ?? '')) ? aggMeta.m0 : null;
+  if (m0Ym) {
+    await db.run(`
+      INSERT INTO master_price_history (ent_cd, model_code, ym, price, source, updated_at)
+      SELECT s.ent_cd, s.model_code, ?, s.a0_amt / s.a0_wgt, 'agg', ?
+        FROM agg_staging s
+       WHERE s.a0_wgt > 0
+      ON CONFLICT (ent_cd, model_code, ym) DO UPDATE SET
+        price = excluded.price, source = excluded.source, updated_at = excluded.updated_at`,
+      [m0Ym, stamp]);
+  }
 
   const [{ covered }, { total }, { groups }] = await Promise.all([
     db.get('SELECT COUNT(*) AS covered FROM deals WHERE a_price_m3 IS NOT NULL'),
@@ -3307,9 +3331,10 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   const stamp = now();
   const batch = String(req.body?.batch ?? '');
 
-  // 案件（得意先×商品）をこのファイルの内容で作り直す。
-  // 既にある案件は上書き（決定単価など画面で入れた値は触らないので残る）、
-  // 無いものは追加する。突き合わせは 得意先コード×商品コード。
+  // 売上高（月次）をベース（価格調査（毎日更新））へ突合して重ねる。
+  // ベースにある案件は実績（単価・数量・金額）を上書き、
+  // ベースに無い売上高の行も案件として追加する（売上高の合計が必ず合うように）。
+  // 突き合わせは 得意先コード×商品コード。
   const ins = ['agg_key', 'hist_ent_cd', 'corp_code', 'corp_name', 'customer_code', 'customer_name',
     'industry', 'delivery_name', 'model_code', 'model_name', 'product_name', 'gas_type',
     'equip_name', 'category_name',
@@ -3343,16 +3368,46 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     batch ? [batch, stamp] : [stamp]
   );
 
-  // 今回のファイルに無い案件は落とす（価格調査を正として作り直すため）
+  // マスタ単価の実績（月別履歴）。この月のマスタ単価をその月の枠へ記録する
+  const { actualMeta } = await loadImportMeta();
+  const actYm = /^\d{4}-\d{2}$/.test(String(actualMeta?.ym ?? '')) ? actualMeta.ym : null;
+  if (actYm) {
+    await db.run(`
+      INSERT INTO master_price_history (ent_cd, model_code, ym, price, source, updated_at)
+      SELECT s.ent_cd, s.model_code, ?, s.mp_amt / s.mp_wgt, 'survey', ?
+        FROM act_staging s
+       WHERE s.mp_wgt > 0
+      ON CONFLICT (ent_cd, model_code, ym) DO UPDATE SET
+        price = excluded.price, source = excluded.source, updated_at = excluded.updated_at`,
+      [actYm, stamp]);
+  }
+
   let removed = 0;
   if (batch) {
+    // 今回の売上高に無い案件は、実績（単価・数量・金額）を空へ戻す。
+    // ベース（価格調査（毎日更新））の行は消さず「当月実績無し」として残す
+    await db.run(`
+      UPDATE deals SET master_avg_price = NULL, master_price = NULL, master_qty = NULL,
+             master_amount = NULL, plan_qty = NULL, plan_amount = NULL,
+             past_price = NULL, past_date = NULL, updated_at = ?
+       WHERE hist_batch IS DISTINCT FROM ?
+         AND (master_qty IS NOT NULL OR master_avg_price IS NOT NULL OR master_amount IS NOT NULL)`,
+      [stamp, batch]);
+
+    // 前の月の売上高にだけあった行（ベースに無く、今回の売上高にも無い）は落とす。
+    // ベース由来の行は出荷単価・数量・マスタ登録単価・目標単価のどれかを持つので残る
+    const orphan = `hist_batch IS DISTINCT FROM ?
+      AND qty IS NULL AND base_price IS NULL
+      AND a_price_m0 IS NULL AND a_price_m1 IS NULL
+      AND a_price_m2 IS NULL AND a_price_m3 IS NULL
+      AND r2_target_price IS NULL AND cost_price IS NULL`;
     for (const sql of [
-      'DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE hist_batch IS DISTINCT FROM ?)',
-      'DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE hist_batch IS DISTINCT FROM ?)',
+      `DELETE FROM attachments WHERE deal_id IN (SELECT id FROM deals WHERE ${orphan})`,
+      `DELETE FROM notifications WHERE deal_id IN (SELECT id FROM deals WHERE ${orphan})`,
     ]) {
       try { await db.run(sql, [batch]); } catch { /* 無ければ何もしない */ }
     }
-    const r = await db.run('DELETE FROM deals WHERE hist_batch IS DISTINCT FROM ?', [batch]);
+    const r = await db.run(`DELETE FROM deals WHERE ${orphan}`, [batch]);
     removed = Number(r?.changes ?? 0);
   }
 

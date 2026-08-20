@@ -369,7 +369,7 @@ export default function Deals() {
     return (
       <div className="sub"
            style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : { fontWeight: 700 }}
-           title={`目標値 − ${actLabel}のマスタ単価 ${yen(base)}`}>
+           title={`目標単価 − ${actLabel}のマスタ単価 ${yen(base)}`}>
         {diff === 0 ? '±0' : `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}`}
         {rate != null && diff !== 0 && <span style={{ fontWeight: 400 }}> ({rate > 0 ? '+' : ''}{rate}%)</span>}
       </div>
@@ -415,7 +415,7 @@ export default function Deals() {
     const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
     return (
       <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : undefined}
-            title={`A基準（${label}の申請単価）− ${actLabel}のマスタ単価 ${yen(base)}`}>
+            title={`マスタ登録単価（${label}の申請単価）− ${actLabel}のマスタ単価 ${yen(base)}`}>
         {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
         {rate != null && <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>}
       </span>
@@ -429,14 +429,14 @@ export default function Deals() {
     <div>
       <h1 className="page-title">案件一覧（単価管理）</h1>
       <p className="page-sub">
-        <strong>価格調査（{actLabel}実績）の得意先×商品</strong>を土台に、価格を比較します。
-        マスタ登録（A基準）はこの実績へ突合して重ね、当たらなかった品目は
-        <strong>{actLabel}実績無し</strong>として載ります（数量の欄に出ます）。
-        実績は<strong>過去最新単価</strong>（値上げ前）と<strong>{actLabel}の実単価</strong>（金額÷数量）の比較で、
-        その先の<strong>A基準</strong>（マスタ登録の申請単価。当月と向こう3か月）が今後の計画、
-        隣の<strong>目標値</strong>が第2弾新値上げ単価です。
-        A基準の下段はその単価の<strong>承認日</strong>（申請単価のある月だけ入ります）で、絞り込みにも使えます。
-        <strong>値上げ幅</strong>は「A基準 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
+        <strong>価格調査（毎日更新）の得意先×商品</strong>を常にベースに、価格を比較します。
+        <strong>売上高（{actLabel}）</strong>はこのベースへ単価・数量を突合して重なり、
+        突合で当たらなかった品目は<strong>{actLabel}実績無し</strong>として載ります（数量の欄に出ます）。
+        売上高にだけある行も案件として残るため、売上高の合計は必ずファイルと一致します。
+        <strong>マスタ登録単価</strong>は当月（本日時点）と向こう3か月の申請単価で、
+        下段はその<strong>承認日</strong>（申請単価のある月だけ入ります）。絞り込みにも使えます。
+        隣の<strong>目標単価</strong>は本社が設定します。
+        <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
         <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
         行頭のチェックで品目を選ぶと、<strong>商談結果とメモをまとめて一括入力</strong>できます。
       </p>
@@ -459,7 +459,7 @@ export default function Deals() {
           />
         </label>
         <label className="fld">
-          法人
+          企業名
           <select value={get('corp')} onChange={(e) => setParam('corp', e.target.value)}>
             <option value="">すべて</option>
             {meta?.corps.map((c) => <option key={c.code} value={c.code}>{c.name}（{c.count.toLocaleString()}）</option>)}
@@ -494,16 +494,16 @@ export default function Deals() {
           </select>
         </label>
         <label className="fld">
-          A基準
+          マスタ登録単価
           <select value={get('aState')} onChange={(e) => setParam('aState', e.target.value)}>
             <option value="">すべて</option>
             <option value="has">あり（値上げ対象）</option>
             <option value="none">なし</option>
           </select>
         </label>
-        {/* 当月実績（価格調査）との突合。マスタ登録にだけあって当たらない品目は実績無し */}
-        <label className="fld" title={`${actLabel}実績（価格調査）をベースにマスタ登録（A基準）を突合しています。当たらない品目は${actLabel}実績無しです`}>
-          {actLabel}実績
+        {/* 売上高（月次）との突合。ベースにだけあって当たらない品目は実績無し */}
+        <label className="fld" title={`ベース（価格調査（毎日更新））へ売上高（${actLabel}）を突合しています。当たらない品目は${actLabel}実績無しです`}>
+          売上高（{actLabel}）
           <select value={get('act')} onChange={(e) => setParam('act', e.target.value)}>
             <option value="">すべて</option>
             <option value="has">あり（突合済）</option>
@@ -514,7 +514,7 @@ export default function Deals() {
           承認日での絞り込み。「2026-08以降だけ見る（それより前は値上げ前の単価）」
           という使い方をする。基準は値上げ後の単価にあたる3か月後のA基準の承認日。
         */}
-        <label className="fld" title={`${ymLabel(meta?.aggMeta?.m3, '3か月後')}のA基準の承認日で絞り込みます`}>
+        <label className="fld" title={`${ymLabel(meta?.aggMeta?.m3, '3か月後')}のマスタ登録単価の承認日で絞り込みます`}>
           承認日
           <div style={{ display: 'flex', gap: 6 }}>
             <input
@@ -679,15 +679,16 @@ export default function Deals() {
           <thead>
             <tr>
               <th colSpan={6} className="grp fx fxg">基本情報</th>
+              <th colSpan={2} className="grp">規格・区分</th>
               <th colSpan={3} className="grp">担当</th>
               <th colSpan={5} className="grp sep"
-                  title={`価格調査の実績。過去最新単価（値上げ前）から${actLabel}の実単価までが、実際に上がった分です`}>
-                実績<small>（価格調査 {actLabel}）</small>
+                  title={`売上高（${actLabel}）の実績。ベース（価格調査（毎日更新））へ単価・数量を突合しています`}>
+                売上高<small>（{actLabel}）</small>
               </th>
-              <th colSpan={5} className="grp sep">A基準（申請単価／下段は承認日）・目標値</th>
+              <th colSpan={5} className="grp sep">マスタ登録単価（下段は承認日）・目標単価</th>
               <th colSpan={4} className="grp sep"
-                  title={`その月のA基準 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
-                値上げ幅（A基準−{actLabel}マスタ単価）
+                  title={`その月のマスタ登録単価 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
+                値上げ幅（マスタ登録単価−{actLabel}マスタ単価）
               </th>
               <th colSpan={5} className="grp sep">値上げ交渉（営業担当者が入力）</th>
               <th className="grp"></th>
@@ -702,16 +703,18 @@ export default function Deals() {
                     setSel(on ? new Set((data?.rows ?? []).map((r) => r.id)) : new Set());
                   }} />
               </th>
-              <Th col="corp_name" className="fx fx2">法人</Th>
-              <Th col="customer_name" className="fx fx3">得意先 / 納入先</Th>
-              <Th col="model_name" className="fx fx4">器種名</Th>
-              <Th col="product_name" className="fx fx5" title="価格調査の商品名。下段は規格（ガス種）">
-                商品名 / 規格
+              <Th col="corp_name" className="fx fx2">企業名</Th>
+              <Th col="customer_name" className="fx fx3">得意先名</Th>
+              <Th col="delivery_name" className="fx fx4">納入先名</Th>
+              <Th col="model_code" className="fx fx5">商品コード</Th>
+              <Th col="model_name" className="fx fx6" title="押すと案件の詳細が開けます（マスタ単価の月別実績もここで見られます）">
+                器種名
               </Th>
-              <Th col="equip_name" className="fx fx6">器具区分</Th>
-              <Th col="branch">支店</Th>
+              <Th col="gas_type">ガス種</Th>
+              <Th col="equip_name">器具区分</Th>
+              <Th col="sales_person" title="得意先（営業）担当者">担当者</Th>
               <Th col="office">営業所</Th>
-              <Th col="sales_person">担当者</Th>
+              <Th col="branch">支店</Th>
               <Th col="past_price" className="num sep"
                   title="値上げ前の単価。カーソルを合わせると受注日が出ます">
                 過去最新単価
@@ -721,7 +724,7 @@ export default function Deals() {
                 {actLabel}単価
               </Th>
               <Th col="master_price" className="num"
-                  title={`${actLabel}のマスタ単価（値決めの単価）。A基準・目標値の値上げ幅はこれと比べます`}>
+                  title={`${actLabel}のマスタ単価（値決めの単価）。マスタ登録単価・目標単価の値上げ幅はこれと比べます`}>
                 {actLabel}マスタ
               </Th>
               <th className="num" title={`${actLabel}の実単価 − 過去最新単価。実際に上がった幅`}>
@@ -731,13 +734,16 @@ export default function Deals() {
                   title={`${actLabel}の数量。0は${actLabel}の出荷が無かった品目（出荷無）`}>
                 数量
               </Th>
-              <Th col="a_price_m0" className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</Th>
+              <Th col="a_price_m0" className="num sep"
+                  title="当月のマスタ登録単価（毎日更新のファイルの本日時点の値）">
+                {ymLabel(meta?.aggMeta?.m0, '当月')}<br /><small>本日時点</small>
+              </Th>
               <Th col="a_price_m1" className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</Th>
               <Th col="a_price_m2" className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</Th>
               <Th col="a_price_m3" className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</Th>
               <Th col="r2_target_price" className="num"
-                  title={`第2弾新値上げ単価（目標値）。マスタ登録のファイルから入ります。下段は目標の値上げ幅（目標値 − ${actLabel}のマスタ単価）`}>
-                目標値<br /><small>下段は値上げ幅</small>
+                  title={`目標単価（本社にて設定）。下段は目標の値上げ幅（目標単価 − ${actLabel}のマスタ単価）`}>
+                目標単価<br /><small>本社設定</small>
               </Th>
               <th className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
@@ -770,35 +776,30 @@ export default function Deals() {
                       </a>
                     )}
                   </td>
-                  <td className="fx fx3" title={[d.customer_name, d.delivery_name].filter(Boolean).join(' / ')}>
-                    {isEditing && isDev ? baseCell(d, 'customer_name') : (
-                      <>
-                        {d.customer_name}
-                        {d.delivery_name && <><br /><small style={{ color: 'var(--muted)' }}>{d.delivery_name}</small></>}
-                      </>
-                    )}
+                  <td className="fx fx3" title={d.customer_name || ''}>
+                    {isEditing && isDev ? baseCell(d, 'customer_name') : (d.customer_name || '—')}
                   </td>
-                  <td className="fx fx4" title={d.model_name || d.model_code || ''}>
+                  <td className="fx fx4" title={d.delivery_name || ''}>{d.delivery_name || '—'}</td>
+                  <td className="fx fx5" title={d.model_code || ''}>
+                    {d.model_code ? <code>{d.model_code}</code> : '—'}
+                  </td>
+                  <td className="fx fx6" title={[d.model_name, d.product_name].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'model_name') : (
                       <>
-                        {/* 器種名が無い行もどの品目か分かるように、商品コードで代用して必ず出す */}
+                        {/* 器種名が無い行もどの品目か分かるように、商品名・コードで代用して必ず出す */}
                         <a href={`/deals/${d.id}`} onClick={(e) => { e.preventDefault(); navigate(`/deals/${d.id}`); }}>
-                          {d.model_name || d.model_code || '（品目名なし）'}
+                          {d.model_name || d.product_name || d.model_code || '（品目名なし）'}
                         </a>
                       </>
                     )}
                   </td>
-                  <td className="fx fx5" title={[d.product_name, d.gas_type, d.model_code].filter(Boolean).join(' / ')}>
-                    {/* 商品名が無い行は商品コードを出す（金額があるのに空欄の行を作らない） */}
-                    {d.product_name || (d.model_code ? `コード ${d.model_code}` : '—')}
-                    {d.gas_type && <><br /><small style={{ color: 'var(--muted)' }}>{d.gas_type}</small></>}
-                  </td>
-                  <td className="fx fx6" title={d.equip_name || ''}>
+                  <td>{d.gas_type || '—'}</td>
+                  <td title={d.equip_name || ''}>
                     {isEditing && isDev ? baseCell(d, 'equip_name') : (d.equip_name || '—')}
                   </td>
-                  <td>{isEditing && isDev ? baseCell(d, 'branch') : (d.branch || '—')}</td>
-                  <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
                   <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
+                  <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
+                  <td>{isEditing && isDev ? baseCell(d, 'branch') : (d.branch || '—')}</td>
 
                   {/* 実績（価格調査）。過去最新単価 → 当月の実単価と、その上がり幅・数量 */}
                   <td className="num sep"
@@ -812,9 +813,9 @@ export default function Deals() {
                   <td className="num">{actDiff(d)}</td>
                   <td className="num">
                     {monthlyQty(d) == null
-                      // マスタ登録にだけあって、当月実績（価格調査）と突合で当たらなかった品目
+                      // ベース（価格調査（毎日更新））にだけあって、売上高と突合で当たらなかった品目
                       ? <span style={{ color: 'var(--muted)' }}
-                              title={`マスタ登録（A基準）にはあるものの、${actLabel}実績（価格調査）に無かった品目です`}>
+                              title={`ベース（価格調査（毎日更新））にはあるものの、売上高（${actLabel}）に無かった品目です`}>
                           {actLabel}実績無し
                         </span>
                       : Number(monthlyQty(d)) === 0

@@ -83,19 +83,19 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     [`金額（${actLabel}）`, (r) => round(r.master_amount)],
 
     // A基準（マスタ登録の申請単価）と、その承認日・稟議No
-    [`A基準 ${m0}`, (r) => round(r.a_price_m0)],
+    [`マスタ登録単価 ${m0}`, (r) => round(r.a_price_m0)],
     [`承認日 ${m0}`, (r) => r.a_date_m0],
     [`稟議No ${m0}`, (r) => r.a_ringi_m0],
-    [`A基準 ${m1}`, (r) => round(r.a_price_m1)],
+    [`マスタ登録単価 ${m1}`, (r) => round(r.a_price_m1)],
     [`承認日 ${m1}`, (r) => r.a_date_m1],
     [`稟議No ${m1}`, (r) => r.a_ringi_m1],
-    [`A基準 ${m2}`, (r) => round(r.a_price_m2)],
+    [`マスタ登録単価 ${m2}`, (r) => round(r.a_price_m2)],
     [`承認日 ${m2}`, (r) => r.a_date_m2],
     [`稟議No ${m2}`, (r) => r.a_ringi_m2],
-    [`A基準 ${m3}`, (r) => round(r.a_price_m3)],
+    [`マスタ登録単価 ${m3}`, (r) => round(r.a_price_m3)],
     [`承認日 ${m3}`, (r) => r.a_date_m3],
     [`稟議No ${m3}`, (r) => r.a_ringi_m3],
-    ['目標値（第2弾新値上げ単価）', (r) => round(r.r2_target_price)],
+    ['目標単価（本社設定）', (r) => round(r.r2_target_price)],
 
     // 値上げ幅（A基準 − 実績）と、月あたりの値上げ額
     [`値上げ幅 ${m0}`, diff('a_price_m0')],
@@ -185,7 +185,7 @@ export function buildDashboardWorkbook(data, opts = {}) {
       cond.push(['同 金額（マスタ）', round(n(a.mstAmount))]);
     }
   }
-  cond.push(['マスタ登録（A基準あり）の件数', n(data.aMonths?.covered)]);
+  cond.push(['マスタ登録単価ありの件数', n(data.aMonths?.covered)]);
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（実績と計画を月の流れで並べる）

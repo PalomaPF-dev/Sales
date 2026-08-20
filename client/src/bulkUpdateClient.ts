@@ -23,6 +23,8 @@ const COLUMN_MAP: Record<string, string> = {
   // 目標は本社（と管理者）だけが変えられる。それ以外が入れて送るとサーバー側で断られる
   '目標値上げ単価': 'r2_target_price',
   '第2弾新値上げ単価': 'r2_target_price',
+  '目標単価（本社設定）': 'r2_target_price',
+  '目標単価': 'r2_target_price',
 };
 
 /** 全角英数を半角へ寄せ、空白・記号を落として見出しを突き合わせる */
