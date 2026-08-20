@@ -63,6 +63,8 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isDev = me.role === 'developer';
+  // 本社（と管理者）。目標単価をこの画面から直接入力できる
+  const isHq = ['planning', 'admin', 'developer'].includes(me.role);
 
   // 商談結果の一括入力。行頭のチェックで品目を選び、まとめて同じ結果を入れる
   const [sel, setSel] = useState<Set<number>>(new Set());
@@ -260,6 +262,8 @@ export default function Deals() {
       office: d.office ?? '',
       sales_person: d.sales_person ?? '',
       base_price: d.base_price == null ? '' : String(d.base_price),
+      // 目標単価（本社・管理者だけが編集できる）
+      r2_target_price: d.r2_target_price == null ? '' : String(d.r2_target_price),
     });
   };
 
@@ -308,13 +312,19 @@ export default function Deals() {
       return;
     }
     const fp = (draft.final_price ?? '').trim();
-    const ok = await patch(d.id, {
+    const body: Record<string, unknown> = {
       r2_applied_ym: ym === '' ? null : ym,
       nego_result: draft.nego_result?.trim() || null,
       nego_note: draft.nego_note?.trim() || null,
       final_date: draft.final_date?.trim() || null,
       final_price: fp === '' ? null : Number(fp),
-    });
+    };
+    // 目標単価は本社（と管理者）だけが送る（他の権限が送るとサーバーで拒否される）
+    if (isHq) {
+      const tp = (draft.r2_target_price ?? '').trim();
+      body.r2_target_price = tp === '' ? null : Number(tp);
+    }
+    const ok = await patch(d.id, body);
     if (ok) setMsg({ kind: 'ok', text: '値上げ交渉の内容を保存しました' });
   };
 
@@ -829,9 +839,14 @@ export default function Deals() {
                   <td className="num">{aCell(d.a_price_m1, d.a_date_m1, d.a_ringi_m1)}</td>
                   <td className="num">{aCell(d.a_price_m2, d.a_date_m2, d.a_ringi_m2)}</td>
                   <td className="num">{aCell(d.a_price_m3, d.a_date_m3, d.a_ringi_m3)}</td>
-                  {/* 目標値。下段に目標の値上げ幅（目標値 − 当月のマスタ単価）を添える */}
+                  {/* 目標単価。下段に目標の値上げ幅（目標単価 − 当月のマスタ単価）を添える。
+                      本社・管理者は「入力」からここで直接入れられる */}
                   <td className="num">
-                    {d.r2_target_price == null ? '—' : (
+                    {isEditing && isHq ? (
+                      <input type="number" className="cell" value={draft.r2_target_price}
+                        placeholder="目標単価"
+                        onChange={(e) => setDraft({ ...draft, r2_target_price: e.target.value })} />
+                    ) : d.r2_target_price == null ? '—' : (
                       <>
                         {yen(d.r2_target_price)}
                         {targetDiff(d)}
@@ -927,6 +942,7 @@ export default function Deals() {
         <p className="pt-note" style={{ marginTop: 10 }}>
           「入力」から商談結果・商談メモ・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
           行頭のチェックで品目を選ぶと、商談結果とメモをまとめて入れられます。
+          {isHq && ' 本社・管理者は目標単価も「入力」から設定できます。'}
         </p>
       )}
     </div>

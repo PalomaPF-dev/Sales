@@ -17,8 +17,10 @@ interface AdminUser {
   must_change_password?: number;
   locked_until?: string | null;
   has_password: number;
-  /** その人に見える案件数。0なら支店・営業所の設定が案件データと合っていない */
+  /** その人に見える案件数。0なら支店（管轄）の設定が案件データと合っていない */
   visible_deals?: number;
+  /** 氏名が案件データの担当者名と一致した件数（担当者としての紐付き） */
+  person_deals?: number;
 }
 
 /** 管理者向けの問い合わせ一覧の1件（Contactページと同じ形） */
@@ -33,18 +35,6 @@ interface AdminInquiry {
   replied_by: string | null;
   replied_at: string | null;
   created_at: string;
-}
-
-/** 案件データに出てくる担当者 */
-interface DealPerson {
-  name: string;
-  branch: string | null;
-  office: string | null;
-  deals: number;
-  registered: boolean;
-  existingLoginId: string | null;
-  existingRole: string | null;
-  suggestedLoginId: string | null;
 }
 
 /** 編集中の行。行ごとに入力してから「保存」でまとめて反映する */
@@ -82,9 +72,6 @@ export default function Users() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
   const [editing, setEditing] = useState<EditRow | null>(null);
-  const [persons, setPersons] = useState<DealPerson[] | null>(null);
-  const [personIds, setPersonIds] = useState<Record<string, string>>({});
-  const [personPick, setPersonPick] = useState<Record<string, boolean>>({});
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -230,52 +217,6 @@ export default function Users() {
     }
   };
 
-  const loadPersons = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const list = await api<DealPerson[]>('/admin/deal-persons');
-      setPersons(list);
-      // 未登録の人は既定で選択、ログインIDは候補を入れておく
-      const ids: Record<string, string> = {};
-      const pick: Record<string, boolean> = {};
-      for (const p of list) {
-        if (p.registered) continue;
-        ids[p.name] = p.suggestedLoginId ?? '';
-        pick[p.name] = true;
-      }
-      setPersonIds(ids);
-      setPersonPick(pick);
-    } catch (err) {
-      setMsg({ kind: 'error', text: (err as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const registerPersons = async () => {
-    if (!persons) return;
-    const people = persons
-      .filter((p) => !p.registered && personPick[p.name])
-      .map((p) => ({ name: p.name, loginId: (personIds[p.name] ?? '').trim(), branch: p.branch, office: p.office }));
-    if (!people.length) { setMsg({ kind: 'error', text: '登録する担当者を選んでください' }); return; }
-    if (!confirm(`${people.length}名を営業担当者として登録します。よろしいですか？`)) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await api<ImportResult>('/admin/deal-persons', {
-        method: 'POST', body: JSON.stringify({ people }),
-      });
-      setResult(res);
-      setPersons(null);
-      load();
-    } catch (err) {
-      setMsg({ kind: 'error', text: (err as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const remove = async (u: AdminUser) => {
     if (!confirm(`${u.name}（${u.login_id ?? 'IDなし'}）を削除します。元に戻せません。よろしいですか？`)) return;
     setMsg(null);
@@ -389,95 +330,6 @@ export default function Users() {
         </Card>
       )}
 
-      <Card title="案件データの担当者をまとめて登録">
-        {!persons ? (
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn" onClick={loadPersons} disabled={busy}>
-              {busy ? '読み込み中...' : '取り込んだ案件から担当者を一覧する'}
-            </button>
-            <p className="pt-note" style={{ margin: 0 }}>
-              Excelから取り込んだ案件に出てくる担当者を拾い出し、営業担当者として登録します。
-            </p>
-          </div>
-        ) : (
-          <>
-            {(() => {
-              const fresh = persons.filter((p) => !p.registered);
-              const done = persons.length - fresh.length;
-              const picked = fresh.filter((p) => personPick[p.name]).length;
-              return (
-                <>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-                    <strong style={{ fontSize: 13.5 }}>
-                      担当者 {persons.length}名（未登録 {fresh.length}名 / 登録済 {done}名）
-                    </strong>
-                    <div style={{ flex: 1 }} />
-                    <button className="btn secondary sm" disabled={busy}
-                      onClick={() => setPersonPick(Object.fromEntries(fresh.map((p) => [p.name, true])))}>
-                      すべて選択
-                    </button>
-                    <button className="btn secondary sm" disabled={busy}
-                      onClick={() => setPersonPick({})}>選択を解除</button>
-                    <button className="btn" onClick={registerPersons} disabled={busy || picked === 0}>
-                      {busy ? '登録中...' : `選択した${picked}名を営業担当者として登録`}
-                    </button>
-                    <button className="btn secondary sm" onClick={() => setPersons(null)} disabled={busy}>閉じる</button>
-                  </div>
-
-                  <p className="pt-note" style={{ marginTop: 0 }}>
-                    氏名は案件データの表記のまま登録します（案件一覧の担当者絞り込みが氏名で効くため）。
-                    ログインIDは管理表に無いので連番の候補を入れてあります。
-                    <strong>社内で決まった規則があれば、ここで書き換えてから登録してください。</strong>
-                    後から変えるとポータル連携で別人として扱われることがあります。
-                  </p>
-
-                  <div className="tbl-scroll" style={{ maxHeight: 420 }}>
-                    <table className="tbl">
-                      <thead>
-                        <tr>
-                          <th style={{ width: 36 }}></th>
-                          <th>氏名</th><th>ログインID</th><th>支店 / 営業所</th><th>案件数</th><th>状態</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {persons.map((p) => (
-                          <tr key={p.name}>
-                            <td>
-                              {!p.registered && (
-                                <input type="checkbox" checked={Boolean(personPick[p.name])}
-                                  onChange={(e) => setPersonPick({ ...personPick, [p.name]: e.target.checked })} />
-                              )}
-                            </td>
-                            <td>{p.name}</td>
-                            <td>
-                              {p.registered ? (
-                                <code>{p.existingLoginId || '—'}</code>
-                              ) : (
-                                <input type="text" value={personIds[p.name] ?? ''} style={{ width: 130 }}
-                                  onChange={(e) => setPersonIds({ ...personIds, [p.name]: e.target.value })} />
-                              )}
-                            </td>
-                            <td>{[p.branch, p.office].filter(Boolean).join(' / ') || '—'}</td>
-                            <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                              {p.deals.toLocaleString()}
-                            </td>
-                            <td>
-                              {p.registered
-                                ? <span className="badge gray">登録済</span>
-                                : <span className="badge blue">未登録</span>}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              );
-            })()}
-          </>
-        )}
-      </Card>
-
       <Card title="ユーザーの追加">
         <form onSubmit={create} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label className="fld">
@@ -540,6 +392,9 @@ export default function Users() {
               </th>
               <th>ID</th><th>ログインID<br /><small>（社員番号）</small></th><th>氏名</th><th>役職</th><th>権限</th>
               <th>支店（管轄） / 営業所（部署）</th>
+              <th title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数">
+                案件との紐付け
+              </th>
               <th>パスワード</th><th>最終ログイン</th><th>状態</th><th></th>
             </tr>
           </thead>
@@ -572,7 +427,7 @@ export default function Users() {
                     <input type="text" value={editing.office} placeholder="営業所（部署）" style={{ width: 120, marginLeft: 4 }}
                       onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
                   </td>
-                  <td colSpan={3} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
+                  <td colSpan={4} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn sm" onClick={saveEdit} disabled={busy}>保存</button>
                     <button className="btn secondary sm" style={{ marginLeft: 6 }}
@@ -591,13 +446,22 @@ export default function Users() {
                   <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
                   <td>{u.title || '—'}</td>
                   <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
-                  <td>
-                    {[u.branch, u.office].filter(Boolean).join(' / ') || '—'}
-                    {/* 所属が案件データと合っていないと本人には何も出ない。ここで気づけるようにする */}
+                  <td>{[u.branch, u.office].filter(Boolean).join(' / ') || '—'}</td>
+                  {/* 案件データとの紐付け。支店の一致（閲覧範囲）と担当者名の一致をここで確かめる */}
+                  <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                    閲覧 {Number(u.visible_deals ?? 0).toLocaleString()}件
+                    <br />担当 {Number(u.person_deals ?? 0).toLocaleString()}件
                     {u.active === 1 && u.visible_deals === 0 && (
                       <div>
-                        <span className="badge red" title="支店（管轄）の表記が案件データと一致していない可能性があります">
+                        <span className="badge red" title="支店（管轄）の表記が案件データと一致していないため、本人には案件が表示されません">
                           案件が見えません
+                        </span>
+                      </div>
+                    )}
+                    {u.active === 1 && u.role === 'sales' && Number(u.person_deals ?? 0) === 0 && (
+                      <div>
+                        <span className="badge yellow" title="氏名が案件データの担当者名と一致していません。案件一覧の担当者の絞り込みに出ない可能性があります">
+                          担当者名の一致なし
                         </span>
                       </div>
                     )}

@@ -578,7 +578,9 @@ api.get('/admin/users', wrap(async (req, res) => {
                THEN (SELECT COUNT(*) FROM deals)
              ELSE
                (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch)
-           END AS visible_deals
+           END AS visible_deals,
+           -- 案件の担当者名との紐付け。氏名が案件データの担当者名と一致した件数
+           (SELECT COUNT(*) FROM deals d WHERE d.sales_person = u.name) AS person_deals
     FROM users u ORDER BY u.id`);
   res.json(rows);
 }));
