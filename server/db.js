@@ -413,7 +413,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-21-nego-note';
+const SCHEMA_VERSION = '2026-08-22-price-history';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -627,6 +627,8 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN act_price_12 REAL',
     // 商談メモ（商談結果の詳細）。交渉は品目ごとに結果が変わるため、案件に持つ
     'ALTER TABLE deals ADD COLUMN nego_note TEXT',
+    // 役職（ユーザー取込の項目。表示用で、権限には影響しない）
+    'ALTER TABLE users ADD COLUMN title TEXT',
   ]) {
     await tryAlter(sql);
   }
@@ -661,13 +663,13 @@ async function beforeSchema() {
   if (isPostgres) {
     await tryAlter('ALTER TABLE attachments ALTER COLUMN content DROP NOT NULL');
 
-    // 役割に「開発者」を追加。既存DBはCHECK制約が古い一覧のままなので作り直す。
+    // 権限に「開発者」「広域担当」を追加。既存DBはCHECK制約が古い一覧のままなので作り直す。
     // （SQLiteはCHECKを変更できないが、新規作成分は schema.sql が対応済み。
     //   既存のSQLite開発DBで必要になったら reset-db で作り直す）
     await tryAlter('ALTER TABLE users DROP CONSTRAINT users_role_check');
     await tryAlter(
       "ALTER TABLE users ADD CONSTRAINT users_role_check"
-      + " CHECK (role IN ('sales','branch_manager','planning','admin','developer'))"
+      + " CHECK (role IN ('sales','branch_manager','wide_area','planning','admin','developer'))"
     );
   }
 }

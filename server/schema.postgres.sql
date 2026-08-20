@@ -16,9 +16,11 @@
 CREATE TABLE IF NOT EXISTS users (
   id         SERIAL PRIMARY KEY,
   name       TEXT NOT NULL,
-  role       TEXT NOT NULL CHECK (role IN ('sales','branch_manager','planning','admin','developer')),
-  branch     TEXT,
-  office     TEXT,
+  -- 権限。planning は旧・営業企画部の内部名で、いまは「本社」を指す
+  role       TEXT NOT NULL CHECK (role IN ('sales','branch_manager','wide_area','planning','admin','developer')),
+  branch     TEXT,               -- 支店（管轄）
+  office     TEXT,               -- 営業所（部署）
+  title      TEXT,               -- 役職（表示用。権限には影響しない）
   active     INTEGER NOT NULL DEFAULT 1,
   login_id   TEXT,               -- ログインID（社内で一意）
   password_hash TEXT,            -- scrypt形式。NULLの間はログイン不可
@@ -356,6 +358,43 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
+
+-- お問い合わせ（ポータルと同じ仕様）。
+-- ログイン画面の「管理者への問い合わせ」（未ログイン。分類=ログインできない）と、
+-- ログイン後のお問い合わせを1つの表で持つ。管理者が回答すると status=resolved になり、
+-- 本人には未読（read_at IS NULL）の回答として届く。
+CREATE TABLE IF NOT EXISTS inquiries (
+  id         SERIAL PRIMARY KEY,
+  user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL, -- 未ログインの送信はNULL
+  login_id   TEXT,             -- 社員番号（未ログインは自己申告）
+  name       TEXT NOT NULL,    -- 氏名
+  category   TEXT NOT NULL,    -- 分類（ログインできない など）
+  message    TEXT NOT NULL,    -- 内容
+  status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  reply      TEXT,             -- 管理者の回答
+  replied_by TEXT,             -- 回答した管理者名
+  replied_at TEXT,
+  read_at    TEXT,             -- 本人が回答を読んだ日時
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_inquiries_user ON inquiries(user_id);
+CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
+
+-- マスタ単価の実績（月別履歴）。法人×品目×月ごとに1行。
+-- 価格調査（毎日更新）の取込で当月（本日時点）の単価を、
+-- 売上高（月次）の取込でその月のマスタ単価を記録する。
+-- 同じ月へ取込を重ねると最新の値で上書きされるため、
+-- 当月は「取り込んだ前日まで」の値になる。
+CREATE TABLE IF NOT EXISTS master_price_history (
+  ent_cd     TEXT NOT NULL,   -- 得意先（法人）コード
+  model_code TEXT NOT NULL,   -- 商品コード
+  ym         TEXT NOT NULL,   -- 月（YYYY-MM）
+  price      REAL,            -- その月のマスタ単価
+  source     TEXT,            -- agg=価格調査（毎日更新） / survey=売上高（月次）
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (ent_cd, model_code, ym)
+);
 
 -- 計算列ビュー
 --   単価だけの管理表のため、台数を掛けた金額は扱わない。

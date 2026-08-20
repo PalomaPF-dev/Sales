@@ -69,26 +69,28 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   };
 
   return (
-    <Card title="② マスタ登録（A基準）の取込">
+    <Card title="① 価格調査（毎日更新）の取込">
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
-          A基準を重ねました: 案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}件にA基準が入りました
+          取り込みました: 案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}件にマスタ登録単価が入りました
           （読み取れた行 {result.matched.toLocaleString()}
-          {result.added > 0 && ` ・ 実績に無い品目を案件として追加 ${result.added.toLocaleString()}件`}
+          {result.added > 0 && ` ・ 新しい品目を案件として追加 ${result.added.toLocaleString()}件`}
           {result.unmatched > 0 && ` ・ 取り込めない行 ${result.unmatched.toLocaleString()}`}）
         </div>
       )}
       <p className="pt-note" style={{ marginTop: 0 }}>
-        <strong>A基準（向こう3か月の申請単価）</strong>を取り込みます。
-        マスタ登録は 得意先×納入先×商品 の細かい単位なので、
-        <strong>法人×品目へ集約して</strong>、案件に重ねます。
-        A基準・目標値は<strong>リストの単価をそのまま</strong>使います
+        <strong>この取込が案件一覧の常のベースです。</strong>
+        <strong>マスタ登録単価（当月（本日時点）・翌月・翌々月・3か月後の申請単価）</strong>と
+        出荷単価・売上数を取り込みます。
+        ファイルは 得意先×納入先×商品 の細かい単位なので<strong>法人×品目へ集約</strong>し、
+        マスタ登録単価・目標単価は<strong>リストの単価をそのまま</strong>使います
         （加重平均はしません。数量は月あたりの値上げ額の計算にだけ使います）。
-        「登録日」のあるファイルなら、A基準それぞれの<strong>承認日</strong>も一緒に入ります
-        （まとまりの中で一番新しい日）。「ＷＦ申請番号」の列があれば<strong>稟議No</strong>も入り、
-        案件一覧のA基準にカーソルを合わせると見えます。
-        先に「価格調査（実単価）」を取り込んでおいてください（案件の土台になります）。
+        「登録日」のあるファイルなら各月の<strong>承認日</strong>も一緒に入ります
+        （まとまりの中で一番新しい日）。「ＷＦ申請番号」の列があれば<strong>稟議No</strong>も入ります。
+        <strong>「マスター単価（4月実績）」…の列</strong>があれば、そのまま月別の実績履歴として入ります。
+        <strong>毎日取り込み直す</strong>と当月の履歴が最新の値で上書きされ、
+        「取り込んだ前日まで」の値が残ります（実績列の無いファイルでは当月単価を記録します）。
         商談結果など画面で入れた値は、ファイル側に値が無ければ残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -101,6 +103,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
                 .filter(Boolean).join('・')} ／ 出荷単価 {parsed.p.meta.basePeriod}）
               {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.hasRingi ? ' ・ 稟議Noあり' : ''}
+              {parsed.p.histMonths.length > 0
+                ? ` ・ マスタ単価実績 ${parsed.p.histMonths[0]}〜${parsed.p.histMonths[parsed.p.histMonths.length - 1]}`
+                : ' ・ マスタ単価実績の列なし（当月単価を履歴に記録します）'}
               {parsed.p.skippedRows > 0
                 && ` ・ 読めない行 ${parsed.p.skippedRows}件`
                   + `（得意先コード空 ${parsed.p.skippedNoCust}件`

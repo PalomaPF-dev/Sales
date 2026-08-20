@@ -69,27 +69,27 @@ export default function SurveyImportCard({ anchorYm, onDone }:
   };
 
   return (
-    <Card title="① 価格調査（実単価）の取込">
+    <Card title={`② 売上高（月次）の取込${parsed ? `：売上高（${parsed.p.monthLabel}）` : ''}`}>
       {err && <div className="alert error" onClick={() => setErr('')}>{err}</div>}
       {result && (
         <div className="alert ok" onClick={() => setResult(null)}>
-          実単価を重ねました: 案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}件に実単価が入りました
-          （法人を照合できた行 {result.matched.toLocaleString()}
-          {result.unmatched > 0 && ` ・ 実績に無い法人の行 ${result.unmatched.toLocaleString()}`}）
+          売上高を突合しました: 案件 {result.covered.toLocaleString()} / {result.total.toLocaleString()}件にその月の実績が入りました
+          （読み取れた行 {result.matched.toLocaleString()}
+          {result.unmatched > 0 && ` ・ 取り込めない行 ${result.unmatched.toLocaleString()}`}）
         </div>
       )}
       <p className="pt-note" style={{ marginTop: 0 }}>
-        <strong>当月の実績</strong>（「7月数量」「7月単価」の列）と、
+        <strong>その月の売上高</strong>（「7月数量」「7月単価」の列。名称は取込月で変わります）と、
         <strong>過去最新単価</strong>（値上げ前）を取り込みます。
         単価が「マスタ／見積／合計」に分かれたファイルでは、
         <strong>マスタ単価</strong>（値決めの単価）と<strong>実単価</strong>（金額÷数量）の
-        両方を取り込みます。過去→当月のマスタ単価が<strong>実際に上がった分</strong>、
-        そこから先のA基準が<strong>今後の計画</strong>で、どちらも値決めどうしの比較です。
+        両方を取り込みます。
         ファイルは 得意先×納入先×商品 の細かい単位なので、
         <strong>得意先×商品へ集約（数量で加重平均）します</strong>。
-        <strong>この取込が案件一覧の土台</strong>で、ファイルに無い案件は削除されます
-        （商談結果など画面で入れた値は、残る案件ではそのまま残ります）。
-        <strong>この取込を先に行い、そのあとにマスタ登録（A基準）</strong>を重ねてください。
+        取り込むと<strong>ベース（価格調査（毎日更新））へ単価・数量を突合</strong>して重なり、
+        突合で当たらないベースの品目は「実績無し」になります。
+        <strong>売上高にだけある行も案件として残る</strong>ため、売上高の合計は必ずファイルと一致します
+        （商談結果など画面で入れた値はそのまま残ります）。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />

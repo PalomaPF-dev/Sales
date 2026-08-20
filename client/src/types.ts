@@ -1,9 +1,12 @@
 export interface User {
   id: number;
   name: string;
-  role: 'sales' | 'branch_manager' | 'planning' | 'admin' | 'developer';
+  /** 権限。planning は旧・営業企画部の内部名で、いまは「本社」を指す */
+  role: 'sales' | 'branch_manager' | 'wide_area' | 'planning' | 'admin' | 'developer';
   branch: string | null;
   office: string | null;
+  /** 役職（表示用。権限には影響しない） */
+  title?: string | null;
   loginId?: string | null;
   mustChangePassword?: boolean;
   authDisabled?: boolean;
@@ -174,7 +177,8 @@ export const NEGO_LABELS: Record<string, string> = {
 export const ROLE_NAMES: Record<string, string> = {
   sales: '営業担当者',
   branch_manager: '支店長',
-  planning: '営業企画部',
+  wide_area: '広域担当',
+  planning: '本社',
   admin: '管理者',
   developer: '開発者',
 };

@@ -48,6 +48,8 @@ export interface AggRow {
   nego_result: string | null;
   final_date: string | null;
   final_price: unknown;
+  /** マスタ単価の実績（月別）。「マスター単価（4月実績）」…の列。キーは YYYY-MM */
+  hist_prices: Record<string, unknown>;
 }
 
 export interface AggParsed {
@@ -59,7 +61,9 @@ export interface AggParsed {
   hasM0: boolean;      // 「当月」の列があるファイルか
   hasDates: boolean;   // 「登録日（〜）」の列があるファイルか
   hasRingi: boolean;   // 「稟議」の列があるファイルか
-  meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string };
+  /** マスタ単価の実績（月別）の月（YYYY-MM）。「マスター単価（4月実績）」…の列から */
+  histMonths: string[];
+  meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string; histMonths: string[] };
 }
 
 /**
@@ -263,6 +267,42 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const ringiOf = (m: { ringi: number } | null) =>
     (m && m.ringi >= 0 ? m.ringi : globalRingi);
 
+  // 月の見出し（当月など）の実際の月。行を読む前に決めておく
+  const first = grid[1] ?? [];
+  const metaBase = {
+    m0: m0 ? serialToYm(first[m0.at]) : '',
+    m1: serialToYm(first[m1!.at]),
+    m2: serialToYm(first[m2!.at]),
+    m3: serialToYm(first[m3!.at]),
+    basePeriod: headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price],
+  };
+
+  // マスタ単価の実績（月別）。「マスター単価（4月実績）」…の列を読む。
+  // 見出しに年が無いため、当月（m0）を手がかりに何年かを決める
+  // （当月より後の月番号は前の年とみなす。売上高の取込と同じ規則）
+  const histCols: { month: number; at: number }[] = [];
+  headers.forEach((h, i) => {
+    const m = /^マスタ[ー]?単価\((\d{1,2})月実績\)$/.exec(h.replace(/[\s　]/g, ''));
+    if (m) histCols.push({ month: Number(m[1]), at: i });
+  });
+  const m0m = /^(\d{4})-(\d{2})$/.exec(metaBase.m0);
+  const m1m = /^(\d{4})-(\d{2})$/.exec(metaBase.m1);
+  // 当月の年月。当月列が無いファイルでは翌月から1か月戻して決める
+  let anchorY: number | null = null;
+  let anchorM = 0;
+  if (m0m) { anchorY = Number(m0m[1]); anchorM = Number(m0m[2]); }
+  else if (m1m) {
+    anchorY = Number(m1m[1]);
+    anchorM = Number(m1m[2]) - 1;
+    if (anchorM <= 0) { anchorM = 12; anchorY -= 1; }
+  }
+  const histYm = (month: number) => {
+    if (anchorY == null) return `${new Date().getFullYear()}-${String(month).padStart(2, '0')}`;
+    const y = month <= anchorM ? anchorY : anchorY - 1;
+    return `${y}-${String(month).padStart(2, '0')}`;
+  };
+  const histMonths = histCols.map((c) => histYm(c.month));
+
   const txt = (r: unknown[], i: number) => String(r[i] ?? '').trim();
   const at = (r: unknown[], i: number) => (i >= 0 ? r[i] : null);
   const rows: AggRow[] = [];
@@ -314,20 +354,15 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       nego_result: txt(r, col.nego_result) || null,
       final_date: col.final_date >= 0 ? toYmd(r[col.final_date]) : null,
       final_price: at(r, col.final_price),
+      hist_prices: Object.fromEntries(histCols.map((c, ci) => [histMonths[ci], r[c.at]])),
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');
 
-  const first = grid[1] ?? [];
-  const meta = {
-    m0: m0 ? serialToYm(first[m0.at]) : '',
-    m1: serialToYm(first[m1!.at]),
-    m2: serialToYm(first[m2!.at]),
-    m3: serialToYm(first[m3!.at]),
-    basePeriod: headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price],
-  };
   return {
-    rows, skippedRows, skippedNoCust: noCust, skippedNoModel: noModel, meta,
+    rows, skippedRows, skippedNoCust: noCust, skippedNoModel: noModel,
+    histMonths,
+    meta: { ...metaBase, histMonths },
     hasM0: Boolean(m0),
     hasDates: m3!.date >= 0,
     hasRingi: ringiOf(m3) >= 0,

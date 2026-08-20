@@ -7,9 +7,13 @@ import { useUser } from '../user';
 import { NEGO_LABELS } from '../types';
 import type { CorpNegotiation, Deal, Meta } from '../types';
 
+interface PriceHistoryRow { ym: string; price: number | null; source: string | null; updated_at: string }
+
 interface DealRes {
   deal: Deal;
   negotiation: CorpNegotiation | null;
+  /** マスタ単価の実績（月別履歴）。4月〜取込時点（当月は取り込んだ前日まで） */
+  priceHistory?: PriceHistoryRow[];
 }
 
 interface FixField { key: string; label: string; group: string; type: string }
@@ -132,7 +136,7 @@ export default function DealDetail() {
             <dt>出荷数量</dt><dd>{d.qty == null ? '—' : Number(d.qty).toLocaleString()}</dd>
           </dl>
 
-          <div className="section-title">A基準（申請単価）と目標値</div>
+          <div className="section-title">マスタ登録単価（申請単価）と目標単価</div>
           <dl className="kv">
             {([
               [meta?.aggMeta?.m0 || '当月', d.a_price_m0, d.a_date_m0, d.a_ringi_m0],
@@ -144,7 +148,7 @@ export default function DealDetail() {
               .filter(([, price, date], i) => i > 0 || price != null || date != null)
               .map(([label, price, date, ringi]) => (
                 <Fragment key={label}>
-                  <dt>A基準 {label}</dt>
+                  <dt>マスタ登録単価 {label}</dt>
                   <dd>
                     {price == null ? '—' : `¥${yen(price)}`}
                     {(date || ringi) && (
@@ -156,7 +160,7 @@ export default function DealDetail() {
                   </dd>
                 </Fragment>
               ))}
-            <dt>目標値（第2弾新値上げ単価）</dt>
+            <dt>目標単価（本社にて設定）</dt>
             <dd>{d.r2_target_price == null ? '—' : `¥${yen(d.r2_target_price)}`}</dd>
             <dt>商談結果</dt>
             <dd>
@@ -179,6 +183,31 @@ export default function DealDetail() {
               </>
             )}
           </dl>
+
+          {(data.priceHistory?.length ?? 0) > 0 && (
+            <>
+              <div className="section-title">マスタ単価の実績（月別）</div>
+              {/* 価格調査（毎日更新）・売上高の取込から残る月別の履歴。
+                  当月は「取り込んだ前日まで」の値 */}
+              <table className="tbl" style={{ fontSize: 13 }}>
+                <thead>
+                  <tr><th>月</th><th className="num">マスタ単価</th><th>記録元</th></tr>
+                </thead>
+                <tbody>
+                  {data.priceHistory!.map((h) => (
+                    <tr key={h.ym}>
+                      <td>{h.ym}</td>
+                      <td className="num">{h.price == null ? '—' : `¥${yen(h.price)}`}</td>
+                      <td style={{ color: 'var(--muted)', fontSize: 12 }}
+                          title={`最終更新 ${String(h.updated_at).slice(0, 10)}`}>
+                        {h.source === 'agg' ? '価格調査（毎日更新）' : '売上高'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
 
           <div className="section-title">交渉 <RoundStateBadge state={d.r2_state} /></div>
           <dl className="kv">

@@ -24,6 +24,8 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
     err.mustChangePassword = Boolean((data as { mustChangePassword?: boolean }).mustChangePassword);
     // 取込の二重判定。文言は変わりうるので、サーバーが返す印をそのまま持ち回る
     err.duplicate = Boolean((data as { duplicate?: boolean }).duplicate);
+    // 初回ログイン（パスワード未設定）。ログイン画面がパスワード設定へ切り替える
+    err.needsSetup = Boolean((data as { needsSetup?: boolean }).needsSetup);
     throw err;
   }
   return data as T;
@@ -33,6 +35,7 @@ export interface ApiError extends Error {
   status?: number;
   mustChangePassword?: boolean;
   duplicate?: boolean;
+  needsSetup?: boolean;
 }
 
 export const login = (loginId: string, password: string) =>
