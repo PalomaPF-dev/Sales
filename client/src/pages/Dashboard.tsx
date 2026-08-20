@@ -105,13 +105,13 @@ const TABS = [
 
 const num = (n: unknown) => Number(n ?? 0);
 /*
-  金額の出し方。スマホでは桁が多いと表が読めないため、百万円でまとめて出す。
+  金額の出し方。スマホでは桁が多いと表が読めないため、万円でまとめて出す。
   ダッシュボードを描くたびに Dashboard が下の目印を更新し、
   この中で使う金額の表示（表・タイル・まとめ）がまとめて切り替わる。
 */
-let MONEY_MILLION = false;
-const yen = (v: number) => (MONEY_MILLION
-  ? `${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 })}百万`
+let MONEY_MAN = false;
+const yen = (v: number) => (MONEY_MAN
+  ? `${Math.round(v / 1e4).toLocaleString()}万`
   : `¥${Math.round(v).toLocaleString()}`);
 
 const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
@@ -514,8 +514,8 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link
 
 export default function Dashboard() {
   const mobile = useIsMobile();
-  // スマホでは金額を百万円で出す（この画面の中の表・タイル・まとめが揃う）
-  MONEY_MILLION = mobile;
+  // スマホでは金額を万円で出す（この画面の中の表・タイル・まとめが揃う）
+  MONEY_MAN = mobile;
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<DashboardRes | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);

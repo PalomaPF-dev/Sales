@@ -71,11 +71,11 @@ export default function Deals() {
   const isDev = me.role === 'developer';
   const mobile = useIsMobile();
   /**
-   * 合計の金額。スマホでは桁が多いと1行に収まらないため百万円でまとめる。
+   * 合計の金額。スマホでは桁が多いと1行に収まらないため万円でまとめる。
    * 表の中の単価は1台あたりの金額なので、こちらは円のまま出す。
    */
   const sumYen = (v: number) => (mobile
-    ? `${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 })}百万`
+    ? `${Math.round(v / 1e4).toLocaleString()}万`
     : `¥${yen(v)}`);
   // 本社（と管理者）。目標単価をこの画面から直接入力できる
   const isHq = ['planning', 'admin', 'developer'].includes(me.role);
