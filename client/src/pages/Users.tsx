@@ -12,6 +12,8 @@ interface AdminUser {
   branch: string | null;
   office: string | null;
   title: string | null;
+  /** 通知の宛先。本社（営業企画部）は問い合わせの通知をここで受ける */
+  email: string | null;
   active: number;
   login_id: string | null;
   last_login_at: string | null;
@@ -24,20 +26,6 @@ interface AdminUser {
   person_deals?: number;
 }
 
-/** 管理者向けの問い合わせ一覧の1件（Contactページと同じ形） */
-interface AdminInquiry {
-  id: number;
-  login_id: string | null;
-  name: string;
-  category: string;
-  message: string;
-  status: 'open' | 'resolved';
-  reply: string | null;
-  replied_by: string | null;
-  replied_at: string | null;
-  created_at: string;
-}
-
 /** 編集中の行。行ごとに入力してから「保存」でまとめて反映する */
 interface EditRow {
   id: number;
@@ -47,6 +35,7 @@ interface EditRow {
   branch: string;
   office: string;
   title: string;
+  email: string;
 }
 
 interface ImportResult {
@@ -57,7 +46,7 @@ interface ImportResult {
   errors: { line?: number; loginId?: string; name?: string; message: string }[];
 }
 
-const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', title: '', loginId: '' };
+const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', title: '', email: '', loginId: '' };
 
 export default function Users() {
   const me = useUser();
@@ -66,9 +55,6 @@ export default function Users() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   // ユーザーの一括削除（チェックで選んでまとめて消す）
   const [sel, setSel] = useState<Set<number>>(new Set());
-  // 問い合わせ（管理者が回答する）
-  const [inquiries, setInquiries] = useState<AdminInquiry[]>([]);
-  const [replyDraft, setReplyDraft] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
@@ -82,7 +68,6 @@ export default function Users() {
     api<AdminUser[]>('/admin/users')
       .then((r) => { setRows(r); setSel(new Set()); })
       .catch((e) => setMsg({ kind: 'error', text: e.message }));
-    api<AdminInquiry[]>('/inquiries').then(setInquiries).catch(() => {});
   };
   useEffect(load, []);
   useEffect(() => { api<Meta>('/meta').then(setMeta).catch(() => {}); }, []);
@@ -139,20 +124,6 @@ export default function Users() {
     }
   };
 
-  /** 問い合わせへの回答・状態変更 */
-  const patchInquiry = async (id: number, body: Record<string, unknown>) => {
-    setBusy(true);
-    try {
-      await api(`/inquiries/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
-      setReplyDraft((prev) => ({ ...prev, [id]: '' }));
-      api<AdminInquiry[]>('/inquiries').then(setInquiries).catch(() => {});
-    } catch (err) {
-      setMsg({ kind: 'error', text: (err as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const importUsers = async () => {
     const file = fileRef.current?.files?.[0];
     if (!file) { setMsg({ kind: 'error', text: 'ファイルを選択してください' }); return; }
@@ -193,6 +164,7 @@ export default function Users() {
       branch: u.branch ?? '',
       office: u.office ?? '',
       title: u.title ?? '',
+      email: u.email ?? '',
     });
   };
 
@@ -210,6 +182,7 @@ export default function Users() {
           branch: editing.branch || null,
           office: editing.office || null,
           title: editing.title || null,
+          email: editing.email || null,
         }),
       });
       setEditing(null);
@@ -264,8 +237,9 @@ export default function Users() {
     <div>
       <h1 className="page-title">設定</h1>
       <p className="page-sub">
-        管理者のみが利用できます。名簿の一括取込・登録内容の編集・利用停止・削除（選択して一括も可）と、
-        お問い合わせへの回答を行います。パスワードは発行しません（本人が初回ログイン時に自分で設定します）。
+        管理者のみが利用できます。名簿の一括取込・登録内容の編集・利用停止・削除（選択して一括も可）を行います。
+        パスワードは発行しません（本人が初回ログイン時に自分で設定します）。
+        届いたお問い合わせへの回答は「お問い合わせ」の画面で行います。
         交渉履歴などの記録が残っている方は削除できません（「停止」にすればログインできなくなり、記録は残ります）。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
@@ -358,6 +332,11 @@ export default function Users() {
             <input type="text" value={form.title} placeholder="主任 / 課長 など"
               onChange={(e) => setForm({ ...form, title: e.target.value })} />
           </label>
+          <label className="fld" title="本社（営業企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">
+            メール（通知の宛先）
+            <input type="email" value={form.email} placeholder="taro.yamada@paloma.co.jp"
+              onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          </label>
           <label className="fld">
             氏名
             <input type="text" value={form.name} required
@@ -399,6 +378,7 @@ export default function Users() {
               {/* 名簿（取込ファイル）と同じ並び。内部IDはログインIDがあるため出さない */}
               <th>ログインID<br /><small>（社員番号）</small></th>
               <th>支店（管轄）</th><th>営業所（部署）</th><th>役職</th><th>氏名</th><th>権限</th>
+              <th title="本社（営業企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">メール<br /><small>通知の宛先</small></th>
               <th title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数">
                 案件との紐付け
               </th>
@@ -437,6 +417,10 @@ export default function Users() {
                       {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
                   </td>
+                  <td>
+                    <input type="email" value={editing.email} placeholder="通知の宛先" style={{ width: 170 }}
+                      onChange={(e) => setEditing({ ...editing, email: e.target.value })} />
+                  </td>
                   <td colSpan={4} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn sm" onClick={saveEdit} disabled={busy}>保存</button>
@@ -457,6 +441,7 @@ export default function Users() {
                   <td>{u.title || '—'}</td>
                   <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
                   <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
+                  <td style={{ fontSize: 12 }} title={u.email ?? ''}>{u.email || '—'}</td>
                   {/* 案件データとの紐付け。支店の一致（閲覧範囲）と担当者名の一致をここで確かめる */}
                   <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                     閲覧 {Number(u.visible_deals ?? 0).toLocaleString()}件
@@ -509,58 +494,6 @@ export default function Users() {
           </tbody>
         </table>
       </div>
-
-      {/* お問い合わせ（ポータルと同じ仕様）。利用者・ログイン画面から届いた問い合わせに回答する */}
-      <Card title={`お問い合わせ（未対応 ${inquiries.filter((q) => q.status === 'open').length}件）`}>
-        {inquiries.length === 0 ? (
-          <p className="pt-note" style={{ margin: 0 }}>お問い合わせはありません。</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {inquiries.map((q) => (
-              <div key={q.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
-                  {q.status === 'open'
-                    ? <span className="badge yellow">未対応</span>
-                    : <span className="badge green">対応済み</span>}
-                  <span className="badge blue">{q.category}</span>
-                  <strong>{q.name}</strong>
-                  {q.login_id && <code>{q.login_id}</code>}
-                  <span style={{ color: 'var(--muted)' }}>{jstDateTime(q.created_at)}</span>
-                </div>
-                <p style={{ margin: '8px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{q.message}</p>
-                {q.reply && (
-                  <p className="pt-note" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
-                    回答（{q.replied_by}）: {q.reply}
-                  </p>
-                )}
-                <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                  <textarea rows={2} value={replyDraft[q.id] ?? ''} maxLength={2000}
-                    placeholder={q.reply ? '回答を書き直す（本人には未読として届きます）' : '回答を入力（送信すると対応済みになり、本人に届きます）'}
-                    style={{ flex: '1 1 320px', border: '1px solid var(--baseline)', borderRadius: 8,
-                             padding: '8px 10px', font: 'inherit', resize: 'vertical' }}
-                    onChange={(e) => setReplyDraft((prev) => ({ ...prev, [q.id]: e.target.value }))} />
-                  <button className="btn sm" disabled={busy || !(replyDraft[q.id] ?? '').trim()}
-                    onClick={() => patchInquiry(q.id, { reply: (replyDraft[q.id] ?? '').trim() })}>
-                    回答を送る
-                  </button>
-                  {q.status === 'open' ? (
-                    <button className="btn secondary sm" disabled={busy}
-                      onClick={() => patchInquiry(q.id, { status: 'resolved' })}>回答せず対応済みにする</button>
-                  ) : (
-                    <button className="btn secondary sm" disabled={busy}
-                      onClick={() => patchInquiry(q.id, { status: 'open' })}>未対応に戻す</button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        <p className="pt-note" style={{ marginTop: 12 }}>
-          ログイン画面の「管理者への問い合わせ」（パスワードを忘れた等）もここに届きます。
-          パスワードを忘れた人には、上の一覧の「PW再設定」でパスワードを未設定に戻し、
-          本人に「パスワード設定」から決め直すよう回答してください。
-        </p>
-      </Card>
 
       {/* 支店（管轄）・営業所（部署）の候補。案件データにある実際の表記 */}
       <datalist id="branch-list">
