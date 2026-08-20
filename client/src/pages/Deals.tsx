@@ -869,7 +869,8 @@ export default function Deals() {
                     ) : (
                       <>
                         {[d.branch, d.office].filter(Boolean).join('・') || '—'}
-                        <div className="sub">{d.sales_person || '—'}</div>
+                        {/* 担当者名は補足扱いにせず、読みやすいよう通常の大きさ＋太字で出す */}
+                        <div style={{ fontWeight: 600 }}>{d.sales_person || '—'}</div>
                       </>
                     )}
                   </td>
