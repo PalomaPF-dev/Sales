@@ -111,6 +111,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
                   最終確定日などが合わないときはまずここを確認してもらう */}
               {(() => {
                 const miss = [
+                  !parsed.p.hasM0 && '当月（本日時点）のマスタ単価',
                   !parsed.p.hasDelivery && '納入先名',
                   !parsed.p.negoCols.target && '目標単価',
                   !parsed.p.negoCols.nego && '商談結果',
