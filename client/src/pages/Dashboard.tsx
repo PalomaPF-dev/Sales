@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card } from '../components/ui';
 import type { Meta } from '../types';
+import { useIsMobile } from '../view';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
 const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office', 'aDateYm', 'aDateOp'] as const;
@@ -103,7 +104,15 @@ const TABS = [
 ];
 
 const num = (n: unknown) => Number(n ?? 0);
-const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
+/*
+  金額の出し方。スマホでは桁が多いと表が読めないため、百万円でまとめて出す。
+  ダッシュボードを描くたびに Dashboard が下の目印を更新し、
+  この中で使う金額の表示（表・タイル・まとめ）がまとめて切り替わる。
+*/
+let MONEY_MILLION = false;
+const yen = (v: number) => (MONEY_MILLION
+  ? `${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 })}百万`
+  : `¥${Math.round(v).toLocaleString()}`);
 
 const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
 
@@ -504,6 +513,9 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link
 }
 
 export default function Dashboard() {
+  const mobile = useIsMobile();
+  // スマホでは金額を百万円で出す（この画面の中の表・タイル・まとめが揃う）
+  MONEY_MILLION = mobile;
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<DashboardRes | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);

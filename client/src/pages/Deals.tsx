@@ -7,6 +7,7 @@ import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
 import type { BulkResult } from '../bulkUpdateClient';
 import { useUser } from '../user';
+import { useIsMobile } from '../view';
 
 interface DealsRes {
   rows: Deal[];
@@ -68,6 +69,14 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isDev = me.role === 'developer';
+  const mobile = useIsMobile();
+  /**
+   * 合計の金額。スマホでは桁が多いと1行に収まらないため百万円でまとめる。
+   * 表の中の単価は1台あたりの金額なので、こちらは円のまま出す。
+   */
+  const sumYen = (v: number) => (mobile
+    ? `${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 })}百万`
+    : `¥${yen(v)}`);
   // 本社（と管理者）。目標単価をこの画面から直接入力できる
   const isHq = ['planning', 'admin', 'developer'].includes(me.role);
 
@@ -627,9 +636,9 @@ export default function Deals() {
                 return (
                   <>
                     <b className={g < 0 ? 'shortfall' : 'surplus'}>
-                      {g < 0 ? '−' : '＋'}¥{yen(Math.abs(g))}
+                      {g < 0 ? '−' : '＋'}{sumYen(Math.abs(g))}
                     </b>
-                    {'（＋¥'}{yen(gp)}{' / −¥'}{yen(Math.abs(gm))}{'）'}
+                    {'（＋'}{sumYen(gp)}{' / −'}{sumYen(Math.abs(gm))}{'）'}
                   </>
                 );
               })()}
@@ -643,7 +652,7 @@ export default function Deals() {
                     {i > 0 && ' / '}
                     {ymLabel(meta?.aggMeta?.[key], ['当月', '翌月', '翌々月', '3か月後'][i])}{' '}
                     <b className={Number(v ?? 0) < 0 ? 'shortfall' : 'surplus'}>
-                      {v == null ? '—' : `¥${yen(Math.round(Number(v)))}`}
+                      {v == null ? '—' : sumYen(Math.round(Number(v)))}
                     </b>
                   </span>
                 ))}
