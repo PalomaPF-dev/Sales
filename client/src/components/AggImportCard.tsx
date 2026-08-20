@@ -91,6 +91,8 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
         <strong>「マスター単価（4月実績）」…の列</strong>があれば、そのまま月別の実績履歴として入ります。
         <strong>毎日取り込み直す</strong>と当月の履歴が最新の値で上書きされ、
         「取り込んだ前日まで」の値が残ります（実績列の無いファイルでは当月単価を記録します）。
+        <strong>目標単価</strong>の列があるファイルでは、その内容を正として入れ直します
+        （ファイルで空欄の品目は空に戻ります）。列の無いファイルでは今の値を残します。
         商談結果など画面で入れた値は、ファイル側に値が無ければ残ります。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>

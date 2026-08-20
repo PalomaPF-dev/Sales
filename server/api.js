@@ -2995,6 +2995,8 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         m0: String(meta.m0 ?? ''),
         m1: String(meta.m1 ?? ''), m2: String(meta.m2 ?? ''), m3: String(meta.m3 ?? ''),
         basePeriod: String(meta.basePeriod ?? ''), filename,
+        // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
+        hasTarget: meta.hasTarget === true,
         // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
         histMonths: Array.isArray(meta.histMonths)
           ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
@@ -3225,6 +3227,16 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // （amt÷wgt は wgt=1 のためファイルの値がそのまま入る）。
   // 価格調査（毎日更新）が案件一覧の土台で、売上高（月次）はここへ突合して重なる。
   const stamp = now();
+  // 目標単価は本社が価格調査（毎日更新）のファイルで管理している。
+  // 列のあるファイルを取り込んだときは、そのファイルの内容を正とし、
+  // ファイルで空欄の品目は空に戻す（前の取込の値が残り続けないようにする）。
+  // 列の無いファイルのときは、これまでどおり今の値を残す。
+  const { aggMeta: startedMeta } = await loadImportMeta();
+  const targetFromFile = startedMeta?.hasTarget === true;
+  const targetSql = targetFromFile
+    ? 'CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END'
+    : `COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
+                 deals.r2_target_price)`;
   // 当月実績の単価・数量（master_*）は売上高の取込が正なので、ここでは触らない。
   await db.run(`
     UPDATE deals SET
@@ -3250,9 +3262,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       sales_person = s.sales_person,
       -- 納入先名（主な納入先）。ファイルに無ければ今のまま
       delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
-      -- 第2弾新値上げ単価（目標値）。ファイルに値があれば上書き、無ければ今のまま
-      r2_target_price = COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
-                                 deals.r2_target_price),
+      -- 目標単価（第2弾新値上げ単価）。列のあるファイルならファイルの内容を正とする
+      r2_target_price = ${targetSql},
       -- 商談結果・最終確定日・最終確定単価。画面で入れた値はファイルに無ければ残る
       nego_result = COALESCE(s.nego_result, deals.nego_result),
       final_date = COALESCE(s.final_date, deals.final_date),
