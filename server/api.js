@@ -615,10 +615,27 @@ const ROLE_ALIASES = {
   '開発者': 'developer', 'developer': 'developer',
 };
 
+/** 権限の日本語表記（一覧の出力用。取り込み直せるよう ROLE_ALIASES と揃える） */
+const ROLE_LABELS = {
+  sales: '営業担当者',
+  branch_manager: '支店長',
+  wide_area: '広域担当',
+  planning: '本社',
+  admin: '管理者',
+  developer: '開発者',
+};
+
 function parseRole(v) {
   const s = String(v ?? '').trim();
   return ROLE_ALIASES[s] || (ROLES.includes(s) ? s : null);
 }
+
+/** メールアドレスの形（打ち間違いで通知が届かないのを防ぐ程度の確認） */
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const badEmail = (v) => {
+  const s = String(v ?? '').trim();
+  return s !== '' && !EMAIL_RE.test(s);
+};
 
 /** 「〇/✓/1/true/はい/有」などを真偽値として読む */
 function parseFlag(v) {
@@ -674,6 +691,9 @@ api.post('/admin/users', wrap(async (req, res) => {
   if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
     return res.status(400).json({ error: 'ログインIDは半角英数字・._- の3〜32文字で指定してください' });
   }
+  if (badEmail(email)) {
+    return res.status(400).json({ error: 'メールアドレスの形が正しくありません' });
+  }
   const dup = await db.get('SELECT id FROM users WHERE login_id = ?', [loginId]);
   if (dup) return res.status(409).json({ error: 'そのログインIDは既に使われています' });
 
@@ -709,6 +729,9 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
 
   if ('role' in (req.body || {}) && !ROLES.includes(String(req.body.role))) {
     return res.status(400).json({ error: '権限の指定が不正です' });
+  }
+  if (badEmail(req.body?.email)) {
+    return res.status(400).json({ error: 'メールアドレスの形が正しくありません' });
   }
   const sets = [];
   const params = [];
@@ -1360,6 +1383,12 @@ function parseUserRows(buffer) {
       continue;
     }
 
+    const email = nv(cell('email'));
+    if (badEmail(email)) {
+      errors.push({ line: lineNo, loginId, message: `メールアドレス「${String(email).trim()}」の形が正しくありません` });
+      continue;
+    }
+
     const branch = nv(cell('branch'));
 
     // 「有効」列が無い、または空欄なら有効として扱う
@@ -1372,7 +1401,7 @@ function parseUserRows(buffer) {
       branch,
       office: nv(cell('office')),
       title: nv(cell('title')),
-      email: nv(cell('email')),
+      email,
       active: activeRaw === '' ? true : parseFlag(activeRaw),
     });
   }
@@ -1444,24 +1473,61 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
   res.json({ created, updated, skipped, errors, renamed });
 }));
 
+/** 名簿の列。記入例の出力・一覧の出力・取込のどれも同じ並びにする */
+const ROSTER_HEADERS = [
+  'ログインID（社員番号）', '支店（管轄）', '営業所（部署）', '役職', '氏名', '権限',
+  'メール（問い合わせ通知）', '有効',
+];
+const ROSTER_COLS = [
+  { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 26 }, { wch: 6 },
+];
+
+/** 名簿の1枚を組み立てて返す（見出し＋行） */
+function rosterWorkbook(rows) {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([ROSTER_HEADERS, ...rows]);
+  ws['!cols'] = ROSTER_COLS;
+  XLSX.utils.book_append_sheet(wb, ws, 'ユーザー');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
+}
+
 /** 名簿の記入例。これを埋めてそのまま取り込める */
 api.get('/admin/users/template', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const rows = [
-    ['ログインID（社員番号）', '支店（管轄）', '営業所（部署）', '役職', '氏名', '権限', 'メール（問い合わせ通知）', '有効'],
+  const buf = rosterWorkbook([
     ['100001', '東京中央', '東京中央営業所', '主任', '山田 太郎', '営業担当者', '', '〇'],
     ['100002', '東京中央', '', '支店長', '鈴木 一郎', '支店長', '', '〇'],
     ['100003', '本社', '広域営業部', '課長', '田中 次郎', '広域担当', '', '〇'],
     ['100004', '本社', '営業企画部', '部長', '佐藤 三郎', '本社', 'kikaku@example.co.jp', '〇'],
     ['100005', '本社', '', 'システム管理', '高橋 四郎', '管理者', 'admin@example.co.jp', '〇'],
-  ];
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 26 }, { wch: 6 }];
-  XLSX.utils.book_append_sheet(wb, ws, 'ユーザー');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
+  ]);
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition('ユーザー一括登録_記入例.xlsx', 'users-template.xlsx'));
+  res.send(buf);
+}));
+
+/**
+ * いまのユーザー一覧をExcelで出す。
+ * 記入例と同じ列なので、メールなどを書き足して
+ * 「既に登録済みのログインIDは内容を更新する」で取り込み直せる。
+ */
+api.get('/admin/users/export', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const users = await db.all(
+    `SELECT login_id, branch, office, title, name, role, email, active
+       FROM users ORDER BY branch, office, login_id`);
+  const buf = rosterWorkbook(users.map((u) => [
+    u.login_id ?? '',
+    u.branch ?? '',
+    u.office ?? '',
+    u.title ?? '',
+    u.name ?? '',
+    ROLE_LABELS[u.role] ?? u.role ?? '',
+    u.email ?? '',
+    u.active ? '〇' : '×',
+  ]));
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.set('Content-Disposition', contentDisposition('ユーザー一覧.xlsx', 'users.xlsx'));
   res.send(buf);
 }));
 
