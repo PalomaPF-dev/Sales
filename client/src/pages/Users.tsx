@@ -74,7 +74,7 @@ export default function Users() {
   const [updateExisting, setUpdateExisting] = useState(false);
   const [editing, setEditing] = useState<EditRow | null>(null);
   // 支店（管轄）・営業所（部署）の候補。案件データにある実際の表記から選べるようにして、
-  // 表記ズレで「案件が見えません」になるのを防ぐ
+  // 表記ズレで本人に案件が表示されなくなるのを防ぐ
   const [meta, setMeta] = useState<Meta | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -461,10 +461,10 @@ export default function Users() {
                   <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                     閲覧 {Number(u.visible_deals ?? 0).toLocaleString()}件
                     <br />担当 {Number(u.person_deals ?? 0).toLocaleString()}件
-                    {u.active === 1 && u.visible_deals === 0 && (
+                    {u.active === 1 && u.role === 'sales' && (
                       <div>
-                        <span className="badge red" title="支店（管轄）の表記が案件データと一致していないため、本人には案件が表示されません">
-                          案件が見えません
+                        <span className="badge blue" title="営業担当者は自分の支店（管轄）の案件のみ閲覧できます">
+                          支店のみ閲覧
                         </span>
                       </div>
                     )}
