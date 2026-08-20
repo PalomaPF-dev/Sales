@@ -9,7 +9,7 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconBrand, IconDashboard, IconDeals, IconImport, IconInbox, IconSettings } from './components/icons';
+import { IconBrand, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
@@ -20,6 +20,7 @@ const CorpDetail = lazy(() => import('./pages/CorpDetail'));
 const Users = lazy(() => import('./pages/Users'));
 const ImportPage = lazy(() => import('./pages/ImportPage'));
 const Contact = lazy(() => import('./pages/Contact'));
+const Help = lazy(() => import('./pages/Help'));
 
 
 /** 表示の切替。自動＝画面の幅で決める */
@@ -234,6 +235,7 @@ export default function App() {
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
+            <NavLink to="/help"><IconHelp /><span className="lbl">使い方</span></NavLink>
             <NavLink to="/contact">
               <IconInbox />
               <span className="lbl">
@@ -285,6 +287,7 @@ export default function App() {
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={<ImportPage />} />
               <Route path="/contact" element={<Contact />} />
+              <Route path="/help" element={<Help />} />
               <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
               <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />
