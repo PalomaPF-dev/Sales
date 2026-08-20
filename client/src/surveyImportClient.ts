@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { api } from './api';
+import { splitRows } from './aggImportClient';
 
 /**
  * 価格調査（当月実績）の取込。案件一覧の土台になる。
@@ -276,7 +277,6 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   };
 }
 
-const CHUNK = 500;
 
 export interface SurveyResult {
   matched: number;    // 取り込んだ行
@@ -297,14 +297,17 @@ export async function sendSurveyImport(
   });
   let matched = 0;
   let unmatched = 0;
-  for (let i = 0; i < parsed.rows.length; i += CHUNK) {
+  let sent = 0;
+  // 行数と本文の大きさの両方を見ながら、できるだけ大きくまとめて送る
+  for (const chunk of splitRows(parsed.rows)) {
     const r = await api<{ matched: number; unmatched: number }>('/survey-import/chunk', {
       method: 'POST',
-      body: JSON.stringify({ rows: parsed.rows.slice(i, i + CHUNK) }),
+      body: JSON.stringify({ rows: chunk }),
     });
     matched += r.matched;
     unmatched += r.unmatched;
-    opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
+    sent += chunk.length;
+    opts.onProgress?.(sent, parsed.rows.length);
   }
   const fin = await api<{ covered: number; total: number; removed?: number }>(
     '/survey-import/finish', { method: 'POST', body: JSON.stringify({ batch: started.batch }) });
