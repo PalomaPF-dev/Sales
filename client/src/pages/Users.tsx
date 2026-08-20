@@ -10,6 +10,7 @@ interface AdminUser {
   role: string;
   branch: string | null;
   office: string | null;
+  title: string | null;
   active: number;
   login_id: string | null;
   last_login_at: string | null;
@@ -42,6 +43,7 @@ interface EditRow {
   role: string;
   branch: string;
   office: string;
+  title: string;
 }
 
 interface ImportResult {
@@ -52,7 +54,7 @@ interface ImportResult {
   errors: { line?: number; loginId?: string; name?: string; message: string }[];
 }
 
-const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', loginId: '' };
+const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', title: '', loginId: '' };
 
 export default function Users() {
   const me = useUser();
@@ -129,6 +131,7 @@ export default function Users() {
       role: u.role,
       branch: u.branch ?? '',
       office: u.office ?? '',
+      title: u.title ?? '',
     });
   };
 
@@ -145,6 +148,7 @@ export default function Users() {
           role: editing.role,
           branch: editing.branch || null,
           office: editing.office || null,
+          title: editing.title || null,
         }),
       });
       setEditing(null);
@@ -275,8 +279,12 @@ export default function Users() {
           <a className="btn secondary sm" href="/api/admin/users/template">記入例をダウンロード</a>
         </div>
         <p className="pt-note" style={{ marginTop: 10 }}>
-          列: <code>ログインID</code> / <code>氏名</code> / <code>役割</code> / <code>支店</code> / <code>営業所</code> / <code>有効</code>。
-          ログインIDと氏名以外は省略できます（役割を省くと営業担当者）。
+          列: <code>ログインID（社員番号）</code> / <code>支店（管轄）</code> / <code>営業所（部署）</code> /
+          <code>役職</code> / <code>氏名</code> / <code>権限</code>（任意で <code>有効</code>）。
+          ログインIDと氏名以外は省略できます（権限を省くと営業担当者）。
+          権限は <strong>営業担当者</strong>（自分の支店のみ閲覧・値上げ交渉の入力のみ）／
+          <strong>支店長</strong>・<strong>広域担当</strong>（全支店を閲覧）／
+          <strong>本社</strong>（全て閲覧＋目標値の設定）／<strong>管理者</strong> のいずれかで記入します。
         </p>
         <p className="pt-note">
         </p>
@@ -422,30 +430,35 @@ export default function Users() {
       <Card title="ユーザーの追加">
         <form onSubmit={create} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label className="fld">
+            ログインID（社員番号）
+            <input type="text" value={form.loginId} required placeholder="半角英数字"
+              onChange={(e) => setForm({ ...form, loginId: e.target.value })} />
+          </label>
+          <label className="fld">
+            支店（管轄）
+            <input type="text" value={form.branch}
+              onChange={(e) => setForm({ ...form, branch: e.target.value })} />
+          </label>
+          <label className="fld">
+            営業所（部署）
+            <input type="text" value={form.office}
+              onChange={(e) => setForm({ ...form, office: e.target.value })} />
+          </label>
+          <label className="fld">
+            役職
+            <input type="text" value={form.title} placeholder="主任 / 課長 など"
+              onChange={(e) => setForm({ ...form, title: e.target.value })} />
+          </label>
+          <label className="fld">
             氏名
             <input type="text" value={form.name} required
               onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </label>
           <label className="fld">
-            ログインID
-            <input type="text" value={form.loginId} required placeholder="半角英数字"
-              onChange={(e) => setForm({ ...form, loginId: e.target.value })} />
-          </label>
-          <label className="fld">
-            役割
+            権限
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
               {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
-          </label>
-          <label className="fld">
-            支店
-            <input type="text" value={form.branch}
-              onChange={(e) => setForm({ ...form, branch: e.target.value })} />
-          </label>
-          <label className="fld">
-            営業所
-            <input type="text" value={form.office}
-              onChange={(e) => setForm({ ...form, office: e.target.value })} />
           </label>
           <button className="btn" type="submit" disabled={busy}>追加して仮パスワードを発行</button>
         </form>
@@ -455,7 +468,8 @@ export default function Users() {
         <table className="tbl">
           <thead>
             <tr>
-              <th>ID</th><th>ログインID</th><th>氏名</th><th>役割</th><th>支店 / 営業所</th>
+              <th>ID</th><th>ログインID<br /><small>（社員番号）</small></th><th>氏名</th><th>役職</th><th>権限</th>
+              <th>支店（管轄） / 営業所（部署）</th>
               <th>パスワード</th><th>最終ログイン</th><th>状態</th><th></th>
             </tr>
           </thead>
@@ -473,14 +487,18 @@ export default function Users() {
                       onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
                   </td>
                   <td>
+                    <input type="text" value={editing.title} placeholder="役職" style={{ width: 90 }}
+                      onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
+                  </td>
+                  <td>
                     <select value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })}>
                       {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
                   </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
-                    <input type="text" value={editing.branch} placeholder="支店" style={{ width: 90 }}
+                    <input type="text" value={editing.branch} placeholder="支店（管轄）" style={{ width: 100 }}
                       onChange={(e) => setEditing({ ...editing, branch: e.target.value })} />
-                    <input type="text" value={editing.office} placeholder="営業所" style={{ width: 110, marginLeft: 4 }}
+                    <input type="text" value={editing.office} placeholder="営業所（部署）" style={{ width: 120, marginLeft: 4 }}
                       onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
                   </td>
                   <td colSpan={3} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
@@ -495,13 +513,14 @@ export default function Users() {
                   <td>{u.id}</td>
                   <td><code>{u.login_id || '—'}</code></td>
                   <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
+                  <td>{u.title || '—'}</td>
                   <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
                   <td>
                     {[u.branch, u.office].filter(Boolean).join(' / ') || '—'}
                     {/* 所属が案件データと合っていないと本人には何も出ない。ここで気づけるようにする */}
                     {u.active === 1 && u.visible_deals === 0 && (
                       <div>
-                        <span className="badge red" title="支店・営業所の表記が案件データと一致していない可能性があります">
+                        <span className="badge red" title="支店（管轄）の表記が案件データと一致していない可能性があります">
                           案件が見えません
                         </span>
                       </div>

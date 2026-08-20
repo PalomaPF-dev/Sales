@@ -104,7 +104,7 @@ const AUTH_DISABLED = (() => {
   return true;
 })();
 
-/** 認証無効時に全員が名乗るユーザー（管理者→営業企画部の順で選ぶ） */
+/** 認証無効時に全員が名乗るユーザー（管理者→本社の順で選ぶ） */
 async function fallbackUser() {
   return db.get(
     `SELECT * FROM users WHERE active = 1
@@ -228,7 +228,7 @@ api.get('/setup/status', wrap(async (req, res) => {
   const open = await needsSetup();
   res.json({
     needsSetup: open,
-    // 初期設定の対象は管理者・営業企画部のみ（POST側の制限と揃える）
+    // 初期設定の対象は管理者・本社のみ（POST側の制限と揃える）
     candidates: open
       ? await db.all(
           `SELECT login_id, name, role FROM users
@@ -247,7 +247,7 @@ api.post('/setup', wrap(async (req, res) => {
   const user = await db.get('SELECT * FROM users WHERE login_id = ? AND active = 1', [loginId]);
   if (!user) return res.status(400).json({ error: '対象のユーザーが見つかりません' });
   if (!['admin', 'planning'].includes(user.role)) {
-    return res.status(400).json({ error: '最初の設定は管理者または営業企画部のユーザーに対して行ってください' });
+    return res.status(400).json({ error: '最初の設定は管理者または本社のユーザーに対して行ってください' });
   }
   const problem = validatePassword(password);
   if (problem) return res.status(400).json({ error: problem });
@@ -496,12 +496,14 @@ api.post('/password', wrap(async (req, res) => {
 
 // ---- ユーザー管理（管理者のみ） ----
 
-const ROLES = ['sales', 'branch_manager', 'planning', 'admin', 'developer'];
-// 名簿では日本語で書かれることが多いため、役割名の表記ゆれを吸収する
+const ROLES = ['sales', 'branch_manager', 'wide_area', 'planning', 'admin', 'developer'];
+// 名簿では日本語で書かれることが多いため、権限名の表記ゆれを吸収する。
+// planning は旧・営業企画部の内部名で、いまは「本社」を指す
 const ROLE_ALIASES = {
   '営業担当者': 'sales', '営業': 'sales', '担当者': 'sales', 'sales': 'sales',
   '支店長': 'branch_manager', 'branch_manager': 'branch_manager',
-  '営業企画部': 'planning', '企画': 'planning', 'planning': 'planning',
+  '広域担当': 'wide_area', '広域': 'wide_area', 'wide_area': 'wide_area',
+  '本社': 'planning', '営業企画部': 'planning', '企画': 'planning', 'planning': 'planning',
   '管理者': 'admin', 'admin': 'admin',
   '開発者': 'developer', 'developer': 'developer',
 };
@@ -524,15 +526,14 @@ api.get('/admin/users', wrap(async (req, res) => {
   // 支店・営業所の表記が案件データと合っていないと0件になり、
   // 本人からは「何も出ない」としか分からないため、管理側で気づけるようにする。
   const rows = await db.all(`
-    SELECT u.id, u.name, u.role, u.branch, u.office, u.active, u.login_id, u.last_login_at,
+    SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.active, u.login_id, u.last_login_at,
            u.must_change_password, u.locked_until,
            CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password,
            CASE
-             WHEN u.role IN ('admin','developer','planning') THEN (SELECT COUNT(*) FROM deals)
-             WHEN u.role = 'branch_manager' THEN
-               (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch)
+             WHEN u.role IN ('admin','developer','planning','branch_manager','wide_area')
+               THEN (SELECT COUNT(*) FROM deals)
              ELSE
-               (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch AND d.office = u.office)
+               (SELECT COUNT(*) FROM deals d WHERE d.branch = u.branch)
            END AS visible_deals
     FROM users u ORDER BY u.id`);
   res.json(rows);
@@ -540,12 +541,12 @@ api.get('/admin/users', wrap(async (req, res) => {
 
 api.post('/admin/users', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { name, role, branch, office, loginId } = req.body || {};
+  const { name, role, branch, office, title, loginId } = req.body || {};
   if (!name || !role || !loginId) {
-    return res.status(400).json({ error: '氏名・役割・ログインIDは必須です' });
+    return res.status(400).json({ error: '氏名・権限・ログインID（社員番号）は必須です' });
   }
   if (!ROLES.includes(role)) {
-    return res.status(400).json({ error: '役割の指定が不正です' });
+    return res.status(400).json({ error: '権限の指定が不正です' });
   }
   if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginId)) {
     return res.status(400).json({ error: 'ログインIDは半角英数字・._- の3〜32文字で指定してください' });
@@ -555,9 +556,9 @@ api.post('/admin/users', wrap(async (req, res) => {
 
   const temp = generateTempPassword();
   const { lastInsertRowid } = await db.run(
-    `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password)
-     VALUES (?,?,?,?,?,?,1)`,
-    [name, role, nv(branch), nv(office), loginId, await hashPassword(temp)]
+    `INSERT INTO users (name, role, branch, office, title, login_id, password_hash, must_change_password)
+     VALUES (?,?,?,?,?,?,?,1)`,
+    [name, role, nv(branch), nv(office), nv(title), loginId, await hashPassword(temp)]
   );
   // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
   res.status(201).json({ id: Number(lastInsertRowid), loginId, tempPassword: temp });
@@ -583,9 +584,13 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
   const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
 
+  if ('role' in (req.body || {}) && !ROLES.includes(String(req.body.role))) {
+    return res.status(400).json({ error: '権限の指定が不正です' });
+  }
   const sets = [];
   const params = [];
-  for (const [field, col] of [['name', 'name'], ['role', 'role'], ['branch', 'branch'], ['office', 'office']]) {
+  for (const [field, col] of [['name', 'name'], ['role', 'role'], ['branch', 'branch'],
+    ['office', 'office'], ['title', 'title']]) {
     if (field in (req.body || {})) { sets.push(`${col} = ?`); params.push(nv(req.body[field])); }
   }
   if ('loginId' in (req.body || {})) {
@@ -610,7 +615,7 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
   await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
   if (req.body?.active === false) await destroyUserSessions(user.id);
   res.json(await db.get(
-    `SELECT id, name, role, branch, office, active, login_id, last_login_at,
+    `SELECT id, name, role, branch, office, title, active, login_id, last_login_at,
              CASE WHEN password_hash IS NULL THEN 0 ELSE 1 END AS has_password
      FROM users WHERE id = ?`, [user.id]));
 }));
@@ -952,15 +957,26 @@ api.delete('/admin/users/:id', wrap(async (req, res) => {
 
 // ---- ユーザーの一括登録 ----
 
-// 名簿の列見出し → 内部項目。表記ゆれをある程度吸収する
+// 名簿の列見出し → 内部項目。表記ゆれをある程度吸収する。
+// 「ログインID（社員番号）」のような括弧の補足つきの見出しは、
+// 突き合わせの前に括弧の中身を取り除く（normalizeUserHeader）
 const USER_HEADER_MAP = {
   'ログインID': 'loginId', 'ログインid': 'loginId', 'loginid': 'loginId', 'ID': 'loginId', 'id': 'loginId',
+  '社員番号': 'loginId', '社員No': 'loginId',
   '氏名': 'name', '名前': 'name', '担当者名': 'name', 'name': 'name',
   '役割': 'role', '権限': 'role', 'ロール': 'role', 'role': 'role',
-  '支店': 'branch', '支店名': 'branch', 'branch': 'branch',
-  '営業所': 'office', '営業所名': 'office', 'office': 'office',
+  '役職': 'title', 'title': 'title',
+  '支店': 'branch', '支店名': 'branch', '管轄': 'branch', 'branch': 'branch',
+  '営業所': 'office', '営業所名': 'office', '部署': 'office', 'office': 'office',
   '有効': 'active',
 };
+
+/** 見出しの正規化。「支店（管轄）」→「支店」のように括弧の補足と空白を除く */
+function normalizeUserHeader(h) {
+  return String(h ?? '').trim()
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/[\s　]/g, '');
+}
 
 /**
  * 名簿（Excel / CSV）を読んでユーザーの登録内容を組み立てる。
@@ -974,15 +990,15 @@ function parseUserRows(buffer) {
   // 空行も残す。行番号がExcelの行と一致しないと、エラーの指摘先がずれる
   const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: true });
 
-  // 見出し行を探す（「氏名」または「ログインID」を含む行）
+  // 見出し行を探す（「氏名」または「ログインID」を含む行。括弧の補足つきも受ける）
   let hi = -1;
   for (let i = 0; i < Math.min(grid.length, 10); i++) {
-    const cells = (grid[i] || []).map((c) => String(c ?? '').trim());
-    if (cells.some((c) => c === '氏名' || c === '名前' || /^ログインID$/i.test(c))) { hi = i; break; }
+    const cells = (grid[i] || []).map((c) => normalizeUserHeader(c));
+    if (cells.some((c) => c === '氏名' || c === '名前' || /^ログインID$/i.test(c) || c === '社員番号')) { hi = i; break; }
   }
-  if (hi < 0) throw new Error('見出し行が見つかりません。「ログインID」「氏名」「役割」を含む行が必要です');
+  if (hi < 0) throw new Error('見出し行が見つかりません。「ログインID（社員番号）」「氏名」「権限」を含む行が必要です');
 
-  const headers = (grid[hi] || []).map((h) => String(h ?? '').trim());
+  const headers = (grid[hi] || []).map((h) => normalizeUserHeader(h));
   const colIndex = {};
   headers.forEach((h, i) => {
     const key = USER_HEADER_MAP[h] ?? USER_HEADER_MAP[h.toLowerCase()];
@@ -1011,7 +1027,7 @@ function parseUserRows(buffer) {
     const roleRaw = cell('role');
     const role = roleRaw == null || String(roleRaw).trim() === '' ? 'sales' : parseRole(roleRaw);
     if (!role) {
-      errors.push({ line: lineNo, loginId, message: `役割「${String(roleRaw).trim()}」を判別できません（営業担当者/支店長/営業企画部/管理者）` });
+      errors.push({ line: lineNo, loginId, message: `権限「${String(roleRaw).trim()}」を判別できません（営業担当者/支店長/広域担当/本社/管理者）` });
       continue;
     }
 
@@ -1026,6 +1042,7 @@ function parseUserRows(buffer) {
       role,
       branch,
       office: nv(cell('office')),
+      title: nv(cell('title')),
       active: activeRaw === '' ? true : parseFlag(activeRaw),
     });
   }
@@ -1076,8 +1093,8 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
     }
     if (existing) {
       await db.run(
-        'UPDATE users SET name = ?, role = ?, branch = ?, office = ?, active = ? WHERE id = ?',
-        [r.name, r.role, r.branch, r.office, r.active ? 1 : 0, existing.id]
+        'UPDATE users SET name = ?, role = ?, branch = ?, office = ?, title = ?, active = ? WHERE id = ?',
+        [r.name, r.role, r.branch, r.office, r.title, r.active ? 1 : 0, existing.id]
       );
       updated.push({ id: existing.id, loginId: r.loginId, name: r.name });
       continue;
@@ -1085,9 +1102,9 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
     // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
     const temp = generateTempPassword();
     const { lastInsertRowid } = await db.run(
-      `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password, active)
-       VALUES (?,?,?,?,?,?,1,?)`,
-      [r.name, r.role, r.branch, r.office, r.loginId, await hashPassword(temp), r.active ? 1 : 0]
+      `INSERT INTO users (name, role, branch, office, title, login_id, password_hash, must_change_password, active)
+       VALUES (?,?,?,?,?,?,?,1,?)`,
+      [r.name, r.role, r.branch, r.office, r.title, r.loginId, await hashPassword(temp), r.active ? 1 : 0]
     );
     created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name, tempPassword: temp });
   }
@@ -1099,15 +1116,16 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
 api.get('/admin/users/template', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const rows = [
-    ['ログインID', '氏名', '役割', '支店', '営業所', '有効'],
-    ['yamada.t', '山田 太郎', '営業担当者', '東京中央', '東京中央営業所', '〇'],
-    ['suzuki.i', '鈴木 一郎', '支店長', '東京中央', '', '〇'],
-    ['tanaka.j', '田中 次郎', '営業企画部', '本社', '営業企画部', '〇'],
-    ['sato.s', '佐藤 三郎', '管理者', '本社', '', '〇'],
+    ['ログインID（社員番号）', '支店（管轄）', '営業所（部署）', '役職', '氏名', '権限', '有効'],
+    ['100001', '東京中央', '東京中央営業所', '主任', '山田 太郎', '営業担当者', '〇'],
+    ['100002', '東京中央', '', '支店長', '鈴木 一郎', '支店長', '〇'],
+    ['100003', '本社', '広域営業部', '課長', '田中 次郎', '広域担当', '〇'],
+    ['100004', '本社', '営業企画部', '部長', '佐藤 三郎', '本社', '〇'],
+    ['100005', '本社', '', 'システム管理', '高橋 四郎', '管理者', '〇'],
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 18 }, { wch: 6 }];
+  ws['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 6 }];
   XLSX.utils.book_append_sheet(wb, ws, 'ユーザー');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1188,55 +1206,52 @@ api.get('/meta', wrap(async (req, res) => {
 // ---- 閲覧範囲（役割ごとに見えるデータを絞る） ----
 
 /**
- * 役割ごとの閲覧範囲を、案件テーブルに対する条件として返す。
+ * 権限ごとの閲覧範囲を、案件テーブルに対する条件として返す。
  *
- *   営業担当者   … 自分の営業所のみ
- *   支店長       … 自分の支店の全営業所
- *   営業企画部   … 全社
- *   管理者       … 全社
+ *   営業担当者          … 自分の支店のみ
+ *   支店長・広域担当    … 全支店
+ *   本社（planning）    … 全社（目標値の設定もできる）
+ *   管理者・開発者      … 全社
  *
- * 支店・営業所は取り込んだ案件から増えていくため、ここでは値を持たず
- * 利用者に設定された支店・営業所と突き合わせるだけにしている。
- * 支店や営業所が増えても、この関数を直す必要はない。
+ * 支店は取り込んだ案件から増えていくため、ここでは値を持たず
+ * 利用者に設定された支店と突き合わせるだけにしている。
+ * 支店が増えても、この関数を直す必要はない。
  *
- * 支店・営業所が未設定の利用者には何も見せない（1=0）。
- * 設定漏れのときに他営業所の単価が見えてしまうより、
+ * 支店が未設定の営業担当者には何も見せない（1=0）。
+ * 設定漏れのときに他支店の単価が見えてしまうより、
  * 見えない状態で気づいてもらうほうが安全なため。
  */
 function scopeConditions(user, alias = '') {
   const p = alias ? `${alias}.` : '';
   if (!user) return { where: ['1 = 0'], params: [] };
-  if (isAdminRole(user.role) || user.role === 'planning') return { where: [], params: [] };
-
-  if (user.role === 'branch_manager') {
-    if (!user.branch) return { where: ['1 = 0'], params: [], missing: '支店' };
-    return { where: [`${p}branch = ?`], params: [user.branch] };
+  // 支店長・広域担当は全支店を閲覧できる
+  if (isAdminRole(user.role) || ['planning', 'branch_manager', 'wide_area'].includes(user.role)) {
+    return { where: [], params: [] };
   }
 
-  // 営業担当者（既定）
-  if (!user.branch || !user.office) {
-    return { where: ['1 = 0'], params: [], missing: '支店・営業所' };
+  // 営業担当者（既定）。自分の支店のみ
+  if (!user.branch) {
+    return { where: ['1 = 0'], params: [], missing: '支店' };
   }
-  return { where: [`${p}branch = ? AND ${p}office = ?`], params: [user.branch, user.office] };
+  return { where: [`${p}branch = ?`], params: [user.branch] };
 }
 
 /** 画面に出すための範囲の説明。未設定のときは理由も返す */
 function scopeInfo(user) {
   const s = scopeConditions(user);
   if (!user) return { level: 'none', label: '—' };
-  if (isAdminRole(user.role) || user.role === 'planning') {
-    return { level: 'all', label: '全社' };
+  if (isAdminRole(user.role) || ['planning', 'branch_manager', 'wide_area'].includes(user.role)) {
+    return { level: 'all', label: user.role === 'planning' ? '全社（本社）' : '全社' };
   }
   if (s.missing) {
     return {
       level: 'none',
       label: '未設定',
       missing: s.missing,
-      note: `${s.missing}が設定されていないため、案件を表示できません。営業企画部にご連絡ください`,
+      note: `${s.missing}が設定されていないため、案件を表示できません。本社（管理者）にご連絡ください`,
     };
   }
-  if (user.role === 'branch_manager') return { level: 'branch', label: `${user.branch}（支店全体）` };
-  return { level: 'office', label: `${user.branch} / ${user.office}` };
+  return { level: 'branch', label: `${user.branch}（支店全体）` };
 }
 
 // ---- ダッシュボード（進捗） ----
@@ -2063,14 +2078,17 @@ api.get('/deals/:id', wrap(async (req, res) => {
   res.json({ deal, negotiation: negotiation ?? null, logs });
 }));
 
-// 営業担当者が案件一覧から直接入れる項目（合意単価・適用年月・完了）。
+// 値上げ交渉の項目。営業担当者を含む全権限が案件一覧から入れられる。
 // 列名の r2_ は旧・第2弾の名残で、いまは唯一の交渉を指す。
 const EDITABLE = [
   'r2_agreed_price', 'r2_applied_ym', 'r2_done',
-  'price_type_code',
   // 値上げ交渉（営業担当者が入力する）。商談メモは商談結果の詳細
   'nego_result', 'nego_note', 'final_date', 'final_price',
 ];
+
+// 本社（planning）・管理者・開発者。目標値の設定など、交渉以外の変更ができる
+const HQ_ROLES = ['planning', 'admin', 'developer'];
+const isHqRole = (role) => HQ_ROLES.includes(role);
 
 /** 商談結果の選択肢。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談 */
 const NEGO_RESULTS = ['〇', '□', '△', '×'];
@@ -2090,15 +2108,15 @@ function normNegoResult(v) {
   return t;
 }
 
-// 目標値上げ単価は管理者だけが直せる。
+// 目標値上げ単価・単価種別は本社（と管理者）だけが直せる。
 // 誰でも直せると目標そのものが動いてしまい、進捗の意味が無くなるため。
-const ADMIN_ONLY_EDITABLE = ['r2_target_price'];
+const HQ_ONLY_EDITABLE = ['r2_target_price', 'price_type_code'];
 
 // 取込で入る残りの列（法人名・器種・出荷単価・支店など）。
 // 取込のズレ（列の取り違え・誤記）を直すためのもので、開発者だけが変更できる。
 // 通常の運用でここが動くと管理表と食い違うため、管理者にも開放しない。
 const DEVELOPER_EDITABLE = FIELDS
-  .filter((f) => !EDITABLE.includes(f.key) && !ADMIN_ONLY_EDITABLE.includes(f.key))
+  .filter((f) => !EDITABLE.includes(f.key) && !HQ_ONLY_EDITABLE.includes(f.key))
   .map((f) => ({ key: f.key, label: f.label, type: f.type }));
 
 /** 開発者の修正用。取込と同じく、空欄は未設定として受ける */
@@ -2165,18 +2183,20 @@ function buildDealUpdate(body, deal, user) {
     sets.push(`${f} = ?`);
     params.push(v);
   }
-  for (const f of ADMIN_ONLY_EDITABLE) {
+  for (const f of HQ_ONLY_EDITABLE) {
     if (!(f in body)) continue;
-    if (!isAdminRole(user.role)) {
-      throw new Error('目標値上げ単価を変更できるのは管理者のみです');
+    if (!isHqRole(user.role)) {
+      throw new Error(f === 'r2_target_price'
+        ? '目標値上げ単価を変更できるのは本社（と管理者）のみです'
+        : '単価種別を変更できるのは本社（と管理者）のみです');
     }
     sets.push(`${f} = ?`);
-    params.push(toPrice(body[f]));
+    params.push(f === 'r2_target_price' ? toPrice(body[f]) : nv(body[f]));
   }
-  // B基準（実際の決定単価）。同課（営業企画）と管理者が入れる
+  // B基準（実際の決定単価）。本社と管理者が入れる
   if ('b_price' in body) {
-    if (!['planning', 'admin', 'developer'].includes(user.role)) {
-      throw new Error('決定単価（B基準）を入力できるのは営業企画・管理者のみです');
+    if (!isHqRole(user.role)) {
+      throw new Error('決定単価（B基準）を入力できるのは本社（と管理者）のみです');
     }
     sets.push('b_price = ?');
     params.push(toPrice(body.b_price));
@@ -2226,11 +2246,14 @@ api.patch('/deals/:id', wrap(async (req, res) => {
 
   // 区分の選択。目標値上げ単価は手入力ではなく、
   // 選んだ区分に対応する基準価格表の「値上後単価」が入る。
-  // これは営業担当者の操作（どの区分の得意先かは担当者が判断する）。
+  // 目標値が変わる操作のため、本社（と管理者）だけができる。
   const extraSets = [];
   const extraParams = [];
   const body = { ...req.body };
   if ('kubun' in body) {
+    if (!isHqRole(req.user.role)) {
+      return res.status(403).json({ error: '区分の選択（目標値の設定）ができるのは本社（と管理者）のみです' });
+    }
     const kubun = String(body.kubun ?? '').trim();
     delete body.kubun;
     if (!kubun) {
@@ -2260,7 +2283,7 @@ api.patch('/deals/:id', wrap(async (req, res) => {
     try {
       built = buildDealUpdate(body, deal, req.user);
     } catch (e) {
-      return res.status(e.message.includes('管理者のみ') ? 403 : 400).json({ error: e.message });
+      return res.status(/のみです$/.test(e.message) ? 403 : 400).json({ error: e.message });
     }
   } else if (!extraSets.length) {
     return res.status(400).json({ error: '更新項目がありません' });
@@ -2480,7 +2503,7 @@ api.delete('/logs/:id', wrap(async (req, res) => {
     return res.status(404).json({ error: '履歴が見つかりません' });
   }
   if (log.user_id !== req.user.id && !['planning', 'admin', 'developer'].includes(req.user.role)) {
-    return res.status(403).json({ error: '記入者本人または営業企画部のみ削除できます' });
+    return res.status(403).json({ error: '記入者本人または本社のみ削除できます' });
   }
   await db.run('DELETE FROM negotiation_logs WHERE id = ?', [log.id]);
   res.json({ ok: true });
@@ -2599,7 +2622,7 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
     return res.status(404).json({ error: 'ファイルが見つかりません' });
   }
   if (a.uploaded_by !== req.user.id && !['planning', 'admin', 'developer'].includes(req.user.role)) {
-    return res.status(403).json({ error: 'アップロードした本人または営業企画部のみ削除できます' });
+    return res.status(403).json({ error: 'アップロードした本人または本社のみ削除できます' });
   }
   await db.run('DELETE FROM attachments WHERE id = ?', [a.id]);
   // DB から消えた後に実体も消す。失敗しても業務は止めない（privateBlob 側でログのみ）

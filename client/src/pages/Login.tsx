@@ -9,8 +9,8 @@ import type { User } from '../types';
 const SSO_MESSAGES: Record<string, string> = {
   expired: 'リンクの有効期限が切れました。ポータルからもう一度お開きください。',
   replayed: 'このリンクは既に使われています。ポータルからもう一度お開きください。',
-  unknown_user: 'このアカウントは登録されていません。営業企画部にお問い合わせください。',
-  inactive: 'このアカウントは現在ご利用いただけません。営業企画部にお問い合わせください。',
+  unknown_user: 'このアカウントは登録されていません。本社（管理者）にお問い合わせください。',
+  inactive: 'このアカウントは現在ご利用いただけません。本社（管理者）にお問い合わせください。',
   disabled: 'ポータル連携は現在設定されていません。下のログインをお使いください。',
 };
 const SSO_FALLBACK = 'ポータルからのログインに失敗しました。もう一度お試しください。';
@@ -79,7 +79,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
         </button>
 
         <p className="pt-note" style={{ marginTop: 16, textAlign: 'center' }}>
-          パスワードが分からない場合は営業企画部にお問い合わせください
+          パスワードが分からない場合は本社（管理者）にお問い合わせください
         </p>
       </form>
     </div>

@@ -165,9 +165,10 @@ export default function Deals() {
   useEffect(() => {
     api<Meta>('/meta').then((m) => {
       setMeta(m);
-      // 営業担当者・支店長は自分の支店を初期表示にする（営業企画部・管理者は全社）
+      // 営業担当者・支店長は自分の支店を初期表示にする
+      // （広域担当・本社・管理者は全社のまま。支店長も絞り込みを外せば全支店が見える）
       if (!params.get('branch') && me.branch
-          && !['planning', 'admin', 'developer'].includes(me.role)) {
+          && ['sales', 'branch_manager'].includes(me.role)) {
         if (m.branches.some((b) => b.name === me.branch)) setParam('branch', me.branch);
       }
     }).catch((e) => setMsg({ kind: 'error', text: e.message }));
