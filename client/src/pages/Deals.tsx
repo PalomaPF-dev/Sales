@@ -66,7 +66,7 @@ export default function Deals() {
   // 本社（と管理者）。目標単価をこの画面から直接入力できる
   const isHq = ['planning', 'admin', 'developer'].includes(me.role);
 
-  // 商談結果の一括入力。行頭のチェックで品目を選び、まとめて同じ結果を入れる
+  // 商談結果の一括入力。商談結果の左のチェックで品目を選び、まとめて同じ結果を入れる
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [selNego, setSelNego] = useState('');
   const [selNote, setSelNote] = useState('');
@@ -446,7 +446,7 @@ export default function Deals() {
         隣の<strong>目標単価</strong>は本社が設定します。
         <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
         <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
-        行頭のチェックで品目を選ぶと、<strong>商談結果とメモをまとめて一括入力</strong>できます。
+        商談結果の左のチェックで品目を選ぶと、<strong>商談結果とメモをまとめて一括入力</strong>できます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -600,12 +600,12 @@ export default function Deals() {
         </div>
       )}
 
-      {/* 商談結果の一括入力。行頭のチェックで品目を選び、同じ結果とメモをまとめて入れる */}
+      {/* 商談結果の一括入力。商談結果の左のチェックで品目を選び、同じ結果とメモをまとめて入れる */}
       {data && (
         <div className="toolbar">
           <span className="count">
             選択 <b>{sel.size.toLocaleString()}</b>件
-            {sel.size === 0 && <span style={{ color: 'var(--muted)' }}>（行頭のチェックで品目を選ぶと、商談結果をまとめて入れられます）</span>}
+            {sel.size === 0 && <span style={{ color: 'var(--muted)' }}>（商談結果の左のチェックで品目を選ぶと、商談結果をまとめて入れられます）</span>}
           </span>
           <select value={selNego} onChange={(e) => setSelNego(e.target.value)} disabled={!sel.size}>
             <option value="">商談結果を選ぶ</option>
@@ -686,7 +686,7 @@ export default function Deals() {
         <table className="tbl deals">
           <thead>
             <tr>
-              <th colSpan={6} className="grp fx fxg">基本情報</th>
+              <th colSpan={5} className="grp">基本情報</th>
               <th colSpan={2} className="grp">規格・区分</th>
               <th colSpan={3} className="grp">担当</th>
               <th colSpan={5} className="grp sep"
@@ -698,19 +698,10 @@ export default function Deals() {
                   title={`その月のマスタ登録単価 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
                 値上げ幅（マスタ登録単価−{actLabel}マスタ単価）
               </th>
-              <th colSpan={5} className="grp sep">値上げ交渉（営業担当者が入力）</th>
+              <th colSpan={6} className="grp sep">値上げ交渉（営業担当者が入力）</th>
               <th className="grp"></th>
             </tr>
             <tr>
-              {/* 商談結果の一括入力のための選択。見出しはページ内の全行をまとめて選ぶ */}
-              <th className="fx fx1" title="表示中の行をまとめて選ぶ／外す">
-                <input type="checkbox"
-                  checked={(data?.rows.length ?? 0) > 0 && (data?.rows ?? []).every((r) => sel.has(r.id))}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    setSel(on ? new Set((data?.rows ?? []).map((r) => r.id)) : new Set());
-                  }} />
-              </th>
               <Th col="corp_name" className="fx fx2">企業名</Th>
               <Th col="customer_name" className="fx fx3">得意先名</Th>
               <Th col="delivery_name" className="fx fx4">納入先名</Th>
@@ -757,7 +748,16 @@ export default function Deals() {
               <th className="num">{ymLabel(meta?.aggMeta?.m1, '翌月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</th>
-              <Th col="nego_result" className="sep"
+              {/* 商談結果の一括入力のための選択。見出しはページ内の全行をまとめて選ぶ */}
+              <th className="sep" title="表示中の行をまとめて選ぶ／外す">
+                <input type="checkbox"
+                  checked={(data?.rows.length ?? 0) > 0 && (data?.rows ?? []).every((r) => sel.has(r.id))}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setSel(on ? new Set((data?.rows ?? []).map((r) => r.id)) : new Set());
+                  }} />
+              </th>
+              <Th col="nego_result"
                   title="商談の結果。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談">
                 商談結果
               </Th>
@@ -773,9 +773,6 @@ export default function Deals() {
               const isEditing = editing === d.id;
               return (
                 <tr key={d.id} className={isEditing ? 'editing' : ''}>
-                  <td className="fx fx1">
-                    <input type="checkbox" checked={sel.has(d.id)} onChange={() => toggleSel(d.id)} />
-                  </td>
                   <td className="fx fx2" title={[d.corp_name, d.corp_code, d.industry].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'corp_name') : (
                       <a href={`/corps/${d.corp_code}`}
@@ -858,8 +855,11 @@ export default function Deals() {
                   <td className="num">{aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
 
-                  {/* 値上げ交渉。商談結果・商談メモ・最終確定日・最終確定単価・適用年月（営業担当者が入力） */}
+                  {/* 値上げ交渉。選択（一括入力用）・商談結果・商談メモ・最終確定日・最終確定単価・適用年月 */}
                   <td className="sep">
+                    <input type="checkbox" checked={sel.has(d.id)} onChange={() => toggleSel(d.id)} />
+                  </td>
+                  <td>
                     {isEditing ? (
                       <select className="cell" value={draft.nego_result}
                         onChange={(e) => setDraft({ ...draft, nego_result: e.target.value })}>
@@ -939,7 +939,7 @@ export default function Deals() {
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
           「入力」から商談結果・商談メモ・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
-          行頭のチェックで品目を選ぶと、商談結果とメモをまとめて入れられます。
+          商談結果の左のチェックで品目を選ぶと、商談結果とメモをまとめて入れられます。
           {isHq && ' 本社・管理者は目標単価も「入力」から設定できます。'}
         </p>
       )}
