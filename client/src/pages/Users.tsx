@@ -21,7 +21,19 @@ interface AdminUser {
   visible_deals?: number;
 }
 
-interface Issued { loginId: string; tempPassword: string; name?: string }
+/** 管理者向けの問い合わせ一覧の1件（Contactページと同じ形） */
+interface AdminInquiry {
+  id: number;
+  login_id: string | null;
+  name: string;
+  category: string;
+  message: string;
+  status: 'open' | 'resolved';
+  reply: string | null;
+  replied_by: string | null;
+  replied_at: string | null;
+  created_at: string;
+}
 
 /** 案件データに出てくる担当者 */
 interface DealPerson {
@@ -47,7 +59,7 @@ interface EditRow {
 }
 
 interface ImportResult {
-  created: Issued[];
+  created: { loginId: string; name?: string }[];
   updated?: { id: number; loginId: string; name: string }[];
   // 名簿の取込はログインID、担当者の登録は氏名で識別するため、どちらも受ける
   skipped: { loginId?: string; name?: string; message: string }[];
@@ -60,8 +72,12 @@ export default function Users() {
   const me = useUser();
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [form, setForm] = useState({ ...EMPTY });
-  const [issued, setIssued] = useState<Issued | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  // ユーザーの一括削除（チェックで選んでまとめて消す）
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  // 問い合わせ（管理者が回答する）
+  const [inquiries, setInquiries] = useState<AdminInquiry[]>([]);
+  const [replyDraft, setReplyDraft] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
@@ -72,7 +88,10 @@ export default function Users() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
-    api<AdminUser[]>('/admin/users').then(setRows).catch((e) => setMsg({ kind: 'error', text: e.message }));
+    api<AdminUser[]>('/admin/users')
+      .then((r) => { setRows(r); setSel(new Set()); })
+      .catch((e) => setMsg({ kind: 'error', text: e.message }));
+    api<AdminInquiry[]>('/inquiries').then(setInquiries).catch(() => {});
   };
   useEffect(load, []);
 
@@ -81,10 +100,60 @@ export default function Users() {
     setBusy(true);
     setMsg(null);
     try {
-      const res = await api<Issued>('/admin/users', { method: 'POST', body: JSON.stringify(form) });
-      setIssued({ ...res, name: form.name });
+      const res = await api<{ loginId: string }>('/admin/users', { method: 'POST', body: JSON.stringify(form) });
+      setMsg({
+        kind: 'ok',
+        text: `${form.name}（${res.loginId}）を追加しました。`
+          + '本人は初回ログイン時に「パスワード設定」から自分でパスワードを決めます',
+      });
       setForm({ ...EMPTY });
       load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleSel = (id: number) => {
+    setSel((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  /** 選んだユーザーをまとめて削除する。消せない人は理由つきで報告される */
+  const removeSelected = async () => {
+    if (!sel.size) return;
+    const names = rows.filter((u) => sel.has(u.id)).map((u) => u.name);
+    if (!confirm(`${sel.size}名を削除します。元に戻せません。よろしいですか？\n\n${names.join(' / ')}`)) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<{ deleted: { name: string }[]; skipped: { name: string; message: string }[] }>(
+        '/admin/users/bulk-delete',
+        { method: 'POST', body: JSON.stringify({ ids: [...sel] }) });
+      const text = `${res.deleted.length}名を削除しました`
+        + (res.skipped.length
+          ? `。削除できなかった人: ${res.skipped.map((s) => `${s.name}（${s.message}）`).join(' / ')}`
+          : '');
+      setMsg({ kind: res.skipped.length ? 'error' : 'ok', text });
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 問い合わせへの回答・状態変更 */
+  const patchInquiry = async (id: number, body: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      await api(`/inquiries/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      setReplyDraft((prev) => ({ ...prev, [id]: '' }));
+      api<AdminInquiry[]>('/inquiries').then(setInquiries).catch(() => {});
     } catch (err) {
       setMsg({ kind: 'error', text: (err as Error).message });
     } finally {
@@ -220,10 +289,15 @@ export default function Users() {
   };
 
   const resetPassword = async (u: AdminUser) => {
-    if (!confirm(`${u.name} のパスワードを初期化します。現在のログインは切断されます。よろしいですか？`)) return;
+    if (!confirm(`${u.name} のパスワードを未設定に戻します。現在のログインは切断され、`
+      + '本人は次回ログイン時に「パスワード設定」からもう一度パスワードを決めます。よろしいですか？')) return;
     try {
-      const res = await api<Issued>(`/admin/users/${u.id}/reset-password`, { method: 'POST' });
-      setIssued({ ...res, name: u.name });
+      await api(`/admin/users/${u.id}/reset-password`, { method: 'POST' });
+      setMsg({
+        kind: 'ok',
+        text: `${u.name} のパスワードを未設定に戻しました。`
+          + '本人にログイン画面の「初めてログインする方はこちら（パスワード設定）」から設定し直すよう伝えてください',
+      });
       load();
     } catch (err) {
       setMsg({ kind: 'error', text: (err as Error).message });
@@ -244,26 +318,11 @@ export default function Users() {
     <div>
       <h1 className="page-title">設定</h1>
       <p className="page-sub">
-        管理者のみが利用できます。ログインIDの発行・名簿の一括取込・登録内容の編集・利用停止・削除を行います。
+        管理者のみが利用できます。名簿の一括取込・登録内容の編集・利用停止・削除（選択して一括も可）と、
+        お問い合わせへの回答を行います。パスワードは発行しません（本人が初回ログイン時に自分で設定します）。
         交渉履歴などの記録が残っている方は削除できません（「停止」にすればログインできなくなり、記録は残ります）。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
-
-      {issued && (
-        <div className="alert ok">
-          <strong>{issued.name} の仮パスワードを発行しました。</strong>
-          <div style={{ marginTop: 8, fontFamily: 'monospace', fontSize: 15 }}>
-            ログインID: <strong>{issued.loginId}</strong> ／ 仮パスワード: <strong>{issued.tempPassword}</strong>
-          </div>
-          <div style={{ marginTop: 8, fontSize: 12 }}>
-            この画面を閉じると再表示できません。本人に安全な手段で伝えてください。
-            初回ログイン時にパスワードの変更が求められます。
-          </div>
-          <button className="btn secondary sm" style={{ marginTop: 10 }} onClick={() => setIssued(null)}>
-            確認しました
-          </button>
-        </div>
-      )}
 
       <Card title="名簿の一括取込">
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -287,9 +346,8 @@ export default function Users() {
           <strong>本社</strong>（全て閲覧＋目標値の設定）／<strong>管理者</strong> のいずれかで記入します。
         </p>
         <p className="pt-note">
-        </p>
-        <p className="pt-note">
-          仮パスワードは取込結果の一覧にのみ表示されます。画面を離れると再表示できないため、控えてから閉じてください。
+          パスワードの発行はありません。追加された人は、初回ログイン時にログイン画面の
+          「初めてログインする方はこちら（パスワード設定）」から自分でパスワードを決めます。
         </p>
       </Card>
 
@@ -297,21 +355,14 @@ export default function Users() {
         <Card title={`取込結果: 追加 ${result.created.length}件 / 更新 ${result.updated?.length ?? 0}件 / 見送り ${result.skipped.length}件 / エラー ${result.errors.length}件`}>
           {result.created.length > 0 && (
             <>
-              <div className="section-title" style={{ marginTop: 0 }}>発行した仮パスワード</div>
-              <div className="tbl-scroll">
-                <table className="tbl">
-                  <thead><tr><th>ログインID</th><th>氏名</th><th>仮パスワード</th></tr></thead>
-                  <tbody>
-                    {result.created.map((c) => (
-                      <tr key={c.loginId}>
-                        <td><code>{c.loginId}</code></td>
-                        <td>{c.name}</td>
-                        <td style={{ fontFamily: 'monospace' }}><strong>{c.tempPassword}</strong></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <div className="section-title" style={{ marginTop: 0 }}>追加した人</div>
+              <p className="pt-note" style={{ marginTop: 0 }}>
+                {result.created.map((c) => `${c.name ?? ''}（${c.loginId}）`).join(' / ')}
+              </p>
+              <p className="pt-note">
+                パスワードの発行はありません。各自が初回ログイン時に
+                「パスワード設定」から自分でパスワードを決めます。
+              </p>
             </>
           )}
           {(result.updated?.length ?? 0) > 0 && (
@@ -460,14 +511,33 @@ export default function Users() {
               {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </label>
-          <button className="btn" type="submit" disabled={busy}>追加して仮パスワードを発行</button>
+          <button className="btn" type="submit" disabled={busy}>追加する</button>
         </form>
       </Card>
+
+      {/* 一括削除。行頭のチェックで選び、まとめて消す（消せない人は理由つきで残る） */}
+      <div className="toolbar">
+        <span className="count">選択 <b>{sel.size.toLocaleString()}</b>名</span>
+        <button className="btn danger sm" disabled={busy || !sel.size} onClick={removeSelected}>
+          選択したユーザーを削除
+        </button>
+        <span className="pt-note" style={{ margin: 0 }}>
+          交渉履歴などの記録が残っている人は削除できません（「停止」をお使いください）
+        </span>
+      </div>
 
       <div className="card tbl-scroll">
         <table className="tbl">
           <thead>
             <tr>
+              <th title="表示中の全員を選ぶ／外す（自分自身は除く）">
+                <input type="checkbox"
+                  checked={rows.length > 0 && rows.filter((u) => u.id !== me.id).every((u) => sel.has(u.id))}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setSel(on ? new Set(rows.filter((u) => u.id !== me.id).map((u) => u.id)) : new Set());
+                  }} />
+              </th>
               <th>ID</th><th>ログインID<br /><small>（社員番号）</small></th><th>氏名</th><th>役職</th><th>権限</th>
               <th>支店（管轄） / 営業所（部署）</th>
               <th>パスワード</th><th>最終ログイン</th><th>状態</th><th></th>
@@ -477,6 +547,7 @@ export default function Users() {
             {rows.map((u) => (
               editing?.id === u.id ? (
                 <tr key={u.id} className="editing">
+                  <td></td>
                   <td>{u.id}</td>
                   <td>
                     <input type="text" value={editing.loginId} style={{ width: 110 }}
@@ -510,6 +581,11 @@ export default function Users() {
                 </tr>
               ) : (
                 <tr key={u.id}>
+                  <td>
+                    {u.id !== me.id && (
+                      <input type="checkbox" checked={sel.has(u.id)} onChange={() => toggleSel(u.id)} />
+                    )}
+                  </td>
                   <td>{u.id}</td>
                   <td><code>{u.login_id || '—'}</code></td>
                   <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
@@ -527,7 +603,8 @@ export default function Users() {
                     )}
                   </td>
                   <td>
-                    {!u.has_password ? <span className="badge red">未設定</span>
+                    {!u.has_password
+                      ? <span className="badge yellow" title="本人が初回ログイン時に「パスワード設定」から設定します">未設定（本人待ち）</span>
                       : u.must_change_password ? <span className="badge yellow">仮</span>
                       : <span className="badge green">設定済</span>}
                     {u.locked_until && new Date(u.locked_until) > new Date() && (
@@ -539,7 +616,8 @@ export default function Users() {
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn secondary sm" onClick={() => startEdit(u)}>編集</button>
                     <button className="btn secondary sm" style={{ marginLeft: 6 }}
-                      onClick={() => resetPassword(u)}>PW初期化</button>
+                      title="パスワードを未設定に戻します。本人がログイン画面の「パスワード設定」から決め直します"
+                      onClick={() => resetPassword(u)}>PW再設定</button>
                     {u.id !== me.id && (
                       <>
                         <button className="btn secondary sm" style={{ marginLeft: 6 }}
@@ -557,6 +635,58 @@ export default function Users() {
           </tbody>
         </table>
       </div>
+
+      {/* お問い合わせ（ポータルと同じ仕様）。利用者・ログイン画面から届いた問い合わせに回答する */}
+      <Card title={`お問い合わせ（未対応 ${inquiries.filter((q) => q.status === 'open').length}件）`}>
+        {inquiries.length === 0 ? (
+          <p className="pt-note" style={{ margin: 0 }}>お問い合わせはありません。</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {inquiries.map((q) => (
+              <div key={q.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                  {q.status === 'open'
+                    ? <span className="badge yellow">未対応</span>
+                    : <span className="badge green">対応済み</span>}
+                  <span className="badge blue">{q.category}</span>
+                  <strong>{q.name}</strong>
+                  {q.login_id && <code>{q.login_id}</code>}
+                  <span style={{ color: 'var(--muted)' }}>{String(q.created_at).slice(0, 16).replace('T', ' ')}</span>
+                </div>
+                <p style={{ margin: '8px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{q.message}</p>
+                {q.reply && (
+                  <p className="pt-note" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
+                    回答（{q.replied_by}）: {q.reply}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <textarea rows={2} value={replyDraft[q.id] ?? ''} maxLength={2000}
+                    placeholder={q.reply ? '回答を書き直す（本人には未読として届きます）' : '回答を入力（送信すると対応済みになり、本人に届きます）'}
+                    style={{ flex: '1 1 320px', border: '1px solid var(--baseline)', borderRadius: 8,
+                             padding: '8px 10px', font: 'inherit', resize: 'vertical' }}
+                    onChange={(e) => setReplyDraft((prev) => ({ ...prev, [q.id]: e.target.value }))} />
+                  <button className="btn sm" disabled={busy || !(replyDraft[q.id] ?? '').trim()}
+                    onClick={() => patchInquiry(q.id, { reply: (replyDraft[q.id] ?? '').trim() })}>
+                    回答を送る
+                  </button>
+                  {q.status === 'open' ? (
+                    <button className="btn secondary sm" disabled={busy}
+                      onClick={() => patchInquiry(q.id, { status: 'resolved' })}>回答せず対応済みにする</button>
+                  ) : (
+                    <button className="btn secondary sm" disabled={busy}
+                      onClick={() => patchInquiry(q.id, { status: 'open' })}>未対応に戻す</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="pt-note" style={{ marginTop: 12 }}>
+          ログイン画面の「管理者への問い合わせ」（パスワードを忘れた等）もここに届きます。
+          パスワードを忘れた人には、上の一覧の「PW再設定」でパスワードを未設定に戻し、
+          本人に「パスワード設定」から決め直すよう回答してください。
+        </p>
+      </Card>
     </div>
   );
 }

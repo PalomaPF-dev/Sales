@@ -138,7 +138,9 @@ api.use(wrap(async (req, res, next) => {
 // ログイン前に到達してよいパス。これ以外は既定で拒否する。
 // 個別のハンドラに requireLogin を書き忘れても素通りしないようにするための関門。
 const PUBLIC_PATHS = new Set([
-  '/login', '/logout', '/me', '/setup/status', '/setup', '/sso', '/admin-recovery',
+  '/login', '/login/setup', '/logout', '/me', '/setup/status', '/setup', '/sso', '/admin-recovery',
+  // 問い合わせは「ログインできない」の分類だけ未ログインで受ける（ハンドラ側で判定）
+  '/inquiries',
 ]);
 
 api.use((req, res, next) => {
@@ -280,6 +282,13 @@ api.post('/login', wrap(async (req, res) => {
     await verifyPassword(password, null); // 応答時間を揃える
     return deny();
   }
+  // パスワード未設定＝初回ログイン。ポータルと同じく、パスワード設定へ誘導する
+  if (!user.password_hash) {
+    return res.status(409).json({
+      needsSetup: true,
+      error: '初回ログインのため、パスワードの設定が必要です',
+    });
+  }
   if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
     return res.status(423).json({
       error: `ログインの試行回数が上限を超えました。${localTime(user.locked_until)}以降に再度お試しください`,
@@ -310,6 +319,41 @@ api.post('/login', wrap(async (req, res) => {
   const { token, expires } = await createSession(user.id);
   setSessionCookie(req, res, token, expires);
   res.json(publicUser(user));
+}));
+
+/**
+ * 初回パスワード設定（ポータルと同じ仕様）。
+ * パスワードが未設定のユーザーだけが、自分でパスワードを決めてそのままログインする。
+ * 仮パスワードの発行・伝達をやめるための入口で、ログイン画面の
+ * 「初めてログインする方はこちら」から使う。
+ */
+api.post('/login/setup', wrap(async (req, res) => {
+  const loginId = String(req.body?.loginId ?? '').trim();
+  const password = String(req.body?.password ?? '');
+  if (!loginId || !password) {
+    return res.status(400).json({ error: '社員番号とパスワードを入力してください' });
+  }
+  const problem = validatePassword(password);
+  if (problem) return res.status(400).json({ error: problem });
+
+  const user = await db.get('SELECT * FROM users WHERE login_id = ? AND active = 1', [loginId]);
+  if (!user) {
+    return res.status(404).json({ error: '社員番号が見つかりません。管理者にお問い合わせください' });
+  }
+  if (user.password_hash) {
+    return res.status(409).json({ error: '既に設定済みです。通常のログインをお使いください' });
+  }
+  await db.run(
+    `UPDATE users SET password_hash = ?, must_change_password = 0,
+            failed_attempts = 0, locked_until = NULL, last_login_at = ?
+      WHERE id = ? AND password_hash IS NULL`,
+    [await hashPassword(password), now(), user.id]
+  );
+  // 競合（同時に2回設定された）を防ぐため、設定できたかを読み直して確かめる
+  const fresh = await db.get('SELECT * FROM users WHERE id = ?', [user.id]);
+  const { token, expires } = await createSession(user.id);
+  setSessionCookie(req, res, token, expires);
+  res.json(publicUser({ ...fresh, must_change_password: 0 }));
 }));
 
 api.post('/logout', wrap(async (req, res) => {
@@ -554,29 +598,29 @@ api.post('/admin/users', wrap(async (req, res) => {
   const dup = await db.get('SELECT id FROM users WHERE login_id = ?', [loginId]);
   if (dup) return res.status(409).json({ error: 'そのログインIDは既に使われています' });
 
-  const temp = generateTempPassword();
+  // パスワードは発行しない。本人が初回ログイン時に「パスワード設定」から自分で決める
   const { lastInsertRowid } = await db.run(
     `INSERT INTO users (name, role, branch, office, title, login_id, password_hash, must_change_password)
-     VALUES (?,?,?,?,?,?,?,1)`,
-    [name, role, nv(branch), nv(office), nv(title), loginId, await hashPassword(temp)]
+     VALUES (?,?,?,?,?,?,NULL,0)`,
+    [name, role, nv(branch), nv(office), nv(title), loginId]
   );
-  // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
-  res.status(201).json({ id: Number(lastInsertRowid), loginId, tempPassword: temp });
+  res.status(201).json({ id: Number(lastInsertRowid), loginId });
 }));
 
+// パスワードを未設定に戻す（忘れたとき用）。仮パスワードは発行せず、
+// 本人がログイン画面の「パスワード設定」からもう一度自分で決める
 api.post('/admin/users/:id/reset-password', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
 
-  const temp = generateTempPassword();
   await db.run(
-    `UPDATE users SET password_hash = ?, must_change_password = 1,
+    `UPDATE users SET password_hash = NULL, must_change_password = 0,
             failed_attempts = 0, locked_until = NULL WHERE id = ?`,
-    [await hashPassword(temp), user.id]
+    [user.id]
   );
   await destroyUserSessions(user.id); // 既存のログインを打ち切る
-  res.json({ id: user.id, loginId: user.login_id, tempPassword: temp });
+  res.json({ ok: true, id: user.id, loginId: user.login_id });
 }));
 
 api.patch('/admin/users/:id', wrap(async (req, res) => {
@@ -887,12 +931,12 @@ api.post('/admin/deal-persons', wrap(async (req, res) => {
       continue;
     }
 
-    const temp = generateTempPassword();
+    // パスワードは発行しない。本人が初回ログイン時に「パスワード設定」から自分で決める
     await db.run(
       `INSERT INTO users (name, role, branch, office, login_id, password_hash, must_change_password)
-       VALUES (?, 'sales', ?, ?, ?, ?, 1)`,
-      [name, nv(item?.branch) || null, nv(item?.office) || null, loginId, await hashPassword(temp)]);
-    created.push({ name, loginId, tempPassword: temp });
+       VALUES (?, 'sales', ?, ?, ?, NULL, 0)`,
+      [name, nv(item?.branch) || null, nv(item?.office) || null, loginId]);
+    created.push({ name, loginId });
   }
 
   console.warn(`案件データの担当者を登録しました（追加 ${created.length}名 / 見送り ${skipped.length}名 / エラー ${errors.length}件）`);
@@ -953,6 +997,192 @@ api.delete('/admin/users/:id', wrap(async (req, res) => {
   await db.run('DELETE FROM users WHERE id = ?', [user.id]);
   console.warn(`ユーザーを削除しました（${user.login_id ?? '—'} / ${user.name}）`);
   res.json({ ok: true, deleted: { id: user.id, name: user.name, loginId: user.login_id } });
+}));
+
+/**
+ * ユーザーの一括削除。設定画面でチェックした人をまとめて消す。
+ * 判定は1件削除と同じ（自分自身・最後の管理者・記録の残っている人は消さない）。
+ * 消せない人が混ざっていても全体は止めず、理由を添えて返す。
+ */
+api.post('/admin/users/bulk-delete', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return res.status(400).json({ error: '削除するユーザーを選んでください' });
+  if (ids.length > 500) return res.status(400).json({ error: '一度に削除できるのは500名までです' });
+
+  const deleted = [];
+  const skipped = [];
+  for (const id of ids) {
+    const user = await db.get('SELECT * FROM users WHERE id = ?', [id]);
+    if (!user) { skipped.push({ id, name: `ID ${id}`, message: '見つかりません' }); continue; }
+    if (user.id === req.user.id) {
+      skipped.push({ id, name: user.name, message: '自分自身は削除できません' });
+      continue;
+    }
+    if (user.role === 'admin') {
+      // ループの途中で管理者を消していくため、残りは毎回数え直す
+      const { c } = await db.get(
+        "SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND active = 1 AND id <> ?", [user.id]);
+      if (Number(c) === 0) {
+        skipped.push({ id, name: user.name, message: '最後の管理者は削除できません' });
+        continue;
+      }
+    }
+    const counts = await userRecordCounts(user.id);
+    if (counts.total > 0) {
+      const detail = [
+        counts.logs && `交渉履歴 ${counts.logs}件`,
+        counts.corps && `法人の交渉情報 ${counts.corps}件`,
+        counts.batches && `Excel取込 ${counts.batches}件`,
+        counts.files && `添付ファイル ${counts.files}件`,
+      ].filter(Boolean).join('・');
+      skipped.push({ id, name: user.name, message: `記録が残っているため削除できません（${detail}）。停止をお使いください` });
+      continue;
+    }
+    await destroyUserSessions(user.id);
+    await db.run('DELETE FROM users WHERE id = ?', [user.id]);
+    deleted.push({ id: user.id, name: user.name, loginId: user.login_id });
+  }
+  if (deleted.length) {
+    console.warn(`ユーザーを一括削除しました（${deleted.length}名: ${deleted.map((d) => d.loginId ?? d.name).join(', ')}）`);
+  }
+  res.json({ deleted, skipped });
+}));
+
+// ---- お問い合わせ（ポータルと同じ仕様） ----
+//
+//   POST /inquiries        … 送信。ログイン中は分類を選んで送る。
+//                            未ログインは分類「ログインできない」だけ受け付ける
+//                            （ログイン画面の「管理者への問い合わせ」用）。
+//   GET  /inquiries        … 管理者向けの一覧（未対応を上に）。
+//   GET  /inquiries/mine   … 本人の履歴と回答。未読の回答数も返す。
+//   PATCH /inquiries/:id   … 管理者の対応。{status} か {reply}（回答すると対応済み＋本人未読）。
+//   PATCH /inquiries/mine/:id/read … 本人が回答を既読にする。
+
+// 問い合わせ分類（画面の選択肢と一致させる。ポータルと同じ並び）
+const INQUIRY_CATEGORIES = [
+  'ログインできない',
+  'アプリのエラー・不具合',
+  'アカウント・権限（支店／営業所／担当）',
+  '操作方法について',
+  '機能の要望・改善',
+  'その他',
+];
+
+// 送信のレート制限（同一IP 10分5回。ポータルの /api/contact と同じ）
+const INQUIRY_RL = new Map();
+function inquiryRateLimited(ip) {
+  const nowMs = Date.now();
+  const WIN = 10 * 60 * 1000;
+  const MAX = 5;
+  const arr = (INQUIRY_RL.get(ip) || []).filter((t) => nowMs - t < WIN);
+  if (arr.length >= MAX) { INQUIRY_RL.set(ip, arr); return true; }
+  arr.push(nowMs);
+  INQUIRY_RL.set(ip, arr);
+  return false;
+}
+
+api.post('/inquiries', wrap(async (req, res) => {
+  const body = req.body || {};
+  // ハニーポット（画面には見えない欄）。値が入っていたら機械の送信とみなし、
+  // 通ったように見せて保存しない（ポータルと同じ）
+  if (String(body.website ?? '').trim() !== '') return res.json({ ok: true });
+
+  const ip = String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim() || 'unknown';
+  if (inquiryRateLimited(ip)) {
+    return res.status(429).json({ error: '送信回数が多すぎます。時間をおいて再度お試しください' });
+  }
+
+  const category = String(body.category ?? '').trim();
+  const message = String(body.message ?? '').trim();
+  if (!INQUIRY_CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: '分類を選んでください' });
+  }
+  if (!message) return res.status(400).json({ error: '内容を入力してください' });
+  if (message.length > 2000) return res.status(400).json({ error: '内容は2000文字以内で入力してください' });
+
+  let loginId;
+  let name;
+  if (req.user) {
+    loginId = req.user.login_id ?? null;
+    name = req.user.name;
+  } else {
+    // 未ログインで送れるのは「ログインできない」だけ
+    if (category !== 'ログインできない') {
+      return res.status(401).json({ error: 'ログインしてください' });
+    }
+    loginId = String(body.loginId ?? '').trim();
+    name = String(body.name ?? '').trim();
+    if (!loginId || !name) return res.status(400).json({ error: '社員番号と氏名を入力してください' });
+    if (loginId.length > 64 || name.length > 100) {
+      return res.status(400).json({ error: '社員番号・氏名が長すぎます' });
+    }
+  }
+
+  await db.run(
+    `INSERT INTO inquiries (user_id, login_id, name, category, message, status, created_at)
+     VALUES (?,?,?,?,?, 'open', ?)`,
+    [req.user?.id ?? null, loginId, name, category, message, now()]
+  );
+  res.status(201).json({ ok: true });
+}));
+
+api.get('/inquiries', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  // 未対応を上に、その中では新しい順
+  const rows = await db.all(`
+    SELECT * FROM inquiries
+    ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, id DESC`);
+  res.json(rows);
+}));
+
+api.get('/inquiries/mine', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  // ログイン前（ログイン画面の問い合わせ）に送った分も、同じ社員番号なら履歴に出す
+  const rows = await db.all(`
+    SELECT * FROM inquiries
+     WHERE user_id = ? OR (login_id IS NOT NULL AND login_id = ?)
+     ORDER BY id DESC`, [req.user.id, req.user.login_id ?? '']);
+  const unread = rows.filter((r) => r.reply && !r.read_at).length;
+  res.json({ rows, unread });
+}));
+
+api.patch('/inquiries/mine/:id/read', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: '問い合わせが見つかりません' });
+  const mine = row.user_id === req.user.id
+    || (row.login_id != null && row.login_id === (req.user.login_id ?? ''));
+  if (!mine) return res.status(403).json({ error: '自分の問い合わせだけ既読にできます' });
+  await db.run('UPDATE inquiries SET read_at = ? WHERE id = ?', [now(), row.id]);
+  res.json({ ok: true });
+}));
+
+api.patch('/inquiries/:id', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: '問い合わせが見つかりません' });
+
+  if ('reply' in (req.body || {})) {
+    const reply = String(req.body.reply ?? '').trim();
+    if (!reply) return res.status(400).json({ error: '回答を入力してください' });
+    if (reply.length > 2000) return res.status(400).json({ error: '回答は2000文字以内で入力してください' });
+    // 回答すると自動で対応済みになり、本人には未読として届く（ポータルと同じ）
+    await db.run(
+      `UPDATE inquiries SET reply = ?, replied_by = ?, replied_at = ?,
+              status = 'resolved', read_at = NULL WHERE id = ?`,
+      [reply, req.user.name, now(), row.id]);
+  } else if ('status' in (req.body || {})) {
+    const status = String(req.body.status ?? '');
+    if (!['open', 'resolved'].includes(status)) {
+      return res.status(400).json({ error: '状態は open / resolved のいずれかです' });
+    }
+    await db.run('UPDATE inquiries SET status = ? WHERE id = ?', [status, row.id]);
+  } else {
+    return res.status(400).json({ error: '更新項目がありません' });
+  }
+  res.json(await db.get('SELECT * FROM inquiries WHERE id = ?', [row.id]));
 }));
 
 // ---- ユーザーの一括登録 ----
@@ -1099,14 +1329,13 @@ api.post('/admin/users/import', upload.single('file'), wrap(async (req, res) => 
       updated.push({ id: existing.id, loginId: r.loginId, name: r.name });
       continue;
     }
-    // 仮パスワードはこの応答でのみ返す（DBには平文を残さない）
-    const temp = generateTempPassword();
+    // パスワードは発行しない。本人が初回ログイン時に「パスワード設定」から自分で決める
     const { lastInsertRowid } = await db.run(
       `INSERT INTO users (name, role, branch, office, title, login_id, password_hash, must_change_password, active)
-       VALUES (?,?,?,?,?,?,?,1,?)`,
-      [r.name, r.role, r.branch, r.office, r.title, r.loginId, await hashPassword(temp), r.active ? 1 : 0]
+       VALUES (?,?,?,?,?,?,NULL,0,?)`,
+      [r.name, r.role, r.branch, r.office, r.title, r.loginId, r.active ? 1 : 0]
     );
-    created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name, tempPassword: temp });
+    created.push({ id: Number(lastInsertRowid), loginId: r.loginId, name: r.name });
   }
 
   res.json({ created, updated, skipped, errors });

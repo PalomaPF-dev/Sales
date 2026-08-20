@@ -353,6 +353,28 @@ CREATE TABLE IF NOT EXISTS attachments (
 
 CREATE INDEX IF NOT EXISTS idx_attach_deal ON attachments(deal_id);
 
+-- お問い合わせ（ポータルと同じ仕様）。
+-- ログイン画面の「管理者への問い合わせ」（未ログイン。分類=ログインできない）と、
+-- ログイン後のお問い合わせを1つの表で持つ。管理者が回答すると status=resolved になり、
+-- 本人には未読（read_at IS NULL）の回答として届く。
+CREATE TABLE IF NOT EXISTS inquiries (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL, -- 未ログインの送信はNULL
+  login_id   TEXT,             -- 社員番号（未ログインは自己申告）
+  name       TEXT NOT NULL,    -- 氏名
+  category   TEXT NOT NULL,    -- 分類（ログインできない など）
+  message    TEXT NOT NULL,    -- 内容
+  status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  reply      TEXT,             -- 管理者の回答
+  replied_by TEXT,             -- 回答した管理者名
+  replied_at TEXT,
+  read_at    TEXT,             -- 本人が回答を読んだ日時
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_inquiries_user ON inquiries(user_id);
+CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
+
 -- 計算列ビュー
 --   単価だけの管理表のため、台数を掛けた金額は扱わない。
 --   ❹ r2_raise_unit = ❸合意単価 - ❶出荷単価

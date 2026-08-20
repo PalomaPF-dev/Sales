@@ -8,7 +8,7 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconBrand, IconDashboard, IconDeals, IconImport, IconSettings } from './components/icons';
+import { IconBrand, IconDashboard, IconDeals, IconImport, IconInbox, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
@@ -18,6 +18,7 @@ const CorpDetail = lazy(() => import('./pages/CorpDetail'));
 
 const Users = lazy(() => import('./pages/Users'));
 const ImportPage = lazy(() => import('./pages/ImportPage'));
+const Contact = lazy(() => import('./pages/Contact'));
 
 
 export default function App() {
@@ -29,7 +30,16 @@ export default function App() {
   const [slow, setSlow] = useState(false);
   const [setupCandidates, setSetupCandidates] = useState<{ login_id: string; name: string; role: string }[] | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  // お問い合わせへの未読の回答数。ログイン後に1回だけ確かめて、上部の帯で知らせる
+  const [unreadReplies, setUnreadReplies] = useState(0);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!user) { setUnreadReplies(0); return; }
+    api<{ unread: number }>('/inquiries/mine')
+      .then((r) => setUnreadReplies(r.unread))
+      .catch(() => {});
+  }, [user]);
 
   // Cookieのセッションから復元する。
   // 未ログインなら、初期セットアップが必要な状態か（＝誰もパスワードを持たない）を確認する。
@@ -138,6 +148,13 @@ export default function App() {
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <div className="nav-sep" />
             <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
+            <NavLink to="/contact">
+              <IconInbox />
+              <span className="lbl">
+                お問い合わせ
+                {unreadReplies > 0 && <span className="badge red" style={{ marginLeft: 6 }}>{unreadReplies}</span>}
+              </span>
+            </NavLink>
             {/* 設定（ユーザー管理など）。管理者だけに見せる */}
             {isAdmin && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
           </nav>
@@ -155,6 +172,13 @@ export default function App() {
           </div>
         </aside>
         <main className="main">
+          {/* お問い合わせに回答が付いたことを知らせる（ポータルと同じ）。開くと消える */}
+          {unreadReplies > 0 && (
+            <div className="alert info" style={{ cursor: 'pointer' }}
+                 onClick={() => { setUnreadReplies(0); navigate('/contact'); }}>
+              <strong>お問い合わせに回答が届いています</strong>（{unreadReplies}件）。ここを押すと確認できます。
+            </div>
+          )}
           <Suspense fallback={<p style={{ color: 'var(--muted)' }}>読み込み中...</p>}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
@@ -163,6 +187,7 @@ export default function App() {
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={<ImportPage />} />
+              <Route path="/contact" element={<Contact />} />
               <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
               <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />
