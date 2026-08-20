@@ -12,6 +12,7 @@ import { api } from './api';
 export interface AggRow {
   customer_code: string;   // 案件の突き合わせに使う（得意先×商品）
   customer_name: string;
+  delivery_name: string;   // 納入先名（まとまりの中の主な納入先を代表にする）
   model_code: string;
   // 実績（価格調査）に無い品目を案件として追加するときに使う項目
   corp_group: string;      // 企業グループ名（法人）
@@ -360,6 +361,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     rows.push({
       customer_code: cust,
       customer_name: txt(r, col.customer_name),
+      delivery_name: txt(r, col.delivery_name),
       model_code: model,
       corp_group: txt(r, col.corp_group),
       industry: txt(r, col.industry),

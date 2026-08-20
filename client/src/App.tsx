@@ -32,7 +32,14 @@ export default function App() {
   const [serverError, setServerError] = useState<string | null>(null);
   // お問い合わせへの未読の回答数。ログイン後に1回だけ確かめて、上部の帯で知らせる
   const [unreadReplies, setUnreadReplies] = useState(0);
+  // サイドバーの開閉。案件一覧を広く見たい人向けに、たたんだ状態を覚えておく
+  const [sideOpen, setSideOpen] = useState(() => localStorage.getItem('sideOpen') !== '0');
   const navigate = useNavigate();
+
+  const toggleSide = () => setSideOpen((v) => {
+    try { localStorage.setItem('sideOpen', v ? '0' : '1'); } catch { /* プライベートモード等では覚えない */ }
+    return !v;
+  });
 
   useEffect(() => {
     if (!user) { setUnreadReplies(0); return; }
@@ -128,12 +135,16 @@ export default function App() {
 
   return (
     <UserContext.Provider value={user}>
-      <div className="layout">
+      <div className={`layout${sideOpen ? '' : ' side-hidden'}`}>
         {user.authDisabled && (
           <div className="auth-off-banner">
             認証が無効になっています（DISABLE_AUTH）。
             URLを知っている人は誰でも価格データを閲覧・変更できます。
           </div>
+        )}
+        {!sideOpen && (
+          <button className="side-open-btn" onClick={toggleSide}
+            title="メニューを開く" aria-label="メニューを開く">☰</button>
         )}
         <aside className="sidebar">
           <div className="brand">
@@ -142,6 +153,8 @@ export default function App() {
               <b>値上げ単価管理</b>
               <small>Price Management</small>
             </span>
+            <button className="side-close-btn" onClick={toggleSide}
+              title="メニューをたたむ（一覧を広く使えます）" aria-label="メニューをたたむ">◀</button>
           </div>
           <nav>
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>

@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS agg_staging (
   corp_group    TEXT,
   industry      TEXT,
   customer_name TEXT,
+  delivery_name TEXT,   -- 納入先名（数量の一番多い行＝主な納入先を代表にする）
   model_name    TEXT,
   product_name  TEXT,
   gas_type      TEXT,
