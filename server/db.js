@@ -413,7 +413,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-22-price-history';
+const SCHEMA_VERSION = '2026-08-22-delivery';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -629,6 +629,8 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN nego_note TEXT',
     // 役職（ユーザー取込の項目。表示用で、権限には影響しない）
     'ALTER TABLE users ADD COLUMN title TEXT',
+    // 納入先名（価格調査（毎日更新）の代表値。案件一覧に出す）
+    'ALTER TABLE agg_staging ADD COLUMN delivery_name TEXT',
   ]) {
     await tryAlter(sql);
   }

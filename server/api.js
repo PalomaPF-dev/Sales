@@ -2969,7 +2969,8 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       r0: null, r1: null, r2: null, r3: null,
       tgt: null, nego: null, fdate: null, fprice: null,
       branch: null, office: null, person: null,
-      corp_group: null, industry: null, customer_name: null, model_name: null,
+      corp_group: null, industry: null, customer_name: null, delivery_name: null,
+      model_name: null,
       product_name: null, gas_type: null, equip_name: null, category_name: null,
       top: Number.NEGATIVE_INFINITY,
     };
@@ -2985,6 +2986,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       corp_group: txt2(r.corp_group),
       industry: txt2(r.industry),
       customer_name: txt2(r.customer_name),
+      delivery_name: txt2(r.delivery_name),
       model_name: txt2(r.model_name),
       product_name: txt2(r.product_name),
       gas_type: txt2(r.gas_type),
@@ -3064,7 +3066,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       a.cost, a.costW, a.tgt ?? 0, a.tgt != null ? 1 : 0,
       a.d0, a.d1, a.d2, a.d3, a.r0, a.r1, a.r2, a.r3,
       a.branch, a.office, a.person,
-      a.corp_group, a.industry, a.customer_name, a.model_name,
+      a.corp_group, a.industry, a.customer_name, a.delivery_name, a.model_name,
       a.product_name, a.gas_type, a.equip_name, a.category_name,
       a.nego, a.fdate, a.fprice,
       Number.isFinite(a.top) ? a.top : 0]);
@@ -3076,10 +3078,10 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
           cost_amt, cost_wgt, tgt_amt, tgt_wgt,
           d0_max, d1_max, d2_max, d3_max, r0_no, r1_no, r2_no, r3_no,
           branch, office, sales_person,
-          corp_group, industry, customer_name, model_name,
+          corp_group, industry, customer_name, delivery_name, model_name,
           product_name, gas_type, equip_name, category_name,
           nego_result, final_date, final_price, top_qty)
-       VALUES ${vals.map(() => `(${'?,'.repeat(39)}?)`).join(',')}
+       VALUES ${vals.map(() => `(${'?,'.repeat(40)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          ${SUM_COLS.map((c) => `${c} = agg_staging.${c} + excluded.${c}`).join(', ')},
          ${PRICE_COLS.map(keepPrice).join(', ')},
@@ -3087,7 +3089,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
          ${['d0_max', 'd1_max', 'd2_max', 'd3_max'].map(keepNewer).join(', ')},
          ${keepNewer('final_date')},
          ${['branch', 'office', 'sales_person',
-            'corp_group', 'industry', 'customer_name', 'model_name',
+            'corp_group', 'industry', 'customer_name', 'delivery_name', 'model_name',
             'product_name', 'gas_type', 'equip_name', 'category_name',
             'nego_result', 'final_price', 'top_qty']
            .map(keepTop).join(', ')}`,
@@ -3159,6 +3161,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       branch = s.branch,
       office = s.office,
       sales_person = s.sales_person,
+      -- 納入先名（主な納入先）。ファイルに無ければ今のまま
+      delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
       -- 第2弾新値上げ単価（目標値）。ファイルに値があれば上書き、無ければ今のまま
       r2_target_price = COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
                                  deals.r2_target_price),
@@ -3176,7 +3180,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // 次の価格調査の取込で作り直されて消えても、マスタ登録を重ね直せばまた載る
   const ins = await db.run(`
     INSERT INTO deals (agg_key, hist_ent_cd, corp_code, corp_name, customer_code,
-      customer_name, industry, model_code, model_name, product_name, gas_type,
+      customer_name, delivery_name, industry, model_code, model_name, product_name, gas_type,
       equip_name, category_name, base_price, qty,
       a_price_m0, a_price_m1, a_price_m2, a_price_m3,
       a_date_m0, a_date_m1, a_date_m2, a_date_m3,
@@ -3186,7 +3190,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     SELECT s.ent_cd || '|' || s.model_code, s.ent_cd,
       COALESCE(NULLIF(s.corp_group, ''), s.ent_cd),
       COALESCE(NULLIF(s.corp_group, ''), s.customer_name),
-      s.ent_cd, s.customer_name, s.industry,
+      s.ent_cd, s.customer_name, s.delivery_name, s.industry,
       s.model_code, s.model_name, s.product_name, s.gas_type,
       s.equip_name, s.category_name,
       CASE WHEN s.base_wgt > 0 THEN s.base_amt / s.base_wgt END, s.qty,

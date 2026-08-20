@@ -86,6 +86,25 @@ a { color: var(--accent); text-decoration: none; }
 .sidebar .userbox .btn.secondary:hover { background: rgba(255, 255, 255, 0.12); }
 
 .main { flex: 1; padding: 24px 28px 64px; max-width: 1560px; min-width: 0; }
+
+/*
+  サイドバーの開閉。案件一覧を少しでも広く見たいときに、
+  メニューをたたんで画面の幅いっぱいを一覧に使えるようにする。
+*/
+.layout.side-hidden .sidebar { display: none; }
+.layout.side-hidden .main { max-width: none; padding-left: 60px; }
+.side-close-btn {
+  margin-left: auto; flex-shrink: 0; background: none; border: 0; color: #64748b;
+  cursor: pointer; font-size: 14px; line-height: 1; padding: 5px 7px; border-radius: 6px;
+}
+.side-close-btn:hover { background: rgba(255, 255, 255, 0.08); color: #e2e8f0; }
+.side-open-btn {
+  position: fixed; top: 12px; left: 12px; z-index: 50;
+  width: 34px; height: 34px; border-radius: 8px; border: 0;
+  background: var(--sidebar); color: #e2e8f0; cursor: pointer; font-size: 15px; line-height: 1;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
+}
+.side-open-btn:hover { background: #1e293b; }
 .page-title { font-size: 21px; font-weight: 700; margin: 0 0 4px; color: #334155; letter-spacing: 0.01em; }
 .page-sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
 
@@ -315,6 +334,8 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   padding: 8px 16px; font-size: 12.5px; font-weight: 600; text-align: center;
 }
 .auth-off-banner ~ .sidebar, .auth-off-banner ~ .main { padding-top: 46px; }
+/* バナーが出ているときは、メニューを開くボタンをバナーの下にずらす */
+.auth-off-banner ~ .side-open-btn { top: 44px; }
 
 /* 集計パネルのグループ切替 */
 .seg { display: inline-flex; background: #f1f5f9; border-radius: 8px; padding: 3px; gap: 2px; }
@@ -378,32 +399,17 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   text-overflow: ellipsis; vertical-align: bottom; }
 
 /*
-  右へスクロールしても、どの品目の行か分かるように、
-  選択・企業名・得意先名・納入先名・商品コード・器種名の列を左に固定する。
-  position: sticky は左位置を自分で持てないため、列幅と left をここで決め打ちする。
+  以前は左側の列（選択〜器種名）を横スクロールしても残るよう固定していたが、
+  かえって見づらいという声があり、固定はやめた。
+  列幅だけをここで決めておき、行の見た目を安定させる。
 */
-.tbl.deals th.fx, .tbl.deals td.fx {
-  position: sticky; background: var(--surface-1);
-  overflow: hidden; text-overflow: ellipsis;
-}
-/* 見出しは上下にも固定されるため、角のマスは他の見出しより上に描く */
-.tbl.deals thead th.fx { background: #f8fafc; z-index: 3; }
-.tbl.deals thead th.grp.fx { background: #f1f5f9; }
-.tbl.deals td.fx { z-index: 1; }
-/* 1行目の「基本情報」は固定列全体をまとめて覆う（幅は列に任せる） */
-.tbl.deals th.fxg { left: 0; }
-.tbl.deals .fx1 { left: 0; min-width: 36px; max-width: 36px; }
-.tbl.deals .fx2 { left: 36px; min-width: 120px; max-width: 120px; }
-.tbl.deals .fx3 { left: 156px; min-width: 130px; max-width: 130px; }
-.tbl.deals .fx4 { left: 286px; min-width: 110px; max-width: 110px; }
-.tbl.deals .fx5 { left: 396px; min-width: 100px; max-width: 100px; }
-.tbl.deals .fx6 { left: 496px; min-width: 120px; max-width: 120px; }
-/* 固定列とスクロールする列の境目に影を入れて、固定が分かるようにする */
-.tbl.deals .fx6 { box-shadow: 2px 0 0 var(--baseline); }
-/* 固定列は背景を持つため、行の色（ホバー・編集中・目標未達）を上書きして揃える */
-.tbl.deals tbody tr:hover td.fx { background: #f8fafc; }
-.tbl.deals tbody tr.editing td.fx,
-.tbl.deals tbody tr.editing:hover td.fx { background: var(--accent-soft); }
+.tbl.deals th.fx, .tbl.deals td.fx { overflow: hidden; text-overflow: ellipsis; }
+.tbl.deals .fx1 { min-width: 36px; max-width: 36px; }
+.tbl.deals .fx2 { min-width: 120px; max-width: 120px; }
+.tbl.deals .fx3 { min-width: 130px; max-width: 130px; }
+.tbl.deals .fx4 { min-width: 110px; max-width: 110px; }
+.tbl.deals .fx5 { min-width: 100px; max-width: 100px; }
+.tbl.deals .fx6 { min-width: 120px; max-width: 120px; }
 
 /* ---- ダッシュボード ---- */
 

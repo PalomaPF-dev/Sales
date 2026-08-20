@@ -375,13 +375,11 @@ export default function Deals() {
     if (price == null || Number(price) <= 0 || mPrice(d) == null) return null;
     const base = Number(mPrice(d));
     const diff = Number(price) - base;
-    const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
     return (
       <div className="sub"
            style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : { fontWeight: 700 }}
            title={`目標単価 − ${actLabel}のマスタ単価 ${yen(base)}`}>
         {diff === 0 ? '±0' : `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}`}
-        {rate != null && diff !== 0 && <span style={{ fontWeight: 400 }}> ({rate > 0 ? '+' : ''}{rate}%)</span>}
       </div>
     );
   };
