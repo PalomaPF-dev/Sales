@@ -2967,7 +2967,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
-  if (rows.length > 500) return res.status(400).json({ error: '一度に送れるのは500行までです' });
+  if (rows.length > 4000) return res.status(400).json({ error: '一度に送れるのは4000行までです' });
 
   const num = (v) => {
     if (v === null || v === undefined || String(v).trim() === '') return 0;
@@ -3110,7 +3110,11 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       a.product_name, a.gas_type, a.equip_name, a.category_name,
       a.nego, a.fdate, a.fprice,
       Number.isFinite(a.top) ? a.top : 0]);
-  if (vals.length) {
+  // 1文あたりのパラメータ上限（SQLiteは32,766個・PostgreSQLは65,535個）に
+  // 収まるよう、41列×700行ずつに分けて書き込む。同じまとまりが分かれても、
+  // ON CONFLICT の残し方（足し込み・数量の多い側を代表）は同じ結果になる
+  for (let i = 0; i < vals.length; i += 700) {
+    const part = vals.slice(i, i + 700);
     await db.run(
       `INSERT INTO agg_staging
          (ent_cd, model_code, qty, base_amt, base_wgt,
@@ -3121,7 +3125,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
           corp_group, industry, customer_name, delivery_name, model_name,
           product_name, gas_type, equip_name, category_name,
           nego_result, final_date, final_price, top_qty)
-       VALUES ${vals.map(() => `(${'?,'.repeat(40)}?)`).join(',')}
+       VALUES ${part.map(() => `(${'?,'.repeat(40)}?)`).join(',')}
        ON CONFLICT (ent_cd, model_code) DO UPDATE SET
          ${SUM_COLS.map((c) => `${c} = agg_staging.${c} + excluded.${c}`).join(', ')},
          ${PRICE_COLS.map(keepPrice).join(', ')},
@@ -3133,7 +3137,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
             'product_name', 'gas_type', 'equip_name', 'category_name',
             'nego_result', 'final_price', 'top_qty']
            .map(keepTop).join(', ')}`,
-      vals.flat()
+      part.flat()
     );
   }
   // マスタ単価の実績（月別）。「マスター単価（N月実績）」列の値をそのまま履歴へ入れる。
@@ -3322,7 +3326,7 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
-  if (rows.length > 500) return res.status(400).json({ error: '一度に送れるのは500行までです' });
+  if (rows.length > 4000) return res.status(400).json({ error: '一度に送れるのは4000行までです' });
 
   const num = (v) => {
     if (v === null || v === undefined || String(v).trim() === '') return 0;
@@ -3417,16 +3421,21 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
       `${c} = CASE WHEN excluded.top_qty > act_staging.top_qty
          THEN COALESCE(excluded.${c}, act_staging.${c})
          ELSE COALESCE(act_staging.${c}, excluded.${c}) END`;
-    await db.run(
-      `INSERT INTO act_staging (${cols.join(',')})
-       VALUES ${vals.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
-       ON CONFLICT (ent_cd, model_code) DO UPDATE SET
-         ${[...sumCols, 'list_amt', 'list_wgt'].map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
-         past_date = CASE WHEN act_staging.past_date IS NULL OR excluded.past_date > act_staging.past_date
-                          THEN excluded.past_date ELSE act_staging.past_date END,
-         ${[...REP, 'top_qty'].map(keepTop).join(', ')}`,
-      vals.flat()
-    );
+    // 1文あたりのパラメータ上限（SQLiteは32,766個・PostgreSQLは65,535個）に
+    // 収まるよう、25列×1,200行ずつに分けて書き込む（残し方は分かれても同じ結果）
+    for (let i = 0; i < vals.length; i += 1200) {
+      const part = vals.slice(i, i + 1200);
+      await db.run(
+        `INSERT INTO act_staging (${cols.join(',')})
+         VALUES ${part.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
+         ON CONFLICT (ent_cd, model_code) DO UPDATE SET
+           ${[...sumCols, 'list_amt', 'list_wgt'].map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
+           past_date = CASE WHEN act_staging.past_date IS NULL OR excluded.past_date > act_staging.past_date
+                            THEN excluded.past_date ELSE act_staging.past_date END,
+           ${[...REP, 'top_qty'].map(keepTop).join(', ')}`,
+        part.flat()
+      );
+    }
   }
   res.json({ matched, unmatched, groups: acc.size });
 }));

@@ -437,7 +437,30 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   };
 }
 
-const CHUNK = 500;
+// 1回で送る行数の上限。取込の時間はほぼ「送る回数×サーバー往復」で決まるため、
+// できるだけ大きくする（17.5万行で50回前後になる）
+const CHUNK = 4000;
+// 1回の本文の大きさの上限。サーバーが受け取れるのは約4.5MBのため、余裕を持たせる
+const CHUNK_BYTES = 3_000_000;
+
+/** 行数と本文の大きさの両方が上限に収まるように分ける */
+export function splitRows<T>(rows: T[], maxRows = CHUNK, maxBytes = CHUNK_BYTES): T[][] {
+  const chunks: T[][] = [];
+  let cur: T[] = [];
+  let bytes = 0;
+  for (const row of rows) {
+    const b = JSON.stringify(row).length + 1;
+    if (cur.length && (cur.length >= maxRows || bytes + b > maxBytes)) {
+      chunks.push(cur);
+      cur = [];
+      bytes = 0;
+    }
+    cur.push(row);
+    bytes += b;
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
 
 export interface AggResult {
   matched: number;      // 読み取れた行
@@ -463,14 +486,16 @@ export async function sendAggImport(
   });
   let matched = 0;
   let unmatched = 0;
-  for (let i = 0; i < parsed.rows.length; i += CHUNK) {
+  let sent = 0;
+  for (const chunk of splitRows(parsed.rows)) {
     const r = await api<{ matched: number; unmatched: number }>('/agg-import/chunk', {
       method: 'POST',
-      body: JSON.stringify({ rows: parsed.rows.slice(i, i + CHUNK) }),
+      body: JSON.stringify({ rows: chunk }),
     });
     matched += r.matched;
     unmatched += r.unmatched;
-    opts.onProgress?.(Math.min(i + CHUNK, parsed.rows.length), parsed.rows.length);
+    sent += chunk.length;
+    opts.onProgress?.(sent, parsed.rows.length);
   }
   const fin = await api<{ covered: number; total: number; added?: number }>('/agg-import/finish', {
     method: 'POST', body: JSON.stringify({}),
