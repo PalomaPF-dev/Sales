@@ -688,7 +688,7 @@ export default function Deals() {
             <tr>
               <th colSpan={5} className="grp">基本情報</th>
               <th colSpan={2} className="grp">規格・区分</th>
-              <th colSpan={3} className="grp">担当</th>
+              <th className="grp">担当</th>
               <th colSpan={5} className="grp sep"
                   title={`売上高（${actLabel}）の実績。ベース（価格調査（毎日更新））へ単価・数量を突合しています`}>
                 売上高<small>（{actLabel}）</small>
@@ -711,9 +711,9 @@ export default function Deals() {
               </Th>
               <Th col="gas_type">ガス種</Th>
               <Th col="equip_name">器具区分</Th>
-              <Th col="sales_person" title="得意先（営業）担当者">担当者</Th>
-              <Th col="office">営業所</Th>
-              <Th col="branch">支店</Th>
+              <Th col="branch" title="上段: 支店・営業所 ／ 下段: 得意先（営業）担当者。押すと支店で並び替えます">
+                支店・営業所<br /><small>担当者</small>
+              </Th>
               <Th col="past_price" className="num sep"
                   title="値上げ前の単価。カーソルを合わせると受注日が出ます">
                 過去最新単価
@@ -802,9 +802,21 @@ export default function Deals() {
                   <td title={d.equip_name || ''}>
                     {isEditing && isDev ? baseCell(d, 'equip_name') : (d.equip_name || '—')}
                   </td>
-                  <td>{isEditing && isDev ? baseCell(d, 'sales_person') : (d.sales_person || '—')}</td>
-                  <td>{isEditing && isDev ? baseCell(d, 'office') : (d.office || '—')}</td>
-                  <td>{isEditing && isDev ? baseCell(d, 'branch') : (d.branch || '—')}</td>
+                  {/* 担当。上段に支店・営業所、下段に得意先（営業）担当者 */}
+                  <td title={[d.branch, d.office, d.sales_person].filter(Boolean).join(' / ')}>
+                    {isEditing && isDev ? (
+                      <>
+                        {baseCell(d, 'branch')}
+                        {baseCell(d, 'office')}
+                        {baseCell(d, 'sales_person')}
+                      </>
+                    ) : (
+                      <>
+                        {[d.branch, d.office].filter(Boolean).join('・') || '—'}
+                        <div className="sub">{d.sales_person || '—'}</div>
+                      </>
+                    )}
+                  </td>
 
                   {/* 実績（価格調査）。過去最新単価 → 当月の実単価と、その上がり幅・数量 */}
                   <td className="num sep"

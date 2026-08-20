@@ -66,6 +66,8 @@ export interface AggParsed {
   histMonths: string[];
   /** 交渉まわりの列を見つけられたか。見つからない列は取込で変更されない */
   negoCols: { target: boolean; nego: boolean; finalDate: boolean; finalPrice: boolean };
+  /** 納入先名の列を見つけられたか（無いと案件一覧の納入先名が空のまま） */
+  hasDelivery: boolean;
   meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string; histMonths: string[] };
 }
 
@@ -241,7 +243,8 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     // 商品名の無い版は品目階層名で代用する
     product_name: find('商品名') >= 0 ? find('商品名') : findLike('品目階層名'),
     delivery_code: find('納入先コード'),
-    delivery_name: find('納入先名'),
+    // 「納入先名称」「得意先納入先名」のような揺れも拾う（納入先コードとは混ざらない）
+    delivery_name: find('納入先名') >= 0 ? find('納入先名') : findLike('納入先名'),
     model_code: find('商品コード'),
     // 器種名／機種名は版によって呼び方が違う
     model_name: findAny('器種名', '機種名'),
@@ -410,6 +413,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
       finalDate: col.final_date >= 0,
       finalPrice: col.final_price >= 0,
     },
+    hasDelivery: col.delivery_name >= 0,
   };
 }
 
