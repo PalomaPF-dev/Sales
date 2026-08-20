@@ -70,7 +70,8 @@ export interface AggParsed {
   hasDelivery: boolean;
   /** 実績として読んだ列の見出し。取込前に「どの列を実績にしたか」を確かめられる */
   histHeads: string[];
-  meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string; histMonths: string[] };
+  meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string;
+    hasTarget: boolean; histMonths: string[] };
 }
 
 /**
@@ -338,6 +339,9 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     basePeriod: col.base_price >= 0
       ? (headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price])
       : '',
+    // 目標単価（第2弾新値上げ単価）の列があるファイルか。
+    // 列があるときは、そのファイルの内容を正として取り込む（空欄の品目は空に戻す）
+    hasTarget: col.target_price >= 0,
   };
 
   // マスタ単価の実績（月別）。「マスター単価（4月実績）」…の列を読む。
