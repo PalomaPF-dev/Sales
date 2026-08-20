@@ -83,6 +83,35 @@ export default function ImportPage() {
         </Card>
       )}
 
+      {canCheck && (
+        <Card title="値上げ交渉の値の入れ直し">
+          <p className="pt-note" style={{ marginTop: 0 }}>
+            商談結果・商談メモ・最終確定日・最終確定単価に、
+            <strong>以前の取込で入った古い値が残って、いまのファイルと食い違う</strong>ことがあります。
+            下のボタンで一度すべて空に戻し、そのあと
+            <strong>①価格調査（毎日更新）を取り込み直す</strong>と、ファイルの値だけが入り直ります。
+            合意単価・適用年月・完了（画面で入れる項目）は消えません。
+          </p>
+          <button className="btn danger" disabled={cleaning}
+            onClick={async () => {
+              if (!window.confirm('商談結果・商談メモ・最終確定日・最終確定単価をすべて空に戻します。\n'
+                + 'このあと①価格調査（毎日更新）を取り込み直してください。よろしいですか？')) return;
+              setCleaning(true);
+              setMsg(null);
+              try {
+                const r = await api<{ cleared: number }>('/admin/clear-nego', { method: 'POST' });
+                setMsg({ kind: 'ok', text: `${r.cleared.toLocaleString()}件の交渉の値を空に戻しました。続けて①価格調査（毎日更新）を取り込んでください` });
+              } catch (e) {
+                setMsg({ kind: 'error', text: (e as Error).message });
+              } finally {
+                setCleaning(false);
+              }
+            }}>
+            {cleaning ? '処理中...' : '商談結果・最終確定日などを空に戻す'}
+          </button>
+        </Card>
+      )}
+
       {canCheck && blankCorp > 0 && (
         <Card title="法人名が空の案件">
           <div className="alert error" style={{ marginTop: 0 }}>

@@ -801,6 +801,23 @@ api.post('/admin/cleanup-blank-corp', wrap(async (req, res) => {
   res.json({ removed: Number(r?.changes ?? 0), total: Number(total) });
 }));
 
+/**
+ * 値上げ交渉の値（商談結果・商談メモ・最終確定日・最終確定単価）を一括で空に戻す。
+ *
+ * 旧形式のファイルで入った古い値が残り、いまのファイルと食い違って見えることがある。
+ * 空に戻してから価格調査（毎日更新）を取り込み直すと、ファイルの値だけが入る。
+ * 合意単価・適用年月・完了（画面だけで入れる項目）は触らない。
+ */
+api.post('/admin/clear-nego', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const r = await db.run(`
+    UPDATE deals SET nego_result = NULL, nego_note = NULL,
+           final_date = NULL, final_price = NULL, updated_at = ?
+     WHERE nego_result IS NOT NULL OR nego_note IS NOT NULL
+        OR final_date IS NOT NULL OR final_price IS NOT NULL`, [now()]);
+  res.json({ cleared: Number(r?.changes ?? 0) });
+}));
+
 // ---- 全国基準価格表（マスター） ----
 
 /**
