@@ -63,6 +63,8 @@ export interface AggParsed {
   hasRingi: boolean;   // 「稟議」の列があるファイルか
   /** マスタ単価の実績（月別）の月（YYYY-MM）。「マスター単価（4月実績）」…の列から */
   histMonths: string[];
+  /** 交渉まわりの列を見つけられたか。見つからない列は取込で変更されない */
+  negoCols: { target: boolean; nego: boolean; finalDate: boolean; finalPrice: boolean };
   meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string; histMonths: string[] };
 }
 
@@ -400,6 +402,12 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     hasM0: Boolean(m0),
     hasDates: m3!.date >= 0,
     hasRingi: ringiOf(m3) >= 0,
+    negoCols: {
+      target: col.target_price >= 0,
+      nego: col.nego_result >= 0,
+      finalDate: col.final_date >= 0,
+      finalPrice: col.final_price >= 0,
+    },
   };
 }
 

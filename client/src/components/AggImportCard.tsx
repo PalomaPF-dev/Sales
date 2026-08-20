@@ -107,6 +107,19 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
               {parsed.p.histMonths.length > 0
                 ? ` ・ マスタ単価実績 ${parsed.p.histMonths[0]}〜${parsed.p.histMonths[parsed.p.histMonths.length - 1]}`
                 : ' ・ マスタ単価実績の列なし（当月単価を履歴に記録します）'}
+              {/* 交渉まわりの列の検出状況。見つからない列は取込で変更されないため、
+                  最終確定日などが合わないときはまずここを確認してもらう */}
+              {(() => {
+                const miss = [
+                  !parsed.p.negoCols.target && '目標単価',
+                  !parsed.p.negoCols.nego && '商談結果',
+                  !parsed.p.negoCols.finalDate && '最終確定日',
+                  !parsed.p.negoCols.finalPrice && '最終確定単価',
+                ].filter(Boolean);
+                return miss.length
+                  ? <strong style={{ color: 'var(--critical)' }}>{` ・ 見つからない列: ${miss.join('・')}`}</strong>
+                  : ' ・ 交渉列（目標単価・商談結果・最終確定日・最終確定単価）あり';
+              })()}
               {parsed.p.skippedRows > 0
                 && ` ・ 読めない行 ${parsed.p.skippedRows}件`
                   + `（得意先コード空 ${parsed.p.skippedNoCust}件`
