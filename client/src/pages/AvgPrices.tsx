@@ -75,13 +75,15 @@ function AvgCell({ v }: { v: ReturnType<typeof planOf> }) {
  * 棒ではなく点で描く。単価は0から数える量ではないので、
  * 0を含めない目盛りにしても読み違えない形にしている。
  */
-function AvgChart({ rows, monthIdx, monthLabel, baseName, total }: {
+function AvgChart({ rows, monthIdx, monthLabel, baseName, total, showValues }: {
   rows: AvgRow[];
   monthIdx: number;
   monthLabel: string;
   baseName: string;
   /** 内訳の全件数（表示を上位に絞ったときに、隠した数を伝えるため） */
   total: number;
+  /** 単価の数字を点に添えるか。基準と計画をその場で見比べたいときに使う */
+  showValues: boolean;
 }) {
   // 描く点の値を先に取り出す。基準か計画のどちらかが無い内訳は描けない
   const pts = rows
@@ -112,7 +114,8 @@ function AvgChart({ rows, monthIdx, monthLabel, baseName, total }: {
   const PAD_T = 14;
   const PLOT_H = 300;
   const PAD_B = 104;            // 斜めに倒した内訳名のぶん
-  const SLOT_MIN = 52;
+  // 単価を出すときは、数字が重ならないよう1件ぶんの幅を広げる
+  const SLOT_MIN = showValues ? 78 : 52;
   const FIT_W = 1020;           // だいたいこの幅までは広げて使う
   const SLOT = Math.max(SLOT_MIN,
     Math.min(120, (FIT_W - PAD_L - PAD_R) / pts.length));
@@ -156,8 +159,18 @@ function AvgChart({ rows, monthIdx, monthLabel, baseName, total }: {
                 <line x1={x(i)} y1={y(p.base)} x2={x(i)} y2={y(p.plan)} className="conn" />
                 <circle cx={x(i)} cy={y(p.base)} r="5" className="dot base" />
                 <circle cx={x(i)} cy={y(p.plan)} r="5" className="dot plan" />
-                {/* 高い所・安い所だけ値を書く */}
-                {(i === hiAt || i === loAt) && (
+                {/*
+                  単価の数字。「単価を表示」を入れているときは基準と計画の両方に添え、
+                  目盛りを読まなくてもその場で見比べられるようにする。
+                  外しているときは、いちばん高い所と安い所だけに付ける
+                  （全部に付けると数字で埋まって読めなくなるため）。
+                */}
+                {showValues ? (
+                  <>
+                    <text x={x(i)} y={y(p.plan) - 11} className="vlabel plan">{yen(p.plan)}</text>
+                    <text x={x(i)} y={y(p.base) + 18} className="vlabel base">{yen(p.base)}</text>
+                  </>
+                ) : (i === hiAt || i === loAt) && (
                   <text x={x(i)} y={y(p.plan) - 12} className="vlabel">{yen(p.plan)}</text>
                 )}
                 {/* 内訳名。長いものは省略し、全体はカーソルを合わせると出す */}
@@ -209,6 +222,8 @@ export default function AvgPrices() {
   const [sort, setSort] = useState<{ col: string; desc: boolean }>({ col: 'qty', desc: true });
   // グラフに出す月（基準と比べる相手）
   const [chartMonth, setChartMonth] = useState(0);
+  // グラフに単価の数字を出すか。基準と計画をその場で見比べたいときに使う
+  const [showValues, setShowValues] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   // 「絞り込む」を押したときの取り直しの合図。条件が同じでも押せば取り直す
@@ -251,6 +266,12 @@ export default function AvgPrices() {
   }, [filterQs, group]);
 
   useEffect(load, [load, reload]);
+
+  // グラフは価格の順で見るものなので、開いたときと月を変えたときは
+  // その月の計画単価で並べ替える（表の並び替えは見出しで自由に変えられる）
+  useEffect(() => {
+    if (view === 'chart') setSort((v) => ({ col: `m${chartMonth}`, desc: v.desc }));
+  }, [view, chartMonth]);
 
   const hasFilters = FILTER_KEYS.some((k) => get(k));
   const applyFilters = () => {
@@ -314,7 +335,9 @@ export default function AvgPrices() {
       <span className="sort-mark">{sort.col === col ? (sort.desc ? '▼' : '▲') : ''}</span>
     </th>
   );
-  // グラフは多すぎると読めないので、並び替えの上位だけを出す
+  // グラフは価格で並べる。いま出している月の計画単価が「価格」にあたる
+  const sortByPrice = `m${chartMonth}`;
+  // グラフは多すぎると読めないので、価格の並び替えの上位だけを出す
   const CHART_MAX = 30;
   const chartRows = rows.slice(0, CHART_MAX);
 
@@ -485,36 +508,37 @@ export default function AvgPrices() {
           </div>
           <div className="grow" />
           {view === 'chart' && (
-            <label className="fld inline">
-              比べる月
-              <select value={chartMonth} onChange={(e) => setChartMonth(Number(e.target.value))}>
-                {months.map((ym, i) => <option key={ym} value={i}>{ym} の計画</option>)}
-              </select>
-            </label>
+            <>
+              <label className="fld inline">
+                比べる月
+                <select value={chartMonth} onChange={(e) => setChartMonth(Number(e.target.value))}>
+                  {months.map((ym, i) => <option key={ym} value={i}>{ym} の計画</option>)}
+                </select>
+              </label>
+              {/* 単価を目盛りから読まなくても、基準と計画をその場で見比べられるようにする */}
+              <label className="fld inline chk">
+                <input type="checkbox" checked={showValues}
+                       onChange={(e) => setShowValues(e.target.checked)} />
+                単価を表示
+              </label>
+            </>
           )}
-          {/* 並び替えは表とグラフで共通。表は見出しを押しても変えられる */}
-          <label className="fld inline">
-            並び替え
-            <select value={sort.col} onChange={(e) => setSort((v) => ({ ...v, col: e.target.value }))}>
-              <option value="name">{head}の名前</option>
-              <option value="cnt">対象件数</option>
-              <option value="qty">出荷数</option>
-              <option value="base">基準の単価</option>
-              {months.map((ym, i) => <option key={ym} value={`m${i}`}>{ym} の計画単価</option>)}
-            </select>
-          </label>
+          {/*
+            グラフは価格の安い順・高い順だけ。
+            表は見出しを押せば、件数や出荷数でも並べ替えられる。
+          */}
           <div className="seg">
             <button type="button" className={!sort.desc ? 'on' : ''}
-                    onClick={() => setSort((v) => ({ ...v, desc: false }))}>安い順</button>
+                    onClick={() => setSort({ col: sortByPrice, desc: false })}>安い順</button>
             <button type="button" className={sort.desc ? 'on' : ''}
-                    onClick={() => setSort((v) => ({ ...v, desc: true }))}>高い順</button>
+                    onClick={() => setSort({ col: sortByPrice, desc: true })}>高い順</button>
           </div>
         </div>
 
         {view === 'chart' ? (
           <div style={busy ? { opacity: 0.45 } : undefined}>
             <AvgChart rows={chartRows} monthIdx={chartMonth} monthLabel={months[chartMonth]}
-                      baseName={baseName} total={rows.length} />
+                      baseName={baseName} total={rows.length} showValues={showValues} />
           </div>
         ) : (
         <HScroll className="tbl-scroll">
