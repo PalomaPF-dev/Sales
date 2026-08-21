@@ -299,10 +299,18 @@ function createPostgresDb() {
   // Supabaseは独自CAの証明書のため、公開CAでの検証（ssl: true）が通らない。
   // sslmode=require 相当（暗号化のみ・検証なし）で接続する。Neonは公開CAなので検証する
   const isSupabase = /\.supabase\.(co|com)[:/]/.test(PG_URL);
+  // 1インスタンスが同時に掴む接続の数。Vercelは1リクエストごとに関数の
+  // インスタンスが増えるため、ここを大きくすると人数×この数だけプーラーの
+  // 席を占有してしまう。Supabaseのセッションプーラーは席数が既定20しかなく、
+  // すぐ「max clients reached」になるので、Vercelでは小さくしておく。
+  const poolMax = Number(process.env.DB_POOL_MAX || (process.env.VERCEL ? 2 : 5));
   const pool = new Pool({
     connectionString: PG_URL,
-    max: Number(process.env.DB_POOL_MAX || 5),
-    idleTimeoutMillis: 10000,
+    max: poolMax,
+    // 使い終わった接続は早めに返す。空いた席を他のインスタンスへ回すため。
+    idleTimeoutMillis: Number(process.env.DB_POOL_IDLE_MS || (process.env.VERCEL ? 5000 : 10000)),
+    // 席が空くのを待ち続けて関数の時間切れになるのを避ける
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 15000),
     // マネージドDBはTLS必須のことが多い。社内CAで検証が通らない場合は
     // DB_SSL_NO_VERIFY=true で緩められるようにしておく。
     ssl: isLocal ? false
@@ -313,8 +321,55 @@ function createPostgresDb() {
     options: `-c search_path=${PG_SCHEMA},public`,
   });
 
+  // 待機中の接続が切られたとき（プーラー側の掃除・再起動など）に出るイベント。
+  // 受け取り手がいないとプロセスごと落ちるため、記録だけして捨てる。
+  // 次のクエリでは新しい接続が張り直される。
+  pool.on('error', (e) => {
+    console.warn('DB接続（待機中）が切断されました:', e?.message || e);
+  });
+
+  /**
+   * プーラーの席が満杯（Supabase/Supavisorのセッションモード）かどうか。
+   * 同時アクセスが重なった一瞬だけ起きることが多いので、これは待って空くのを
+   * 待ち直す価値がある種類の失敗。
+   */
+  const isPoolFull = (e) => {
+    const s = String(e?.message || '');
+    return e?.code === 'XX000' && /max clients reached/i.test(s)
+      || /EMAXCONNSESSION|max clients reached|too many clients/i.test(s);
+  };
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * 席が満杯だったときだけ、少し待って数回やり直す。
+   * 待ち時間は 120ms → 360ms → 1080ms。合計1.5秒ほどで、
+   * それでも空かなければ原因の分かるメッセージにして返す。
+   */
+  const withRetry = async (run) => {
+    let wait = 120;
+    for (let i = 0; ; i++) {
+      try {
+        return await run();
+      } catch (e) {
+        if (i >= 3 || !isPoolFull(e)) throw e;
+        await sleep(wait);
+        wait *= 3;
+      }
+    }
+  };
+
   // Neon以外のプーラー（Supabase等）で同じ拒否が起きた場合に、対処が分かる形で返す
   const translate = (e) => {
+    if (isPoolFull(e)) {
+      return new DbConfigError(
+        'データベースの同時接続の上限に達しました（プーラーの席が満杯です）。'
+        + 'しばらく待って開き直すとつながります。'
+        + '繰り返す場合は、Supabaseの Settings → Database → Connection pooling で '
+        + 'Pool size を増やす（既定20 → 60程度）か、'
+        + '環境変数 DB_POOL_MAX を小さくしてください。'
+      );
+    }
     if (/unsupported startup parameter/i.test(String(e?.message || ''))) {
       return new DbConfigError(
         '接続先がプーラー（PgBouncer）経由のため、本アプリが必要とする接続時のスキーマ指定を受け付けません。'
@@ -328,7 +383,7 @@ function createPostgresDb() {
 
   const query = async (sql, params = []) => {
     try {
-      return await pool.query(toPgSql(sql), normalizeParams(params));
+      return await withRetry(() => pool.query(toPgSql(sql), normalizeParams(params)));
     } catch (e) {
       throw translate(e);
     }
@@ -347,7 +402,7 @@ function createPostgresDb() {
       const { sql: withRet, hasReturning } = withReturningId(sql);
       let r;
       try {
-        r = await pool.query(toPgSql(withRet), normalizeParams(params));
+        r = await withRetry(() => pool.query(toPgSql(withRet), normalizeParams(params)));
       } catch (e) {
         throw translate(e);
       }
@@ -359,13 +414,18 @@ function createPostgresDb() {
     async exec(sql) {
       // スキーマ適用。パラメータを含まないため、まとめて実行できる
       try {
-        await pool.query(sql);
+        await withRetry(() => pool.query(sql));
       } catch (e) {
         throw translate(e);
       }
     },
     async batch(statements) {
-      const client = await pool.connect();
+      let client;
+      try {
+        client = await withRetry(() => pool.connect());
+      } catch (e) {
+        throw translate(e);
+      }
       try {
         await client.query('BEGIN');
         const results = [];
