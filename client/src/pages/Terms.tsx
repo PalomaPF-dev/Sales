@@ -208,13 +208,6 @@ export default function Terms() {
           <strong>お問い合わせ</strong>の画面から「アプリのこと（管理者へ）」でお送りください。
           価格や交渉の進め方など業務に関することは、「営業本部内のこと（営業企画部へ）」をお選びください。
         </p>
-        <p className="pt-note" style={{ marginBottom: 0 }}>
-          参考: 生産・調達統括本部の業務アプリポータルおよび同本部の各アプリには、別途
-          <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer">
-            共通利用規約・著作権ポリシー
-          </a>
-          が定められています（本アプリには適用されません）。
-        </p>
       </div>
     </div>
   );

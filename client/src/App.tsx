@@ -9,7 +9,7 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconChart, IconDashboard, IconDeals, IconGrid, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
+import { IconChart, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
@@ -287,11 +287,6 @@ export default function App() {
                 {unreadReplies > 0 && <span className="badge red" style={{ marginLeft: 6 }}>{unreadReplies}</span>}
               </span>
             </NavLink>
-            <div className="nav-sep" />
-            {/* PFアプリポータルへ（他のアプリと同じ導線。外部リンク） */}
-            <a href="https://portal.paloma-pf.com" target="_blank" rel="noopener noreferrer">
-              <IconGrid /><span className="lbl">ポータル</span>
-            </a>
           </nav>
           <div className="spacer" />
           {/* 表示モードの切替。ポータル・他のPFアプリと同じ3択の並び */}
