@@ -1791,11 +1791,12 @@ function aPriceSql(n, slideFrom, prefix = '') {
  * Excel出力（/dashboard/export）で同じ数字を使うため、ここに集約している。
  */
 /**
- * 平均単価の比較（過去最新単価 → 計画）の集計SQL。
+ * 平均単価の比較（基準 → 計画）の集計SQL。
  *
- * 絞り込んだ品目のうち「過去最新単価・その月の計画・当月の実績数」が揃う行だけで、
- * 出荷数（当月の実績数）で重みを付けた平均単価を、過去と計画それぞれで出す。
- * 同じ行どうしで比べるので、平均の差がそのまま1台あたりの上がり幅になる。
+ * 「基準」（過去最新単価／マスタ単価／実単価）で選んだ単価と、各月の計画とを、
+ * 出荷数（当月の実績数）で重みを付けた平均で比べる。
+ * 同じ品目・同じ数量で比べるので、平均の差がそのまま1台あたりの上がり幅になり、
+ * それに出荷数を掛けるとその月の値上げ額と一致する。
  *
  * ダッシュボード全体（/dashboard）と、カードの中だけで絞り込み直す
  * /dashboard/avg-prices の両方がこれを使う。
@@ -1804,14 +1805,22 @@ function avgPriceAgg(query, aggMeta) {
   const f = (c) => `CAST(${c} AS FLOAT)`;
   const approved = aDateCond(query);
   const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta));
-  const pair = (n) =>
-    `${aPrice(n)} > 0 AND past_price > 0 AND ${f('master_qty')} > 0${approved ? ` AND ${approved}` : ''}`;
-  return [0, 1, 2, 3].map((n) => `
-    SUM(CASE WHEN ${pair(n)} THEN 1 ELSE 0 END) AS avg_cnt_m${n},
-    SUM(CASE WHEN ${pair(n)} THEN ${f('master_qty')} END) AS avg_qty_m${n},
-    SUM(CASE WHEN ${pair(n)} THEN ${f(aPrice(n))} * ${f('master_qty')} END) AS avg_plan_m${n},
-    SUM(CASE WHEN ${pair(n)} THEN ${f('past_price')} * ${f('master_qty')} END) AS avg_past_m${n}`)
-    .join(',');
+  // 比較のもと（過去最新単価／マスタ単価／実単価）。画面の「基準」で選ぶ
+  const base = basePriceSql(query);
+  const qty = f('master_qty');
+  // 対象は「基準の単価があり、当月の実績数がある品目」。月ごとに変えず、
+  // どの月も同じ品目・同じ数量で比べる（基準の平均が1つに定まる）。
+  const target = `${base} > 0 AND ${qty} > 0${approved ? ` AND ${approved}` : ''}`;
+  // その月の計画が無い品目は「変動なし」として基準の単価のまま数える。
+  // 値上げ額の出し方と同じ決まりなので、
+  // （計画の平均 − 基準の平均）× 出荷数 が、その月の値上げ額と一致する。
+  const plan = (n) => `(CASE WHEN ${aPrice(n)} > 0 THEN ${f(aPrice(n))} ELSE ${base} END)`;
+  return `
+    SUM(CASE WHEN ${target} THEN 1 ELSE 0 END) AS avg_cnt,
+    SUM(CASE WHEN ${target} THEN ${qty} END) AS avg_qty,
+    SUM(CASE WHEN ${target} THEN ${base} * ${qty} END) AS avg_base,
+    ${[0, 1, 2, 3].map((n) => `
+    SUM(CASE WHEN ${target} THEN ${plan(n)} * ${qty} END) AS avg_plan_m${n}`).join(',')}`;
 }
 
 async function dashboardData(query, user) {

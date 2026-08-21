@@ -79,14 +79,12 @@ interface DashboardRes {
     raise_bsim: number | null;
     b_rows: number;
     /**
-     * 平均単価の比較（過去最新単価 → 計画）。
-     * 過去最新単価・その月の計画・7月の実績数が揃う行だけで、
-     * qty=7月実績数の合計、plan/past=単価×実績数の合計（÷qtyで加重平均になる）
+     * 平均単価の比較（基準 → 計画）。
+     * 基準の単価と7月の実績数がある行だけで、
+     * qty=7月実績数の合計、base/plan=単価×実績数の合計（÷qtyで加重平均になる）
      */
-    avg_cnt_m0?: number; avg_cnt_m1?: number; avg_cnt_m2?: number; avg_cnt_m3?: number;
-    avg_qty_m0?: number | null; avg_qty_m1?: number | null; avg_qty_m2?: number | null; avg_qty_m3?: number | null;
+    avg_cnt?: number; avg_qty?: number | null; avg_base?: number | null;
     avg_plan_m0?: number | null; avg_plan_m1?: number | null; avg_plan_m2?: number | null; avg_plan_m3?: number | null;
-    avg_past_m0?: number | null; avg_past_m1?: number | null; avg_past_m2?: number | null; avg_past_m3?: number | null;
   };
   /**
    * 実績（過去最新単価 → 当月）。過去最新単価のある品目だけで集計する。
@@ -560,29 +558,37 @@ type AvgGroup = typeof AVG_TABS[number]['key'];
 /** 平均単価の集計1件ぶん（全体の合計にも、内訳の1行にも同じ形を使う） */
 interface AvgRow {
   name?: string | null;
-  /** avg_cnt_m0 / avg_qty_m0 / avg_plan_m0 / avg_past_m0 … 月ごとの集計値 */
+  /** avg_cnt / avg_qty / avg_base / avg_plan_m0… の集計値 */
   [key: string]: string | number | null | undefined;
 }
 
-/** その月の加重平均。単価×実績数の合計 ÷ 実績数の合計 */
-function avgOf(r: AvgRow | null | undefined, n: number) {
-  const qty = num(r?.[`avg_qty_m${n}`]);
+/**
+ * 対象の件数・出荷数と、基準（比較のもと）の加重平均。
+ * 単価×実績数の合計 ÷ 実績数の合計。どの月も同じ品目・同じ数量で比べる。
+ */
+function baseOf(r: AvgRow | null | undefined) {
+  const qty = num(r?.avg_qty);
   if (!(qty > 0)) return null;
-  const past = num(r?.[`avg_past_m${n}`]) / qty;
-  const plan = num(r?.[`avg_plan_m${n}`]) / qty;
-  return { cnt: num(r?.[`avg_cnt_m${n}`]), qty, past, plan, diff: plan - past };
+  return { cnt: num(r?.avg_cnt), qty, base: num(r?.avg_base) / qty };
+}
+
+/** その月の計画の加重平均と、基準からの上がり幅 */
+function planOf(r: AvgRow | null | undefined, n: number) {
+  const b = baseOf(r);
+  if (!b) return null;
+  const plan = num(r?.[`avg_plan_m${n}`]) / b.qty;
+  return { ...b, plan, diff: plan - b.base };
 }
 
 const unitYen = (v: number) => `¥${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
-/** 平均単価の1マス。過去→計画の平均単価と、その上がり幅を重ねて出す */
-function AvgCell({ v }: { v: ReturnType<typeof avgOf> }) {
+/** 計画の1マス。計画の平均単価と、基準からの上がり幅を重ねて出す */
+function AvgCell({ v }: { v: ReturnType<typeof planOf> }) {
   if (!v) return <td style={nums}>—</td>;
-  const rate = v.past > 0 ? Math.round((v.diff / v.past) * 1000) / 10 : null;
+  const rate = v.base > 0 ? Math.round((v.diff / v.base) * 1000) / 10 : null;
   return (
     <td style={nums}>
       <div style={{ fontWeight: 700 }}>{unitYen(v.plan)}</div>
-      <div className="sub" style={{ color: 'var(--muted)' }}>{unitYen(v.past)} →</div>
       <div className="sub" style={{ fontWeight: 700,
                                     color: v.diff < 0 ? '#c2410c' : v.diff > 0 ? '#15803d' : undefined }}>
         {Math.abs(v.diff) < 0.5 ? '±0'
@@ -656,23 +662,28 @@ function AvgPriceCard({ meta, pageQs, pageEquip, pageCategory, pageModel,
   const months = [m0, m1, m2, m3];
   const rows = data?.rows ?? [];
   const head = AVG_TABS.find((t) => t.key === group)?.head ?? '内訳';
+  // 比較のもとの呼び名。表の見出しと説明で使う
+  const baseName = base === 'past' ? '過去最新単価'
+    : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
 
   const clear = () => {
     setEquip(''); setCategory(''); setModel('');
   };
 
   return (
-    <Card title="平均単価の比較（過去最新単価 → 計画）">
+    <Card title={`平均単価の比較（${baseName} → 計画）`}>
       <NoteFold id="avg">
-        <strong>1台あたりの平均単価</strong>を、過去最新単価と各月の計画（マスタ登録単価）で比べます。
+        <strong>1台あたりの平均単価</strong>を、<strong>基準</strong>で選んだ単価
+        （いまは<strong>{baseName}</strong>）と各月の計画（マスタ登録単価）で比べます。
+        基準の平均単価は<strong>出荷数の右の列</strong>に出し、各月はこの列と比べた差を出します。
         平均は<strong>出荷数（{actLabel}の実績数）で重みを付けた平均</strong>
         （単価×実績数の合計 ÷ 実績数の合計）です。
-        マスの上段が<strong>計画単価の平均</strong>、中段が<strong>過去最新単価の平均</strong>、
-        下段がその<strong>上がり幅</strong>（1台あたり）です。
-        過去最新単価・その月の計画・{actLabel}の実績数の<strong>3つが揃う品目だけ</strong>が対象で、
-        同じ品目どうしで比べるため、差がそのまま1台あたりの上がり幅になります
-        （実績や単価の無い品目は含めません。値上げ額の合計とは対象の数が異なります）。
-        下の絞り込み・承認日・基準は<strong>このカードだけ</strong>に効きます。
+        マスの上段が<strong>計画単価の平均</strong>、下段が<strong>基準との差</strong>（1台あたり）です。
+        対象は<strong>{baseName}と{actLabel}の実績数がある品目</strong>で、
+        その月の計画が無い品目は<strong>変動なし</strong>（基準のまま）として数えます。
+        どの月も同じ品目・同じ数量で比べるので、
+        <strong>（計画の平均 − 基準の平均）× 出荷数 が、その月の値上げ額と一致します</strong>。
+        下の絞り込み・基準・承認日は<strong>このカードだけ</strong>に効きます。
       </NoteFold>
 
       {/* カードの中だけの選び直し。器具区分→カテゴリー名（大）→品目階層名 の順 */}
@@ -758,29 +769,37 @@ function AvgPriceCard({ meta, pageQs, pageEquip, pageCategory, pageModel,
               <th style={nums} title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>
                 出荷数<br /><small>{actLabel}実績数</small>
               </th>
+              {/* 比較のもと。選んだ基準の平均単価を、計画の左に並べて置く */}
+              <th style={{ ...nums, borderLeft: '1px solid var(--baseline)' }}
+                  title={`選んだ基準（${baseName}）の平均単価。右の各月はこれと比べています`}>
+                基準<br /><small>{baseName}</small>
+              </th>
               {months.map((ym) => (
                 <th key={ym} style={nums}>
-                  {ym}<br /><small>計画平均 / 過去平均 / 上がり幅</small>
+                  {ym}<br /><small>計画平均 / 基準との差</small>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && !busy && (
-              <tr><td colSpan={7} style={{ color: 'var(--muted)' }}>対象の品目がありません</td></tr>
+              <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>対象の品目がありません</td></tr>
             )}
             {[...rows, { ...(data?.aMonths ?? {}), name: '合計' }].map((r, i) => {
               const last = i === rows.length;
-              const first = avgOf(r, 0);
+              const b = baseOf(r);
               return (
                 <tr key={`${r.name ?? ''}-${i}`}
                     style={last ? { fontWeight: 700, borderTop: '2px solid var(--baseline)' } : undefined}>
                   <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word' }}>
                     {r.name || '—'}
                   </td>
-                  <td style={nums}>{first ? first.cnt.toLocaleString() : '—'}</td>
-                  <td style={nums}>{first ? Math.round(first.qty).toLocaleString() : '—'}</td>
-                  {[0, 1, 2, 3].map((n) => <AvgCell key={n} v={avgOf(r, n)} />)}
+                  <td style={nums}>{b ? b.cnt.toLocaleString() : '—'}</td>
+                  <td style={nums}>{b ? Math.round(b.qty).toLocaleString() : '—'}</td>
+                  <td style={{ ...nums, borderLeft: '1px solid var(--baseline)', fontWeight: 700 }}>
+                    {b ? unitYen(b.base) : '—'}
+                  </td>
+                  {[0, 1, 2, 3].map((n) => <AvgCell key={n} v={planOf(r, n)} />)}
                 </tr>
               );
             })}
