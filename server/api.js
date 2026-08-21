@@ -3190,6 +3190,9 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
+        // この取込では商談結果・最終確定日・最終確定単価を今の値のままにするか
+        // （画面で入れた交渉の記録を、ファイルの値で上書きしたくないときに使う）
+        keepNego: req.body?.keepNego === true,
         // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
         histMonths: Array.isArray(meta.histMonths)
           ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
@@ -3430,6 +3433,15 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     ? 'CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END'
     : `COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
                  deals.r2_target_price)`;
+  // 商談結果・最終確定日・最終確定単価。
+  // 通常はファイルに値があればそれを入れる（無ければ今の値を残す）が、
+  // 「今の値を残す」を選んだ取込では、いま入っている案件には触れない。
+  // 商談メモはもともとファイルに無いため、どちらの場合も変わらない。
+  const keepNego = startedMeta?.keepNego === true;
+  const negoSql = keepNego ? '' : `
+      nego_result = COALESCE(s.nego_result, deals.nego_result),
+      final_date = COALESCE(s.final_date, deals.final_date),
+      final_price = COALESCE(s.final_price, deals.final_price),`;
   // 当月実績の単価・数量（master_*）は売上高の取込が正なので、ここでは触らない。
   await db.run(`
     UPDATE deals SET
@@ -3457,10 +3469,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
       -- 目標単価（第2弾新値上げ単価）。列のあるファイルならファイルの内容を正とする
       r2_target_price = ${targetSql},
-      -- 商談結果・最終確定日・最終確定単価。画面で入れた値はファイルに無ければ残る
-      nego_result = COALESCE(s.nego_result, deals.nego_result),
-      final_date = COALESCE(s.final_date, deals.final_date),
-      final_price = COALESCE(s.final_price, deals.final_price),
+      -- 商談結果・最終確定日・最終確定単価（「今の値を残す」を選んだときは触れない）
+      ${negoSql}
       updated_at = ?
     FROM agg_staging s
     WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
