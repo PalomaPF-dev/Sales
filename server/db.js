@@ -72,6 +72,64 @@ function normalizePgUrl(raw) {
 const PG_URL = normalizePgUrl(RAW_PG_URL);
 export const isPostgres = Boolean(PG_URL);
 
+/**
+ * いま接続しに行っている先（パスワードは含めない）。
+ * つながらないときに「どこへ・誰でつなぎに行ったか」が分からないと直しようがないため、
+ * 失敗したときだけこれを添える。パスワードは決して出さない。
+ */
+export function pgTarget() {
+  if (!PG_URL) return null;
+  try {
+    const u = new URL(PG_URL);
+    return {
+      host: u.hostname,
+      port: u.port || '5432',
+      user: decodeURIComponent(u.username || ''),
+      database: u.pathname.replace(/^\//, '') || '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * よくある設定ミスに、直し方まで含めた案内を付ける。
+ * 生のPostgreSQLのメッセージ（password authentication failed など）だけでは
+ * 何を直せばよいか分からないため。
+ */
+export function pgHint(error) {
+  const target = pgTarget();
+  if (!target) return null;
+  const code = error?.code;
+  const pooler = target.host.endsWith('.pooler.supabase.com');
+  if (code === '28P01') {
+    // プーラー経由では、ユーザー名に「.プロジェクトref」が要る（postgres だけでは通らない）
+    if (pooler && !target.user.includes('.')) {
+      return 'Supabaseのプーラー接続では、ユーザー名を「postgres.＜プロジェクトref＞」に'
+        + 'する必要があります（いまは「' + target.user + '」）。'
+        + 'Supabaseの Connect → Session pooler に出ている接続文字列を'
+        + 'そのまま DATABASE_URL に貼り直してください。';
+    }
+    return 'DATABASE_URL のパスワードが合っていません。'
+      + 'Supabaseの Project Settings → Database → Database password で'
+      + 'パスワードを作り直し、Connect に出ている接続文字列を'
+      + 'そのまま DATABASE_URL に貼り直してください。'
+      + 'パスワードに @ : / ? # などが入る場合は、URLエンコードが要ります。';
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return 'DATABASE_URL のホスト名が見つかりません（' + target.host + '）。綴りをご確認ください。';
+  }
+  if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED') {
+    if (/^db\..+\.supabase\.co$/.test(target.host)) {
+      return 'Supabaseの直接接続（' + target.host + '）はIPv6のみで、Vercelからは届きません。'
+        + 'Connect → Session pooler の接続文字列（〜.pooler.supabase.com:5432）に'
+        + '差し替えてください。';
+    }
+    return 'データベースに届きませんでした（' + target.host + ':' + target.port + '）。';
+  }
+  return null;
+}
+
 // 相乗り先のDBで既存テーブルと衝突しないよう、専用スキーマに配置する
 const PG_SCHEMA = process.env.DB_SCHEMA || 'sales_pricing';
 

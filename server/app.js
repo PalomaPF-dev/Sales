@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
 import { basicAuth, securityHeaders } from './auth.js';
-import { db, initDb } from './db.js';
+import { db, initDb, pgHint, pgTarget } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,10 +30,16 @@ export function createApp({ serveStatic = true } = {}) {
         uptime: Math.round(process.uptime()),
       });
     } catch (e) {
+      // つながらないときは「どこへ・誰でつなぎに行ったか」と直し方も返す。
+      // これが無いと生のPostgreSQLのメッセージだけになり、何を直せばよいか分からない。
+      // パスワードは含めない。
       res.status(503).json({
         status: e.isConfigError ? 'not_configured' : 'error',
         db: db.kind,
-        error: e.message,
+        // 接続できないときはメッセージが空のことがあるので、種別（コード）で補う
+        error: e.message || e.code || '接続できませんでした',
+        hint: pgHint(e) || undefined,
+        target: pgTarget() || undefined,
       });
     }
   });
