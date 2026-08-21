@@ -245,7 +245,7 @@ export default function App() {
             <button className="mtop-btn" onClick={toggleSide}
               title="メニュー" aria-label="メニュー">☰</button>
             <img className="mtop-logo" src="/paloma-logo.png" alt="株式会社パロマ" />
-            <span className="mtop-title">価格交渉管理</span>
+            <span className="mtop-title">価格改定進捗</span>
             <button className="mtop-btn wide" onClick={cycleView}
               title="表示の切替（自動・スマホ・PC）">{VIEW_LABEL[viewMode]}</button>
           </header>
@@ -264,7 +264,7 @@ export default function App() {
               <img src="/paloma-logo.png" alt="株式会社パロマ" />
             </span>
             <span className="txt">
-              <b>価格交渉管理</b>
+              <b>価格改定進捗</b>
             </span>
             <button className="side-close-btn" onClick={toggleSide}
               title="メニューをたたむ（一覧を広く使えます）" aria-label="メニューをたたむ">◀</button>

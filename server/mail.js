@@ -2,7 +2,7 @@
 //
 // 環境変数（Vercelのプロジェクト設定）:
 //   RESEND_API_KEY … 送信に使う鍵。未設定なら送らない（アプリは通常どおり動く）
-//   MAIL_FROM      … 差出人（既定: 価格交渉管理 <noreply@paloma-pf.com>）
+//   MAIL_FROM      … 差出人（既定: 価格改定進捗 <noreply@paloma-pf.com>）
 //   APP_ORIGIN     … メール内のリンクの宛先（既定: https://sales.paloma-pf.com）
 //   MAIL_NOTIFY_TO … 追加の通知先。回答担当者のメール設定に足して送る（カンマ区切り）
 
@@ -47,7 +47,7 @@ export async function sendMail({ to, subject, html }) {
 
 /** 差出人。Resendで認証済みのドメインである必要がある */
 export const mailFrom = () =>
-  process.env.MAIL_FROM || '価格交渉管理 <noreply@paloma-pf.com>';
+  process.env.MAIL_FROM || '価格改定進捗 <noreply@paloma-pf.com>';
 
 /** Resendの応答から、画面に出す短い理由を取り出す */
 function resendMessage(text) {
@@ -61,9 +61,9 @@ function resendMessage(text) {
 
 /** 設定を確かめるためのテストメール */
 export function testMail(byName) {
-  const subject = '【価格交渉管理】メール通知のテスト';
+  const subject = '【価格改定進捗】メール通知のテスト';
   const html = `
-    <p>価格交渉管理アプリからのテストメールです。</p>
+    <p>価格改定進捗管理アプリからのテストメールです。</p>
     <p>このメールが届いていれば、お問い合わせが入ったときの通知も同じ経路で届きます。</p>
     <p style="color:#707070;font-size:12px">
       送信者: ${esc(byName)}<br>
@@ -79,9 +79,9 @@ export function inquiryMail(row) {
   // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業企画部）。
   // 件名だけで自分宛かどうかが分かるようにする
   const destLabel = row.dest === 'sales' ? '営業本部内のこと' : 'アプリのこと';
-  const subject = `【価格交渉管理／${destLabel}】お問い合わせ（${row.category}）${row.name} さん`;
+  const subject = `【価格改定進捗／${destLabel}】お問い合わせ（${row.category}）${row.name} さん`;
   const html = `
-    <p>価格交渉管理アプリに、新しいお問い合わせが届きました。</p>
+    <p>価格改定進捗管理アプリに、新しいお問い合わせが届きました。</p>
     <table cellpadding="6" style="border-collapse:collapse;font-size:14px">
       <tr><th align="left">送信者</th><td>${esc(row.name)}（${esc(row.login_id ?? 'IDなし')}）</td></tr>
       <tr><th align="left">宛先</th><td>${esc(destLabel)}</td></tr>

@@ -1,6 +1,6 @@
 {
-  "name": "価格交渉管理アプリ",
-  "short_name": "価格交渉管理",
+  "name": "価格改定進捗管理アプリ",
+  "short_name": "価格改定進捗",
   "description": "値上げ交渉・単価管理（株式会社パロマ 営業本部）",
   "start_url": "/",
   "display": "standalone",

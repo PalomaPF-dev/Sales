@@ -142,7 +142,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
           {/* 会社ロゴ。ポータル・他のPFアプリと同じ見せ方にそろえる */}
           <img className="llogo" src="/paloma-logo.png" alt="株式会社パロマ" />
           <p className="lorg">営業本部</p>
-          <h1 className="lname">価格交渉管理アプリ</h1>
+          <h1 className="lname">価格改定進捗管理アプリ</h1>
           <p className="lsub">値上げ交渉・単価管理</p>
         </div>
         <h2 className="ltitle">{TITLES[mode]}</h2>
