@@ -229,6 +229,19 @@ export default function Deals() {
     });
   };
 
+  /**
+   * 値上げ額の合計に入るか（承認日の条件）。
+   * ダッシュボードと同じ決まりで、案件は全部出したまま、
+   * 合計は承認日が条件に合う品目だけを足す。基準は3か月後の承認日。
+   */
+  const inRaise = (d: Deal) => {
+    const ym = get('aDateYm');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) return true;
+    const first = `${ym}-01`;
+    const v = String(d.a_date_m3 ?? '').slice(0, 10);
+    return get('aDateOp') === 'before' ? v !== '' && v < first : v >= first;
+  };
+
   const oldYm = get('oldYm');
   const isOldDate = (v: string | null | undefined) =>
     Boolean(oldYm && v && String(v).slice(0, 10) < `${oldYm}-01`);
@@ -737,8 +750,10 @@ export default function Deals() {
           承認日での絞り込み。「2026-08以降だけ見る（それより前は値上げ前の単価）」
           という使い方をする。基準は値上げ後の単価にあたる3か月後のA基準の承認日。
         */}
-        <label className="fld" title={`${ymLabel(meta?.aggMeta?.m3, '3か月後')}のマスタ登録単価の承認日で絞り込みます`}>
-          承認日
+        <label className="fld"
+               title={`${ymLabel(meta?.aggMeta?.m3, '3か月後')}のマスタ登録単価の承認日で、値上げ額の合計に入れるものを決めます`
+                 + '（案件は全部そのまま出ます。ダッシュボードと同じ決まりです）'}>
+          承認日<small style={{ fontWeight: 400 }}>（合計の対象）</small>
           <div style={{ display: 'flex', gap: 6 }}>
             <input
               type="month"
@@ -1170,13 +1185,21 @@ export default function Deals() {
                   </td>
 
                   {/* 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価は月ごとに変わる */}
-                  <td className="num sep">{aDiff(d, d.a_price_m0, ymLabel(meta?.aggMeta?.m0, '当月'))}</td>
+                  {/* 承認日の条件に合わない品目は、幅は出すが合計には入れない（薄く出す） */}
+                  <td className={`num sep${inRaise(d) ? '' : ' uncounted'}`}
+                      title={inRaise(d) ? undefined : '承認日の条件に合わないため、上の合計には入れていません'}>
+                    {aDiff(d, d.a_price_m0, ymLabel(meta?.aggMeta?.m0, '当月'))}
+                  </td>
                   {/* 9月は、スライドしたときは8月の単価で幅を出す（表示している単価と合わせる） */}
-                  <td className={`num${isSlid(d) ? ' slid' : ''}`}>
+                  <td className={`num${isSlid(d) ? ' slid' : ''}${inRaise(d) ? '' : ' uncounted'}`}>
                     {aDiff(d, isSlid(d) ? d.a_price_m0 : d.a_price_m1, ymLabel(meta?.aggMeta?.m1, '翌月'))}
                   </td>
-                  <td className="num">{aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}</td>
-                  <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
+                  <td className={`num${inRaise(d) ? '' : ' uncounted'}`}>
+                    {aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}
+                  </td>
+                  <td className={`num${inRaise(d) ? '' : ' uncounted'}`}>
+                    {aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}
+                  </td>
 
                   {/* 値上げ交渉。選択（一括入力用）・商談結果・商談メモ・最終確定日・最終確定単価・適用年月 */}
                   {canEdit && (

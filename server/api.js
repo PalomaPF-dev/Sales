@@ -2465,6 +2465,8 @@ api.get('/deals', wrap(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const { months, masterMonths: mMonths, aggMeta } = await loadImportMeta();
+  // 承認日の条件（ダッシュボードと同じ判定）。合計の計上に使う
+  const approvedCond = aDateCond(req.query);
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
     // 値上げ幅は「その月のA基準 − 当月のマスタ単価」× マスタ分の数量。
@@ -2483,8 +2485,10 @@ api.get('/deals', wrap(async (req, res) => {
              ${[0, 1, 2, 3].map((n) => {
                // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（表示と同じ）
                const a = aPriceSql(n, slideFromDate(aggMeta));
+               // 承認日の絞り込みは、ダッシュボードと同じく「値上げ額を計上するか」に効かせる。
+               // 案件は全部そのまま出したうえで、合計だけ条件に合うものを足す。
                return `
-             SUM(CASE WHEN ${a} > 0 AND ${MASTER_PRICE} IS NOT NULL
+             SUM(CASE WHEN ${a} > 0 AND ${MASTER_PRICE} IS NOT NULL${approvedCond ? ` AND ${approvedCond}` : ''}
                        THEN (CAST(${a} AS FLOAT) - ${MASTER_PRICE})
                             * (${planMonthlyQty()})
                   END) AS raise_m${n}`;
