@@ -345,7 +345,15 @@ export function buildDashboardWorkbook(data, opts = {}) {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
 }
 
-export function buildWorkbook(rows, priceTypes = [], opts = {}) {
+/**
+ * 一覧のExcelに出す表を「見出し」と「行の配列」で返す。
+ *
+ * サーバーでファイルまで作る通常の出力（buildWorkbook）と、
+ * 件数が多いときにブラウザ側でファイルを作る分割出力（/deals/export-rows）の
+ * 両方がこれを使う。列の定義を1か所にしておくことで、どちらの出し方でも
+ * 同じ列・同じ値になる。
+ */
+export function buildExportTable(rows, opts = {}) {
   const months = Number(opts.months) > 0 ? Number(opts.months) : 12;
   const columns = buildColumns({
     months,
@@ -355,15 +363,22 @@ export function buildWorkbook(rows, priceTypes = [], opts = {}) {
     actualMeta: opts.actualMeta,
     base: opts.base,
   });
+  return {
+    header: columns.map(([label]) => label),
+    widths: columns.map(([label]) => Math.max(10, Math.min(24, label.length * 2))),
+    rows: rows.map((r) => columns.map(([, get]) => {
+      const v = get(r);
+      return v === null || v === undefined ? '' : v;
+    })),
+  };
+}
 
-  const header = columns.map(([label]) => label);
-  const body = rows.map((r) => columns.map(([, get]) => {
-    const v = get(r);
-    return v === null || v === undefined ? '' : v;
-  }));
+export function buildWorkbook(rows, priceTypes = [], opts = {}) {
+  const { header, widths, rows: body } = buildExportTable(rows, opts);
 
-  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-  ws['!cols'] = columns.map(([label]) => ({ wch: Math.max(10, Math.min(24, label.length * 2)) }));
+  // dense（行の配列のまま持つ形）にすると、数万行でも組み立てが速く、使う記憶領域も少ない
+  const ws = XLSX.utils.aoa_to_sheet([header, ...body], { dense: true });
+  ws['!cols'] = widths.map((wch) => ({ wch }));
   // 見出しと、法人名までの左側を固定して横スクロールしても行が分かるようにする
   ws['!freeze'] = { xSplit: 3, ySplit: 1 };
 
