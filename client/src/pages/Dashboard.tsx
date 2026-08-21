@@ -9,7 +9,18 @@ import { useIsMobile } from '../view';
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
 /** 絞り込みの項目。案件一覧と同じものを受ける（サーバー側の判定も同じ） */
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'aState', 'act', 'aDateYm', 'aDateOp', 'gain'] as const;
+  'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+
+/**
+ * 値上げ幅の「基準」（比較のもと）。案件一覧と同じものを選ぶ。
+ * マスタ登録単価（A基準）とこの単価との差が値上げ幅で、
+ * それに当月の実績数を掛けたものが値上げ額になる。
+ */
+const BASE_OPTIONS = [
+  { key: 'master', label: 'マスタ単価', note: '値決めの単価' },
+  { key: 'actual', label: '実単価', note: '金額÷数量。見積ぶんが混ざる' },
+  { key: 'past', label: '過去最新単価', note: '値上げ前の単価' },
+] as const;
 
 /**
  * 支店別・法人別の値上げ額の集計。
@@ -638,6 +649,10 @@ export default function Dashboard() {
   const months = data.months || 1;
   const actYm = data.actuals?.[0]?.ym ?? '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  // 値上げ幅の基準（比較のもと）。案件一覧と同じ選び方
+  const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
+  const baseName = base === 'past' ? '過去最新単価'
+    : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
   const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
     (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
@@ -662,14 +677,16 @@ export default function Dashboard() {
       <p className="page-sub">
         売上高（{actLabel}）の<strong>品目件数</strong>を母数に、
         ベース（価格調査（毎日更新））との突合件数と、
-        <strong>値上げ額</strong>（(マスタ登録単価−{actLabel}のマスタ単価)×マスタ分の数量）を出します。
+        <strong>値上げ額</strong>（(マスタ登録単価−<strong>{baseName}</strong>)×{actLabel}の実績数）を出します
+        （比較のもとは<strong>基準</strong>で選べます）。
         <strong>値上げ前当初</strong>は、{actLabel}の金額（合計）から売上改善額を引いた額です。
         <strong>承認日</strong>は既定で<strong>当月以降に承認された単価だけ</strong>を見ています
         （それより前は値上げ前の古い単価が多いため）。欄を空にすると全期間になります。
         絞り込みで件数と値上げ額が変わります。
         下の表の<strong>現状額</strong>は{actLabel}の金額（合計）そのものです。
-        各月の<strong>マスタ登録単価額</strong>は、そこへ「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量を
+        各月の<strong>マスタ登録単価額</strong>は、そこへ「マスタ登録単価 − {baseName}」×{actLabel}の実績数を
         足した金額で、その差が値上げ額、現状額に対する割合が<strong>値上げ率</strong>です。
+        {baseName}が無い品目・{actLabel}の実績数が無い品目は<strong>変動なし</strong>として扱います。
         金額はすべて<strong>1か月あたり</strong>です。
         表示範囲: <strong>{data.scope.label}</strong>
       </p>
@@ -724,6 +741,20 @@ export default function Dashboard() {
           <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
             <option value="">すべて</option>
             {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select>
+        </label>
+        {/* 値上げ幅の「基準」（比較のもと）。案件一覧と同じ選択肢 */}
+        <label className="fld"
+               title={`マスタ登録単価（A基準）と比べる単価を選びます。差が値上げ幅、`
+                 + `それに${actLabel}の実績数を掛けたものが値上げ額です。`
+                 + `選んだ単価が無い品目と、${actLabel}の実績数が無い品目は変動なしになります`}>
+          基準<small style={{ fontWeight: 400 }}>（比較のもと）</small>
+          <select value={base} onChange={(e) => setParam('base', e.target.value === 'master' ? '' : e.target.value)}>
+            {BASE_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key} title={o.note}>
+                {o.key === 'past' ? o.label : `${actLabel}の${o.label}`}
+              </option>
+            ))}
           </select>
         </label>
         <label className="fld">
@@ -833,7 +864,7 @@ export default function Dashboard() {
           引いたものです。上がった品目のプラスと、下がった品目のマイナスを合わせた額を引いています。
           <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
           <strong>計画</strong>は、この{actLabel}の金額（合計）へ
-          「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量を足したもので、
+          「マスタ登録単価 − {baseName}」×{actLabel}の実績数を足したもので、
           <strong>実績（{actLabel}の金額）と比べます</strong>
           （案件一覧の「値上げ額（月）合計」と同じ数字になります）。
           <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
@@ -842,7 +873,8 @@ export default function Dashboard() {
           実績の行は<strong>過去最新単価のある品目だけ</strong>が対象のため、件数と金額がマスタ分より小さくなります
           （比べる相手の無い品目は値上げ額を出せないため）。
           計画の行は全品目が対象で、承認のある品目だけ
-          「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量 を足しています。
+          「マスタ登録単価 − {baseName}」×{actLabel}の実績数 を足しています
+          （{baseName}が無い品目・{actLabel}の実績数が無い品目は変動なしです）。
         </p>
         {/*
           同じ数字を、当初 → 実績 → 計画 の棒グラフでも出す。
