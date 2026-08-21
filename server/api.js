@@ -811,6 +811,16 @@ api.get('/admin/status', wrap(async (req, res) => {
   const sso = ssoConfig();
   const hasBasic = Boolean(process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASS);
 
+  // お問い合わせの通知メール。鍵の有無と、実際に届く宛先の数を見せる
+  const hasMailKey = Boolean((process.env.RESEND_API_KEY || '').trim());
+  const staffMails = await db.get(
+    `SELECT COUNT(*) AS c FROM users
+      WHERE active = 1 AND email IS NOT NULL AND email <> ''
+        AND role IN (${INQUIRY_ROLES.map(() => '?').join(',')})`, INQUIRY_ROLES).catch(() => null);
+  const extraMails = String(process.env.MAIL_NOTIFY_TO ?? '')
+    .split(',').map((v) => v.trim()).filter(Boolean);
+  const mailTo = Number(staffMails?.c ?? 0) + extraMails.length;
+
   // 添付の実際の保管先。設定だけでなく既存データの内訳も見せる
   // （切り替え前に保存したものはDBに残るため）
   const attach = await db.get(`
@@ -839,6 +849,18 @@ api.get('/admin/status', wrap(async (req, res) => {
           ? `Blobに保存します（登録済み ${num(attach?.total)}件のうち ${num(attach?.on_blob)}件がBlob）`
           : `未設定のためデータベースに保存します（登録済み ${num(attach?.total)}件）`,
         hint: 'Vercel → Storage で Blob ストアを接続（プレフィックス PRIVATE_BLOB）',
+      },
+      {
+        key: 'mail',
+        name: 'お問い合わせの通知メール（Resend）',
+        ok: hasMailKey && mailTo > 0,
+        detail: !hasMailKey
+          ? 'RESEND_API_KEY が未設定のため、通知メールは送られません（お問い合わせの受付とアプリ内での回答は通常どおり動きます）'
+          : mailTo === 0
+            ? '鍵は設定済みですが、宛先が0件です。本社（営業企画部）・管理者にメールを登録してください'
+            : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '値上げ単価管理 <noreply@paloma-pf.com>'}）`,
+        hint: 'Vercel → Settings → Environment Variables に RESEND_API_KEY'
+          + '（任意で MAIL_FROM / APP_ORIGIN / MAIL_NOTIFY_TO）。設定後は再デプロイが必要です',
       },
       {
         key: 'sso',
