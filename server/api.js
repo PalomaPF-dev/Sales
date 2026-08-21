@@ -1833,8 +1833,10 @@ async function dashboardData(query, user) {
   const slideFrom = slideFromDate(aggMeta);
   const aPrice = (n) => aPriceSql(n, slideFrom);
   const aGain = (n) => `(${f(aPrice(n))} - (${mPrice})) * (${planQty})`;
+  // マスタ単価の無い品目は値上げ幅を出せない。ここで除いておかないと
+  // 「金額 + NULL = NULL」となり、その品目の金額ごと合計から消えてしまう
   const aCol = (n) =>
-    `CASE WHEN ${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}
+    `CASE WHEN ${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''} AND (${mPrice}) IS NOT NULL
           THEN ${planBase} + ${aGain(n)} ELSE ${planBase} END`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
@@ -1911,7 +1913,7 @@ async function dashboardData(query, user) {
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
-    SUM(CASE WHEN b_price IS NOT NULL OR a_price_m3 > 0
+    SUM(CASE WHEN (b_price IS NOT NULL OR a_price_m3 > 0) AND (${mPrice}) IS NOT NULL
              THEN ${planBase} + ${bsimGain} ELSE ${planBase} END) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows${abAct}`;
   // 土台は価格調査の全品目。A基準の有無でも、当月の売上の有無でも絞らない
