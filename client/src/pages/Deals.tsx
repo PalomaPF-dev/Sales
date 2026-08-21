@@ -780,6 +780,20 @@ export default function Deals() {
           </select>
         </label>
         <label className="fld">
+          カテゴリー名（大）
+          <select value={get('category')} onChange={(e) => setParam('category', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.categories?.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          品目階層名（器種名）
+          <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.models?.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
+          </select>
+        </label>
+        <label className="fld">
           担当者
           <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
             <option value="">すべて</option>
