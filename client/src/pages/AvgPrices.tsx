@@ -333,12 +333,15 @@ export default function AvgPrices() {
               {rows.length === 0 && !busy && (
                 <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>対象の品目がありません</td></tr>
               )}
-              {[...rows, { ...(data?.aMonths ?? {}), name: '合計' }].map((r, i) => {
-                const last = i === rows.length;
+              {/*
+                合計の行は出さない。器具区分・支店・法人をまたいで単価を平均しても
+                （給湯器とコンロを混ぜた1台あたりの単価）意味を持たないため。
+                全体で見たいときは絞り込みを外して1つのまとまりとして見る。
+              */}
+              {rows.map((r, i) => {
                 const b = baseOf(r);
                 return (
-                  <tr key={`${r.name ?? ''}-${i}`}
-                      style={last ? { fontWeight: 700, borderTop: '2px solid var(--baseline)' } : undefined}>
+                  <tr key={`${r.name ?? ''}-${i}`}>
                     <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word' }}>
                       {r.name || '—'}
                     </td>

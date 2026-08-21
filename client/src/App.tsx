@@ -23,6 +23,7 @@ const ImportPage = lazy(() => import('./pages/ImportPage'));
 const Contact = lazy(() => import('./pages/Contact'));
 const Help = lazy(() => import('./pages/Help'));
 const About = lazy(() => import('./pages/About'));
+const Terms = lazy(() => import('./pages/Terms'));
 
 
 /** 表示の切替。自動＝画面の幅で決める */
@@ -379,6 +380,7 @@ export default function App() {
               <strong>お問い合わせに回答が届いています</strong>（{unreadReplies}件）。ここを押すと確認できます。
             </div>
           )}
+          <div className="main-body">
           <Suspense fallback={<p style={{ color: 'var(--muted)' }}>読み込み中...</p>}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
@@ -391,20 +393,28 @@ export default function App() {
               <Route path="/contact" element={<Contact />} />
               <Route path="/help" element={<Help />} />
               <Route path="/about" element={<About />} />
+              <Route path="/terms" element={<Terms />} />
               <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
               <Route path="/password"
                      element={viewer ? <Dashboard /> : <ChangePassword onDone={() => navigate('/')} />} />
             </Routes>
           </Suspense>
+          </div>
           {/*
-            アプリ内フッター。規約はポータルに1つだけ置き、全アプリから同じ
-            ページを参照する決まりなので、ここもそのリンクにそろえる。
+            アプリ内フッター。画面の中身が短くても、いちばん下に置く。
+            規約はポータルに1つだけ置き、全アプリから同じページを参照する
+            決まりなので、共通の規約はそのリンクにそろえる。
           */}
           <footer className="appfoot">
             <span className="org">© {new Date().getFullYear()} 株式会社パロマ　営業本部</span>
-            <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer">
+            <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer"
+               title="全アプリ共通の決まり（生産・調達統括本部）">
               共通利用規約・著作権ポリシー
+            </a>
+            <a href="/terms" onClick={(e) => { e.preventDefault(); navigate('/terms'); }}
+               title="このアプリに固有の利用条件と免責（営業本部）">
+              本アプリの利用条件・免責
             </a>
             <a href="/about" onClick={(e) => { e.preventDefault(); navigate('/about'); }}>
               バックアップ・仕様の説明

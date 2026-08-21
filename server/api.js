@@ -1745,6 +1745,10 @@ api.get('/meta', wrap(async (req, res) => {
 
   // 取込の情報（A基準の月の見出し・実単価の月など）は1回でまとめて読む
   const { aggMeta, histMeta, actualMeta } = await loadImportMeta();
+  // 過去最新単価が「いつまでの受注か」。画面の説明に出す
+  // （取込のたびに動くので、文言に日付を書き込まずここから渡す）
+  const pastRange = await db.get(
+    'SELECT MAX(past_date) AS max FROM deals WHERE past_date IS NOT NULL');
 
   const body = {
     priceTypes, equips, categories, models, persons, customers, branches, offices,
@@ -1752,6 +1756,7 @@ api.get('/meta', wrap(async (req, res) => {
     aggMeta,
     histMeta,
     actualMeta,
+    pastMax: pastRange?.max ?? null,
     exportMaxRows: EXPORT_MAX_ROWS,
     // 弾ごとの進み具合。案件一覧の絞り込みに使う
     states: [

@@ -158,6 +158,8 @@ export interface Meta {
     filename?: string; histMonths?: string[] } | null;
   /** 価格調査（当月実績）の取込情報。ym は当月（例 2026-07） */
   actualMeta?: { ym?: string; filename?: string; updatedAt?: string } | null;
+  /** 過去最新単価が「いつまでの受注か」（いちばん新しい過去最新受注日） */
+  pastMax?: string | null;
 }
 
 export const ROUND_STATE_NAMES: Record<string, string> = {

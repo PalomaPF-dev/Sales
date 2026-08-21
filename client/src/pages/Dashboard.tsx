@@ -637,6 +637,14 @@ export default function Dashboard() {
   const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
   const baseName = base === 'past' ? '過去最新単価'
     : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
+  // 過去最新単価は「いつまでの受注か」を添える（取込のたびに動くのでデータから取る）
+  const pastMax = meta?.pastMax ?? '';
+  const pastUntil = base === 'past' && /^\d{4}-\d{2}/.test(pastMax)
+    ? `（${Number(pastMax.slice(0, 4))}年${Number(pastMax.slice(5, 7))}月まで）` : '';
+  // 承認日の条件。絞り込みで変わる
+  const aDateText = get('aDateYm')
+    ? `${Number(get('aDateYm').slice(0, 4))}年${Number(get('aDateYm').slice(5, 7))}月${get('aDateOp') === 'before' ? 'より前' : '以降'}`
+    : '全期間';
   const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
     (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
@@ -663,7 +671,9 @@ export default function Dashboard() {
         </button>
       </div>
       <p className="page-sub">
-        値上げ額（マスタ登録単価 − {baseName}）を、絞り込んだまとまりで出します。
+        <strong>値上げ額</strong>は、<strong>{baseName}{pastUntil}</strong>から、
+        マスタ承認日 <strong>{aDateText}</strong>のアップ額を、計画の月ごとに示します。
+        実績数は<strong>{actLabel}</strong>（価格調査の取込月）。
         金額はすべて<strong>1か月あたり</strong>です。　表示範囲: <strong>{data.scope.label}</strong>
       </p>
       <NoteFold id="page">
