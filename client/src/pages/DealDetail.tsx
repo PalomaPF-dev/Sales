@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import { Card, CorpStatusBadge, PriceTypeBadge, RoundStateBadge } from '../components/ui';
 import Attachments from '../components/Attachments';
-import { useUser } from '../user';
+import { useUser, canSeeAllInfo, isViewerRole } from '../user';
 import { NEGO_LABELS } from '../types';
 import type { CorpNegotiation, Deal, Meta } from '../types';
 
@@ -176,9 +176,9 @@ export default function DealDetail() {
                 : `${d.final_price == null ? '' : `¥${yen(d.final_price)}`}`
                   + `${d.final_date ? `（${d.final_date}）` : ''}`}
             </dd>
-            {(me.role === 'admin' || me.role === 'developer') && d.cost_price != null && (
+            {canSeeAllInfo(me.role) && d.cost_price != null && (
               <>
-                <dt>実績原価（管理者のみ）</dt>
+                <dt>実績原価（社外秘）</dt>
                 <dd>¥{yen(d.cost_price)}</dd>
               </>
             )}
@@ -218,9 +218,11 @@ export default function DealDetail() {
             <dt>適用年月</dt><dd>{d.r2_applied_ym || '—'}</dd>
           </dl>
 
-          <p className="pt-note" style={{ marginTop: 12 }}>
-            合意単価・適用年月・完了の入力は<a href="/deals" onClick={(e) => { e.preventDefault(); navigate('/deals'); }}>案件一覧</a>から行います。
-          </p>
+          {!isViewerRole(me.role) && (
+            <p className="pt-note" style={{ marginTop: 12 }}>
+              合意単価・適用年月・完了の入力は<a href="/deals" onClick={(e) => { e.preventDefault(); navigate('/deals'); }}>案件一覧</a>から行います。
+            </p>
+          )}
         </Card>
       </div>
 

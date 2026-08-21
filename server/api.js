@@ -212,6 +212,12 @@ function requireLogin(req, res) {
  */
 const isViewerRole = (role) => role === 'viewer';
 
+/**
+ * 実績原価まで含めて、すべての情報を見られる権限。
+ * 閲覧専用は「見るだけで全部見える」ため、管理者と同じ範囲を返す。
+ */
+const canSeeAllInfo = (role) => isAdminRole(role) || isViewerRole(role);
+
 /** 閲覧専用でも通す書き込み。ログアウトと、お問い合わせの送信・既読だけ */
 function viewerMayWrite(path) {
   return path === '/logout'
@@ -699,8 +705,8 @@ api.get('/admin/users', wrap(async (req, res) => {
   // 突合の鍵はSQL側と同じ（姓名の間の空白の違いを無視する）
   const key = (v) => String(v ?? '').replace(/[\s　]/g, '');
   const ALL_BRANCHES = ['admin', 'developer', 'planning', 'branch_manager', 'wide_area'];
-  // 閲覧専用は支店を入れればその支店だけ、空欄なら全社（閲覧範囲の判定と揃える）
-  const seesAll = (u) => ALL_BRANCHES.includes(u.role) || (isViewerRole(u.role) && !u.branch);
+  // 閲覧専用は支店にかかわらず全社（閲覧範囲の判定と揃える）
+  const seesAll = (u) => ALL_BRANCHES.includes(u.role) || isViewerRole(u.role);
   res.json(rows.map((u) => ({
     ...u,
     visible_deals: seesAll(u) ? total : (branchCount.get(u.branch) ?? 0),
@@ -1677,10 +1683,8 @@ function scopeConditions(user, alias = '') {
   if (isAdminRole(user.role) || ['planning', 'branch_manager', 'wide_area'].includes(user.role)) {
     return { where: [], params: [] };
   }
-  // 閲覧専用（共通ID）。支店を入れればその支店だけ、空欄なら全社を見る
-  if (isViewerRole(user.role)) {
-    return user.branch ? { where: [`${p}branch = ?`], params: [user.branch] } : { where: [], params: [] };
-  }
+  // 閲覧専用（共通ID）。見るだけの権限なので、支店にかかわらず全社を見る
+  if (isViewerRole(user.role)) return { where: [], params: [] };
 
   // 営業担当者（既定）。自分の支店のみ
   if (!user.branch) {
@@ -1696,11 +1700,7 @@ function scopeInfo(user) {
   if (isAdminRole(user.role) || ['planning', 'branch_manager', 'wide_area'].includes(user.role)) {
     return { level: 'all', label: user.role === 'planning' ? '全社（本社）' : '全社' };
   }
-  if (isViewerRole(user.role)) {
-    return user.branch
-      ? { level: 'branch', label: `${user.branch}（支店全体・閲覧のみ）` }
-      : { level: 'all', label: '全社（閲覧のみ）' };
-  }
+  if (isViewerRole(user.role)) return { level: 'all', label: '全社（閲覧のみ）' };
   if (s.missing) {
     return {
       level: 'none',
@@ -2104,7 +2104,7 @@ api.get('/simulation', wrap(async (req, res) => {
     params.push(corp);
   }
   const where = conds.join(' AND ');
-  const isAdm = isAdminRole(req.user.role);
+  const isAdm = canSeeAllInfo(req.user.role);
   const costCols = isAdm
     ? `, SUM(cost_price * qty) AS cost_amt,
         SUM(CASE WHEN cost_price IS NOT NULL THEN qty ELSE 0 END) AS cost_qty`
@@ -2127,9 +2127,9 @@ api.get('/simulation', wrap(async (req, res) => {
 
 // ---- 案件（deals） ----
 
-/** 実績原価は管理者・開発者だけに返す（社外秘に準ずる扱い） */
+/** 実績原価は管理者・開発者と閲覧専用だけに返す（社外秘に準ずる扱い） */
 function hideCost(rows, user) {
-  if (!isAdminRole(user.role)) for (const r of rows) delete r.cost_price;
+  if (!canSeeAllInfo(user.role)) for (const r of rows) delete r.cost_price;
   return rows;
 }
 
@@ -2539,7 +2539,7 @@ api.get('/deals/export', wrap(async (req, res) => {
     db.all('SELECT * FROM price_types ORDER BY code'),
   ]);
   // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
-  const withCost = isAdminRole(req.user.role);
+  const withCost = canSeeAllInfo(req.user.role);
   const buffer = buildWorkbook(rows, priceTypes,
     { months, masterMonths: mMonths, withCost, aggMeta, actualMeta });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
