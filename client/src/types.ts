@@ -37,7 +37,7 @@ export interface Deal {
   model_name: string | null;
   /** 商品コード（価格調査の「商品コード」） */
   model_code?: string | null;
-  /** 商品名（価格調査の「商品名」。器種名は品目階層名） */
+  /** 器種名（型式。FH-E2422SAWL のような品番） */
   product_name?: string | null;
   gas_type: string | null;
   list_price: number | null;
