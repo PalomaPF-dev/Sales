@@ -403,18 +403,14 @@ export default function App() {
           </div>
           {/*
             アプリ内フッター。画面の中身が短くても、いちばん下に置く。
-            規約はポータルに1つだけ置き、全アプリから同じページを参照する
-            決まりなので、共通の規約はそのリンクにそろえる。
+            規約は本アプリ専用のものを持つ（ポータルの共通規約は
+            生産・調達統括本部のアプリ向けで、本アプリには当てはまらないため）。
           */}
           <footer className="appfoot">
             <span className="org">© {new Date().getFullYear()} 株式会社パロマ　営業本部</span>
-            <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer"
-               title="全アプリ共通の決まり（生産・調達統括本部）">
-              共通利用規約・著作権ポリシー
-            </a>
             <a href="/terms" onClick={(e) => { e.preventDefault(); navigate('/terms'); }}
-               title="このアプリに固有の利用条件と免責（営業本部）">
-              本アプリの利用条件・免責
+               title="本アプリの利用規約・著作権ポリシー（免責を含む）">
+              利用規約・著作権ポリシー
             </a>
             <a href="/about" onClick={(e) => { e.preventDefault(); navigate('/about'); }}>
               バックアップ・仕様の説明

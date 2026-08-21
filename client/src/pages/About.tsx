@@ -132,13 +132,7 @@ export default function About() {
       )}
 
       <p className="page-sub" style={{ marginTop: 18 }}>
-        利用上の決まりは
-        <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer">
-          共通利用規約・著作権ポリシー
-        </a>
-        （全アプリ共通）と、
-        <a href="/terms">本アプリの利用条件・免責</a>
-        （営業本部）をご確認ください。
+        利用上の決まりは<a href="/terms">利用規約・著作権ポリシー</a>をご確認ください。
         操作の手引きは<strong>使い方</strong>の画面にあります。
       </p>
     </div>
