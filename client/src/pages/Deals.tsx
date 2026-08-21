@@ -611,7 +611,8 @@ export default function Deals() {
   };
 
   return (
-    <div>
+    // 表を1行でも多く出すため、この画面だけ下の余白をつめる（deals-page）
+    <div className="deals-page">
       <h1 className="page-title">
         案件一覧（単価管理）
         <button className="sub-toggle" onClick={toggleSub}
