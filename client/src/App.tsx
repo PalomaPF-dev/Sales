@@ -316,10 +316,8 @@ export default function App() {
               </span>
               <span className="scope">{scopeText}</span>
             </div>
+            {/* お問い合わせはサポートのメニューにあるので、ここには置かない */}
             <div className="btnrow">
-              <button className="btn secondary" onClick={() => navigate('/contact')}>
-                <IconInbox />お問い合わせ
-              </button>
               {/* 閲覧専用は共通IDのため、1人が変えると全員が入れなくなる。変更は管理者が行う */}
               {!viewer && (
                 <button className="btn secondary" onClick={() => navigate('/password')}>
