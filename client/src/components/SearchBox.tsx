@@ -15,12 +15,18 @@ export default function SearchBox({
   value,
   onSearch,
   onPick,
+  onDraft,
 }: {
   value: string;
   /** 文字での検索（Enter） */
   onSearch: (q: string) => void;
   /** 候補を選んだとき。filterは案件一覧の絞り込みキー */
   onPick: (filter: string, value: string) => void;
+  /**
+   * 打っている途中の文字。Enterを押さずに「絞り込む」を押したときも
+   * 打った内容で絞り込めるよう、呼び出し側へ渡しておく。
+   */
+  onDraft?: (q: string) => void;
 }) {
   const [text, setText] = useState(value);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -30,6 +36,8 @@ export default function SearchBox({
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => { setText(value); }, [value]);
+  // 打っている途中の文字を親へ知らせる（「絞り込む」で使う）
+  useEffect(() => { onDraft?.(text); }, [text]);
 
   // 打つたびに問い合わせると重いので、入力が止まってから取りに行く
   useEffect(() => {

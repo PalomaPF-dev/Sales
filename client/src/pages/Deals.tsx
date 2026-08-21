@@ -214,6 +214,21 @@ export default function Deals() {
    * 例: 指定「2026-05」なら、2024-05-12 に登録された分は対象（2026年5月の登録は対象外）。
    * 絞り込みではないため、一覧の件数は変わらない。
    */
+  // 検索欄に打っている途中の文字。「絞り込む」を押したときに、
+  // Enterを押していなくてもその内容で絞り込めるようにする
+  const qDraft = useRef(get('q'));
+
+  // 画面の説明。表をできるだけ広く使うため、既定では閉じておく（選んだ状態は覚える）
+  const [subOpen, setSubOpen] = useState(() => {
+    try { return localStorage.getItem('deals.sub') === '1'; } catch { return false; }
+  });
+  const toggleSub = () => {
+    setSubOpen((v) => {
+      try { localStorage.setItem('deals.sub', v ? '0' : '1'); } catch { /* 使えなくても困らない */ }
+      return !v;
+    });
+  };
+
   const oldYm = get('oldYm');
   const isOldDate = (v: string | null | undefined) =>
     Boolean(oldYm && v && String(v).slice(0, 10) < `${oldYm}-01`);
@@ -281,6 +296,29 @@ export default function Deals() {
         {children}<span className="sort-mark">{mark}</span>
       </th>
     );
+  };
+
+  /** いま絞り込みが掛かっているか（「解除」を出すかの判断） */
+  const hasFilters = FILTER_KEYS.some((k) => get(k)) || Boolean(get('oldYm'));
+
+  /**
+   * 「絞り込む」。検索欄に打った文字を取り込んだうえで一覧を出し直す。
+   * 条件が変わらないときも、押せば最新の内容を取り直す。
+   */
+  const applyFilters = () => {
+    const q = qDraft.current.trim();
+    if (q !== get('q')) setMany({ q, page: '' });
+    else load();
+  };
+
+  /** 「解除」。検索・絞り込み・赤塗りの指定をすべて外す（並び替えは残す） */
+  const clearFilters = () => {
+    const next = new URLSearchParams(params);
+    for (const k of FILTER_KEYS) next.delete(k);
+    next.delete('oldYm');
+    next.delete('page');
+    qDraft.current = '';
+    setParams(next, { replace: true });
   };
 
   const load = useCallback(() => {
@@ -538,8 +576,14 @@ export default function Deals() {
 
   return (
     <div>
-      <h1 className="page-title">案件一覧（単価管理）</h1>
-      <p className="page-sub">
+      <h1 className="page-title">
+        案件一覧（単価管理）
+        <button className="sub-toggle" onClick={toggleSub}
+                title="この画面の見方を開きます（閉じておくと表を広く使えます）">
+          この画面の見方 {subOpen ? '▲' : '▼'}
+        </button>
+      </h1>
+      <p className="page-sub" style={subOpen ? undefined : { display: 'none' }}>
         <strong>価格調査（毎日更新）の得意先×商品</strong>を常にベースに、価格を比較します。
         <strong>売上高（{actLabel}）</strong>はこのベースへ単価・数量を突合して重なり、
         突合で当たらなかった品目は<strong>{actLabel}実績無し</strong>として載ります（数量の欄に出ます）。
@@ -570,6 +614,7 @@ export default function Deals() {
           <SearchBox
             value={get('q')}
             onSearch={(q) => setParam('q', q)}
+            onDraft={(q) => { qDraft.current = q; }}
             onPick={(filter, value) => {
               // 候補で絞り込むときは、文字検索は消して条件を入れ替える
               const next = new URLSearchParams(params);
@@ -668,6 +713,20 @@ export default function Deals() {
             onChange={(e) => setParam('oldYm', e.target.value)}
           />
         </label>
+        {/*
+          絞り込みの実行。選ぶたびに一覧は変わるが、検索欄はEnterを押さないと
+          反映されないため、押せば必ず今の内容で絞り込めるボタンを置く。
+        */}
+        <div className="filter-actions">
+          <button className="btn sm" onClick={applyFilters}
+                  title="いま選んでいる条件で一覧を出し直します（検索欄に打った文字も反映します）">
+            絞り込む
+          </button>
+          <button className="btn secondary sm" onClick={clearFilters} disabled={!hasFilters}
+                  title="検索と絞り込みをすべて外します">
+            解除
+          </button>
+        </div>
         <label className="fld">
           売上改善額
           <select value={get('gain')} onChange={(e) => setParam('gain', e.target.value)}
@@ -836,7 +895,10 @@ export default function Deals() {
         </div>
       )}
 
-      <HScroll className="card tbl-scroll">
+      {/* 下へスクロールしても項目名が見えるよう、表の中だけを縦スクロールさせる */}
+      {/* スマホは画面が狭く、表の中だけを縦スクロールさせると窮屈になるため、
+          項目の固定（＝表の中のスクロール）はPC表示のときだけにする */}
+      <HScroll className="card tbl-scroll" fillViewport={!mobile}>
         <table className="tbl deals">
           <thead>
             <tr>

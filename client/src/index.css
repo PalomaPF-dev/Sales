@@ -656,3 +656,21 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   vertical-align: -2px;
   margin-right: 6px;
 }
+
+/* 縦にもスクロールする表の入れ物（案件一覧）。
+   中だけをスクロールさせることで、見出し（sticky）が上に留まる。
+   高さは HScroll が画面の下端までに合わせて入れる */
+.tbl-scroll.vfill { overflow-y: auto; }
+
+/* 絞り込みの実行・解除。入力欄と下端をそろえて並べる */
+.filters .filter-actions { display: flex; gap: 6px; align-items: flex-end; }
+.view-mobile .filters .filter-actions { grid-column: 1 / -1; }
+
+/* 画面の説明の開閉（案件一覧）。閉じておくと表を広く使える */
+.sub-toggle {
+  margin-left: 12px; padding: 3px 10px; font-size: 12px; font-weight: 600;
+  color: var(--ink-2); background: #fff; border: 1px solid var(--baseline);
+  border-radius: 999px; cursor: pointer; vertical-align: 3px;
+}
+.sub-toggle:hover { background: #f8fafc; border-color: #cbd5e1; }
+.view-mobile .sub-toggle { display: none; }
