@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
 import { api } from '../api';
+import { narrowByParent } from '../filterOptions';
 import { Card } from '../components/ui';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
@@ -666,6 +667,10 @@ export default function Dashboard() {
   const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
     (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
+  // 品目は 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順（案件一覧と同じ）
+  const categories = narrowByParent(meta?.categories, [['equip', get('equip')]]);
+  const models = narrowByParent(meta?.models,
+    [['equip', get('equip')], ['category', get('category')]]);
 
   return (
     <div>
@@ -739,25 +744,28 @@ export default function Dashboard() {
             {offices.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
           </select>
         </label>
-        <label className="fld">
-          器具区分
-          <select value={get('equip')} onChange={(e) => setParam('equip', e.target.value)}>
+        {/* 品目の絞り込みは 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順 */}
+        <label className="fld" title="品目の大分類。選ぶと下のカテゴリー名（大）・品目階層名がその中だけになります">
+          器具区分<small style={{ fontWeight: 400 }}>（大分類）</small>
+          <select value={get('equip')}
+                  onChange={(e) => setMany({ equip: e.target.value, category: '', model: '' })}>
             <option value="">すべて</option>
             {meta?.equips.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
           </select>
         </label>
-        <label className="fld">
+        <label className="fld" title="器具区分の中の分類。選ぶと品目階層名がその中だけになります">
           カテゴリー名（大）
-          <select value={get('category')} onChange={(e) => setParam('category', e.target.value)}>
+          <select value={get('category')}
+                  onChange={(e) => setMany({ category: e.target.value, model: '' })}>
             <option value="">すべて</option>
-            {meta?.categories?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+            {categories.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
           </select>
         </label>
-        <label className="fld">
-          品目階層名（器種名）
+        <label className="fld" title="カテゴリー名（大）の中の品目（器種名）">
+          品目階層名
           <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
             <option value="">すべて</option>
-            {meta?.models?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+            {models.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
           </select>
         </label>
         <label className="fld">

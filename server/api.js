@@ -1651,8 +1651,15 @@ api.get('/meta', wrap(async (req, res) => {
   const [priceTypes, equips, categories, models, persons, customers, branches, offices, corps] = await Promise.all([
     db.all('SELECT * FROM price_types ORDER BY code'),
     db.all(`SELECT equip_name AS name, COUNT(*) AS count FROM deals WHERE equip_name IS NOT NULL${and} GROUP BY equip_name ORDER BY count DESC`, sp),
-    db.all(`SELECT category_name AS name, COUNT(*) AS count FROM deals WHERE category_name IS NOT NULL${and} GROUP BY category_name ORDER BY count DESC`, sp),
-    db.all(`SELECT model_name AS name, COUNT(*) AS count FROM deals WHERE model_name IS NOT NULL${and} GROUP BY model_name ORDER BY count DESC LIMIT 1000`, sp),
+    // 品目は 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順に絞り込む。
+    // 親の名前を添えて返し、画面では選んだ親に属するものだけを選択肢に出す
+    // （支店→営業所と同じ作り）。同じ名前が別の親にもあるため、組み合わせで返す。
+    db.all(`SELECT equip_name AS equip, category_name AS name, COUNT(*) AS count
+              FROM deals WHERE category_name IS NOT NULL${and}
+             GROUP BY equip_name, category_name ORDER BY count DESC`, sp),
+    db.all(`SELECT equip_name AS equip, category_name AS category, model_name AS name, COUNT(*) AS count
+              FROM deals WHERE model_name IS NOT NULL${and}
+             GROUP BY equip_name, category_name, model_name ORDER BY count DESC LIMIT 3000`, sp),
     db.all(`SELECT sales_person AS name, COUNT(*) AS count FROM deals WHERE sales_person IS NOT NULL${and} GROUP BY sales_person ORDER BY count DESC`, sp),
     db.all(`SELECT customer_code AS code, customer_name AS name, COUNT(*) AS count FROM deals WHERE customer_code IS NOT NULL${and} GROUP BY customer_code, customer_name ORDER BY count DESC LIMIT 500`, sp),
     db.all(`SELECT branch AS name, COUNT(*) AS count FROM deals WHERE branch IS NOT NULL${and} GROUP BY branch ORDER BY count DESC`, sp),
