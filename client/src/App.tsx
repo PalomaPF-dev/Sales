@@ -21,6 +21,7 @@ const Users = lazy(() => import('./pages/Users'));
 const ImportPage = lazy(() => import('./pages/ImportPage'));
 const Contact = lazy(() => import('./pages/Contact'));
 const Help = lazy(() => import('./pages/Help'));
+const About = lazy(() => import('./pages/About'));
 
 
 /** 表示の切替。自動＝画面の幅で決める */
@@ -358,12 +359,29 @@ export default function App() {
               <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />
               <Route path="/contact" element={<Contact />} />
               <Route path="/help" element={<Help />} />
+              <Route path="/about" element={<About />} />
               <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
               <Route path="/password"
                      element={viewer ? <Dashboard /> : <ChangePassword onDone={() => navigate('/')} />} />
             </Routes>
           </Suspense>
+          {/*
+            アプリ内フッター。規約はポータルに1つだけ置き、全アプリから同じ
+            ページを参照する決まりなので、ここもそのリンクにそろえる。
+          */}
+          <footer className="appfoot">
+            <span className="org">© {new Date().getFullYear()} 株式会社パロマ　営業本部</span>
+            <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer">
+              共通利用規約・著作権ポリシー
+            </a>
+            <a href="/about" onClick={(e) => { e.preventDefault(); navigate('/about'); }}>
+              バックアップ・仕様の説明
+            </a>
+            <a href="/help" onClick={(e) => { e.preventDefault(); navigate('/help'); }}>
+              使い方
+            </a>
+          </footer>
         </main>
       </div>
      </MobileContext.Provider>
