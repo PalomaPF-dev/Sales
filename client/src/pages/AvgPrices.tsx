@@ -363,6 +363,13 @@ export default function AvgPrices() {
       */}
       <div className="filters rows">
         <div className="frow">
+          <label className="fld" title="得意先の業種（プロパン会社・都市ガス会社など）。選ぶと、業種の入っていない品目は対象から外れます">
+            業種
+            <select value={get('industry')} onChange={(e) => setParam('industry', e.target.value)}>
+              <option value="">すべて</option>
+              {meta?.industries?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+            </select>
+          </label>
           <label className="fld" style={{ minWidth: 240, flex: '1 1 240px' }}>
             検索（含む・空白区切りでAND）
             <SearchBox

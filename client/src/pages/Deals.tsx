@@ -30,8 +30,8 @@ interface DealsRes {
 /** マスタ登録単価のまとまりに並べる月。実績（月別履歴）と計画（当月〜3か月後） */
 type MonthCol = { kind: 'hist'; ym: string } | { kind: 'plan'; n: 0 | 1 | 2 | 3 };
 
-const FILTER_KEYS = ['q', 'equip', 'category', 'model', 'person', 'customer', 'corp',
-  'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+const FILTER_KEYS = ['industry', 'q', 'equip', 'category', 'model', 'person', 'customer',
+  'corp', 'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
 
 /**
  * 値上げ幅の「基準」（比較のもと）。
@@ -732,6 +732,15 @@ export default function Deals() {
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       <div className="filters">
+        <label className="fld" title="得意先の業種（プロパン会社・都市ガス会社など）。選ぶと、業種の入っていない品目は対象から外れます">
+          業種
+          <select value={get('industry')} onChange={(e) => setParam('industry', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.industries?.map((x) => (
+              <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>
+            ))}
+          </select>
+        </label>
         <label className="fld" style={{ minWidth: 260, flex: '1 1 260px' }}>
           検索（含む・空白区切りでAND）
           <SearchBox

@@ -1721,7 +1721,8 @@ api.get('/meta', wrap(async (req, res) => {
   const and = scope.where.length ? ` AND ${scope.where.join(' AND ')}` : '';
   const sp = scope.params;
 
-  const [priceTypes, equips, categories, models, persons, customers, branches, offices, corps] = await Promise.all([
+  const [priceTypes, equips, categories, models, persons, customers, branches, offices, corps,
+         industries] = await Promise.all([
     db.all('SELECT * FROM price_types ORDER BY code'),
     db.all(`SELECT equip_name AS name, COUNT(*) AS count FROM deals WHERE equip_name IS NOT NULL${and} GROUP BY equip_name ORDER BY count DESC`, sp),
     // 品目は 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順に絞り込む。
@@ -1738,6 +1739,10 @@ api.get('/meta', wrap(async (req, res) => {
     db.all(`SELECT branch AS name, COUNT(*) AS count FROM deals WHERE branch IS NOT NULL${and} GROUP BY branch ORDER BY count DESC`, sp),
     db.all(`SELECT DISTINCT branch, office AS name, COUNT(*) AS count FROM deals WHERE office IS NOT NULL${and} GROUP BY branch, office ORDER BY count DESC`, sp),
     db.all(`SELECT corp_code AS code, corp_name AS name, COUNT(*) AS count FROM deals WHERE corp_code IS NOT NULL${and} GROUP BY corp_code, corp_name ORDER BY count DESC LIMIT 500`, sp),
+    // 業種名。取込元によってコードの付き方が違うため、取込時に normIndustry でそろえている
+    db.all(`SELECT industry AS name, COUNT(*) AS count FROM deals
+             WHERE industry IS NOT NULL AND industry <> ''${and}
+             GROUP BY industry ORDER BY count DESC`, sp),
   ]);
   // 支店・営業所は都道府県順（北から南）。件数順だと選択肢を探しづらい
   branches.sort((a, b) => comparePref(a.name, b.name));
@@ -1752,7 +1757,7 @@ api.get('/meta', wrap(async (req, res) => {
 
   const body = {
     priceTypes, equips, categories, models, persons, customers, branches, offices,
-    corps,
+    corps, industries,
     aggMeta,
     histMeta,
     actualMeta,
@@ -2416,6 +2421,33 @@ function aDateCond(q) {
   return q.aDateOp === 'before' ? `a_date_m3 < '${first}'` : `a_date_m3 >= '${first}'`;
 }
 
+/**
+ * 業種名の表記ゆれをそろえる。
+ *
+ * 取込元によって「10:プロパン会社」のようにコード付きで来るものと、
+ * 「プロパン会社」だけで来るものがあり、そのままでは絞り込みの選択肢に
+ * 同じ業種が2つ並ぶ（実データでは22通りのうち11通りがこの重複だった）。
+ * 先頭のコードを外し、英数字は半角・カタカナは全角にそろえて1つにまとめる。
+ */
+const KANA_HALF = 'ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ';
+const KANA_FULL = 'ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン';
+const KANA_DAKUTEN = {
+  ｶ: 'ガ', ｷ: 'ギ', ｸ: 'グ', ｹ: 'ゲ', ｺ: 'ゴ', ｻ: 'ザ', ｼ: 'ジ', ｽ: 'ズ', ｾ: 'ゼ', ｿ: 'ゾ',
+  ﾀ: 'ダ', ﾁ: 'ヂ', ﾂ: 'ヅ', ﾃ: 'デ', ﾄ: 'ド', ﾊ: 'バ', ﾋ: 'ビ', ﾌ: 'ブ', ﾍ: 'ベ', ﾎ: 'ボ', ｳ: 'ヴ',
+};
+const KANA_HANDAKUTEN = { ﾊ: 'パ', ﾋ: 'ピ', ﾌ: 'プ', ﾍ: 'ペ', ﾎ: 'ポ' };
+
+function normIndustry(v) {
+  let s = String(v ?? '').trim();
+  if (!s) return null;
+  s = s.replace(/^[0-9A-Za-zＡ-Ｚａ-ｚ０-９]{1,3}\s*[:：]\s*/, '');   // 先頭のコード（10: / 1A： など）
+  s = s.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+  s = s.replace(/([ｳｶ-ﾄﾊ-ﾎ])ﾞ/g, (m, c) => KANA_DAKUTEN[c] ?? m)
+    .replace(/([ﾊ-ﾎ])ﾟ/g, (m, c) => KANA_HANDAKUTEN[c] ?? m)
+    .replace(/[ｦ-ﾝ]/g, (c) => (KANA_HALF.indexOf(c) >= 0 ? KANA_FULL[KANA_HALF.indexOf(c)] : c));
+  return s.trim() || null;
+}
+
 /** 文字での検索の対象。名前だけでなくコードや区分も「含む」で引けるようにする */
 const SEARCH_COLS = [
   'corp_name', 'corp_code', 'customer_name', 'customer_code', 'delivery_name',
@@ -2451,6 +2483,7 @@ function dealFilters(q, user) {
     ['customer', 'customer_code'], ['corp', 'corp_code'], ['priceType', 'price_type_code'],
     ['branch', 'branch'], ['office', 'office'],
     ['category', 'category_name'], ['model', 'model_name'],
+    ['industry', 'industry'],
   ]) {
     if (q[key]) { where.push(`${col} = ?`); params.push(q[key]); }
   }
@@ -3532,7 +3565,7 @@ api.post('/agg-import/chunk', wrap(async (req, res) => {
       person: String(r.sales_person ?? '').trim() || null,
       // 実績（価格調査）に無い品目を案件として追加するときに使う
       corp_group: txt2(r.corp_group),
-      industry: txt2(r.industry),
+      industry: normIndustry(r.industry),
       customer_name: txt2(r.customer_name),
       delivery_name: txt2(r.delivery_name),
       model_name: txt2(r.model_name),
@@ -3867,6 +3900,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   // 代表の名前として持つ項目（得意先名・品目名など）
   const REP = ['customer_name', 'corp_group', 'industry', 'delivery_name',
     'model_name', 'product_name', 'spec', 'equip_name', 'category_name'];
+  // 業種名だけは表記ゆれ（コードの有無）をそろえてから持つ
+  const repText = (r, k) => (k === 'industry' ? normIndustry(r[k]) : txt(r[k]));
 
   // 得意先×商品ごとに、数量と「単価×数量」を足し込む（加重平均のため）。
   // 数量が0の行は重み1として扱い、全行0のまとまりでも単純平均になるようにする。
@@ -3923,11 +3958,11 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     if (qty > a.top) {
       a.top = qty;
       for (const k of REP) {
-        const v = txt(r[k]);
+        const v = repText(r, k);
         if (v != null) a[k] = v;
       }
     } else {
-      for (const k of REP) if (a[k] == null) a[k] = txt(r[k]);
+      for (const k of REP) if (a[k] == null) a[k] = repText(r, k);
     }
     acc.set(key, a);
   }

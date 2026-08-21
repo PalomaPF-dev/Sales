@@ -146,6 +146,8 @@ export interface Meta {
   /** 品目階層名。器具区分・カテゴリー名（大）ごとに分かれる */
   models: { equip: string | null; category: string | null; name: string; count: number }[];
   persons: { name: string; count: number }[];
+  /** 業種名。取込時に表記ゆれ（コードの有無）をそろえてある */
+  industries: { name: string; count: number }[];
   customers: { code: string; name: string; count: number }[];
   corps: { code: string; name: string; count: number }[];
   branches: { name: string; count: number }[];
