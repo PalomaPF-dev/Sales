@@ -49,9 +49,26 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
   const actYm = String(actualMeta?.ym ?? '');
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
 
+  /**
+   * 翌月（9月計画）は、承認日が「実績の月の1日」より前か未記入なら
+   * 当月（8月計画）をそのままスライドして扱う（画面の一覧と同じ決まり）。
+   */
+  const slideFrom = (() => {
+    const v = String(aggMeta?.m0 ?? '');
+    if (!/^\d{4}-\d{2}$/.test(v)) return null;
+    const y = Number(v.slice(0, 4));
+    const mm = Number(v.slice(5, 7));
+    const py = mm === 1 ? y - 1 : y;
+    const pm = mm === 1 ? 12 : mm - 1;
+    return `${py}-${String(pm).padStart(2, '0')}-01`;
+  })();
+  const slid = (r) => Boolean(slideFrom) && String(r.a_date_m1 ?? '').slice(0, 10) < slideFrom;
+  /** その行のその月の申請単価。翌月はスライドの決まりを当てはめる */
+  const aPrice = (r, key) => (key === 'a_price_m1' && slid(r) ? r.a_price_m0 : r[key]);
+
   /** 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価0は未申請なので空にする */
   const diff = (key) => (r) => {
-    const a = Number(r[key]);
+    const a = Number(aPrice(r, key));
     if (!(a > 0) || mPrice(r) == null) return '';
     return round(a - Number(mPrice(r)));
   };
@@ -86,8 +103,9 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     [`マスタ登録単価 ${m0}`, (r) => round(r.a_price_m0)],
     [`承認日 ${m0}`, (r) => r.a_date_m0],
     [`稟議No ${m0}`, (r) => r.a_ringi_m0],
-    [`マスタ登録単価 ${m1}`, (r) => round(r.a_price_m1)],
-    [`承認日 ${m1}`, (r) => r.a_date_m1],
+    [`マスタ登録単価 ${m1}`, (r) => round(aPrice(r, 'a_price_m1'))],
+    // スライドしたときは、単価と同じく当月の承認日を出す（画面の一覧と同じ）
+    [`承認日 ${m1}`, (r) => (slid(r) ? r.a_date_m0 : r.a_date_m1)],
     [`稟議No ${m1}`, (r) => r.a_ringi_m1],
     [`マスタ登録単価 ${m2}`, (r) => round(r.a_price_m2)],
     [`承認日 ${m2}`, (r) => r.a_date_m2],
