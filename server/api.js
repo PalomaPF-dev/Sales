@@ -2665,7 +2665,7 @@ api.get('/suggest', wrap(async (req, res) => {
   const groups = [
     { key: 'corp', label: '法人', filter: 'corp', items: corps },
     { key: 'customer', label: '得意先', filter: 'customer', items: customers },
-    { key: 'model', label: '器種名', filter: 'model', items: models },
+    { key: 'model', label: '品目階層名', filter: 'model', items: models },
     { key: 'person', label: '担当者', filter: 'person', items: persons },
     { key: 'equip', label: '器具区分', filter: 'equip', items: equips },
   ].filter((g) => g.items.length > 0);

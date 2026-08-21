@@ -1096,8 +1096,9 @@ export default function Deals() {
               <Th col="customer_name" className="fx fx3">得意先名</Th>
               <Th col="delivery_name" className="fx fx4">納入先名</Th>
               <Th col="model_code" className="fx fx5">商品コード</Th>
-              <Th col="model_name" className="fx fx6" title="押すと案件の詳細が開けます（マスタ単価の月別実績もここで見られます）">
-                器種名
+              <Th col="model_name" className="fx fx6"
+                  title="品目階層名（分類の名前）。下段は器種名（型式）。押すと案件の詳細が開けます（マスタ単価の月別実績もここで見られます）">
+                品目階層名<br /><small>器種名</small>
               </Th>
               <Th col="gas_type">ガス種</Th>
               <Th col="equip_name">器具区分</Th>
@@ -1199,10 +1200,12 @@ export default function Deals() {
                   <td className="fx fx6" title={[d.model_name, d.product_name].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'model_name') : (
                       <>
-                        {/* 器種名が無い行もどの品目か分かるように、商品名・コードで代用して必ず出す */}
+                        {/* 品目階層名が無い行もどの品目か分かるように、器種名・コードで代用して必ず出す */}
                         <a href={`/deals/${d.id}`} onClick={(e) => { e.preventDefault(); navigate(`/deals/${d.id}`); }}>
                           {d.model_name || d.product_name || d.model_code || '（品目名なし）'}
                         </a>
+                        {/* 下段に器種名（型式）。分類名だけでは品番が分からないため */}
+                        {d.model_name && d.product_name && <div className="sub">{d.product_name}</div>}
                       </>
                     )}
                   </td>

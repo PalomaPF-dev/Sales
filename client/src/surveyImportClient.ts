@@ -26,8 +26,8 @@ export interface SurveyRow {
   industry: string;        // 業種名
   delivery_name: string;
   model_code: string;
-  model_name: string;
-  product_name: string;   // 商品名（器種名は品目階層名）
+  model_name: string;     // 品目階層名（分類の名前）
+  product_name: string;   // 器種名（型式。ファイルの「商品名」がこれにあたる）
   spec: string;           // 規格（LP・P など。ガス種として持つ）
   equip_name: string;
   category_name: string;
@@ -212,7 +212,11 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     corp_group: findLike('企業グループ名') >= 0 ? findLike('企業グループ名') : find('法人名'),
     industry: find('業種名'),
     delivery_name: find('納入先名'),
+    // 品目階層名（「ふろ給湯器　壁掛　エコ（Wエコ）」のような分類の名前）。
+    // マスタ登録の取込では「商品名」の列がこれにあたる（見出しの呼び方が違うだけ）
     model_name: findLike('品目階層名') >= 0 ? findLike('品目階層名') : find('器種名'),
+    // 器種名（型式。FH-E2422SAWL のような品番）。
+    // 価格調査のファイルでは「商品名」の列がこれにあたる
     product_name: find('商品名'),
     spec: find('規格'),
     equip_name: find('器具区分名'),

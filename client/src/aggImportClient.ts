@@ -17,8 +17,8 @@ export interface AggRow {
   // 実績（価格調査）に無い品目を案件として追加するときに使う項目
   corp_group: string;      // 企業グループ名（法人）
   industry: string;        // 業種名
-  model_name: string;      // 器種名／機種名
-  product_name: string;    // 商品名
+  model_name: string;      // 品目階層名（ファイルの「商品名」＝分類の名前）
+  product_name: string;    // 器種名（型式。FH-E2422SAWL のような品番）
   gas_type: string;        // ガス種（規格）
   equip_name: string;      // 器具区分
   category_name: string;   // カテゴリー名
@@ -253,14 +253,18 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     corp_group: findLike('企業グループ名') >= 0 ? findLike('企業グループ名')
       : findLike('企業G名') >= 0 ? findLike('企業G名') : find('法人名'),
     industry: find('業種名'),
-    // 商品名の無い版は品目階層名で代用する
-    product_name: find('商品名') >= 0 ? find('商品名') : findLike('品目階層名'),
+    // 器種名（型式。FH-E2422SAWL のような品番）。
+    // マスタ登録のファイルでは「器種名」の列がこれにあたる
+    product_name: findAny('器種名', '機種名'),
     delivery_code: find('納入先コード'),
     // 「納入先名称」「得意先納入先名」のような揺れも拾う（納入先コードとは混ざらない）
     delivery_name: find('納入先名') >= 0 ? find('納入先名') : findLike('納入先名'),
     model_code: find('商品コード'),
-    // 器種名／機種名は版によって呼び方が違う
-    model_name: findAny('器種名', '機種名'),
+    // 品目階層名（「ふろ給湯器　壁掛　エコ（Wエコ）」のような分類の名前）。
+    // マスタ登録のファイルでは「商品名」の列がこれにあたり、
+    // 価格調査のファイルの「品目階層名」と同じものを指す。
+    // 取り違えると一覧の絞り込みに品番と分類名が混ざるため、両方の取込でそろえる
+    model_name: findLike('品目階層名') >= 0 ? findLike('品目階層名') : find('商品名'),
     gas_type: find('ガス種'),
     equip_name: findAny('器具区分名', '器具区分'),
     category_name: findLike('カテゴリー名'),
@@ -287,10 +291,10 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
   const OPTIONAL = new Set(['cost_price', 'sales_person', 'office', 'branch',
     'delivery_code', 'delivery_name', 'gas_type', 'category_name', 'list_price',
     'target_price', 'nego_result', 'final_date', 'final_price',
-    'corp_group', 'industry', 'product_name', 'base_price', 'qty']);
+    'corp_group', 'industry', 'model_name', 'base_price', 'qty']);
   const LABELS: Record<string, string> = {
     customer_code: '得意先コード', customer_name: '得意先名',
-    model_code: '商品コード', model_name: '器種名（機種名）', equip_name: '器具区分',
+    model_code: '商品コード', product_name: '器種名（機種名）', equip_name: '器具区分',
   };
   const missing = Object.entries(col)
     .filter(([k, i]) => i < 0 && !OPTIONAL.has(k))
