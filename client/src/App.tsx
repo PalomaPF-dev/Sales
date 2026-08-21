@@ -9,7 +9,7 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconBrand, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconSettings } from './components/icons';
+import { IconDashboard, IconDeals, IconGrid, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
@@ -69,7 +69,12 @@ export default function App() {
 
   const isMobile = viewMode === 'mobile' || (viewMode === 'auto' && narrow);
 
-  /** 表示の切替。自動 → スマホ → PC の順に回す */
+  /** 表示を選び直す（サイドバーの3択）。選んだ内容は覚えておく */
+  const setView = (next: ViewMode) => {
+    try { localStorage.setItem('viewMode', next); } catch { /* 覚えられなくても動く */ }
+    setViewMode(next);
+  };
+  /** 表示の切替。自動 → スマホ → PC の順に回す（スマホの上の帯から使う） */
   const cycleView = () => setViewMode((v) => {
     const next: ViewMode = v === 'auto' ? 'mobile' : v === 'mobile' ? 'pc' : 'auto';
     try { localStorage.setItem('viewMode', next); } catch { /* 覚えられなくても動く */ }
@@ -211,6 +216,15 @@ export default function App() {
   const isAdmin = user.role === 'admin' || user.role === 'developer';
   // 閲覧専用（共通ID）。取込やパスワード変更は出さない
   const viewer = isViewerRole(user.role);
+  // サイドバー下部の表示（ポータル・他のPFアプリと同じ並び）。
+  // 所属は支店・営業所。本社や管理者のように支店を持たない人は出さない。
+  const affiliation = [user.branch, user.office].filter(Boolean).join(' ');
+  // このアプリで扱えるデータの範囲。絞り込みの規則は権限ごとに違う
+  const scopeText = viewer ? '全社のデータ（閲覧のみ）'
+    : isAdmin || user.role === 'planning' ? '全社のデータ'
+      : user.role === 'wide_area' ? '担当する広域のデータ'
+        : user.role === 'branch_manager' ? `${user.branch ?? ''}のデータ`
+          : `${affiliation || '自分'}のデータ`;
 
   return (
     <UserContext.Provider value={user}>
@@ -227,9 +241,10 @@ export default function App() {
           <header className="mtop">
             <button className="mtop-btn" onClick={toggleSide}
               title="メニュー" aria-label="メニュー">☰</button>
-            <span className="mtop-title">値上げ単価管理</span>
+            <img className="mtop-logo" src="/paloma-logo.png" alt="株式会社パロマ" />
+            <span className="mtop-title">価格交渉管理</span>
             <button className="mtop-btn wide" onClick={cycleView}
-              title="表示の切替（自動・スマホ・PC）">表示: {VIEW_LABEL[viewMode]}</button>
+              title="表示の切替（自動・スマホ・PC）">{VIEW_LABEL[viewMode]}</button>
           </header>
         ) : !sideOpen && (
           <button className="side-open-btn" onClick={toggleSide}
@@ -240,20 +255,27 @@ export default function App() {
           <div className="drawer-back" onClick={toggleSide} aria-hidden="true" />
         )}
         <aside className="sidebar">
+          {/* ロゴ。会社ロゴ＋アプリ名（ポータル・他のPFアプリと同じ並び） */}
           <div className="brand">
-            <span className="mark"><IconBrand /></span>
+            <span className="mark">
+              <img src="/paloma-logo.png" alt="株式会社パロマ" />
+            </span>
             <span className="txt">
-              <b>値上げ単価管理</b>
-              <small>Price Management</small>
+              <b>価格交渉管理</b>
+              <small>値上げ交渉・単価管理</small>
             </span>
             <button className="side-close-btn" onClick={toggleSide}
               title="メニューをたたむ（一覧を広く使えます）" aria-label="メニューをたたむ">◀</button>
           </div>
           <nav onClick={() => { if (isMobile) setSideOpen(false); }}>
+            <div className="nav-head">日々の運用</div>
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
-            <div className="nav-sep" />
+            {(!viewer || isAdmin) && <div className="nav-head">取込・設定</div>}
             {!viewer && <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>}
+            {/* 設定（ユーザー管理など）。管理者だけに見せる */}
+            {isAdmin && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
+            <div className="nav-head">サポート</div>
             <NavLink to="/help"><IconHelp /><span className="lbl">使い方</span></NavLink>
             <NavLink to="/contact">
               <IconInbox />
@@ -262,26 +284,52 @@ export default function App() {
                 {unreadReplies > 0 && <span className="badge red" style={{ marginLeft: 6 }}>{unreadReplies}</span>}
               </span>
             </NavLink>
-            {/* 設定（ユーザー管理など）。管理者だけに見せる */}
-            {isAdmin && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
+            <div className="nav-sep" />
+            {/* PFアプリポータルへ（他のアプリと同じ導線。外部リンク） */}
+            <a href="https://portal.paloma-pf.com" target="_blank" rel="noopener noreferrer">
+              <IconGrid /><span className="lbl">ポータル</span>
+            </a>
           </nav>
           <div className="spacer" />
-          <div className="userbox">
-            <div className="name">{user.name}</div>
-            <div className="role">
-              {ROLE_NAMES[user.role]}
-              {user.branch ? ` ・ ${user.branch}` : ''}
+          {/* 表示モードの切替。ポータル・他のPFアプリと同じ3択の並び */}
+          <div className="viewswitch">
+            <div className="vs-label">表示モード</div>
+            <div className="vs-seg">
+              {(['auto', 'mobile', 'pc'] as const).map((m) => (
+                <button key={m} type="button"
+                        className={viewMode === m ? 'on' : ''}
+                        onClick={() => setView(m)}>
+                  {VIEW_LABEL[m]}
+                </button>
+              ))}
             </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          </div>
+          {/* ログインしている人の所属・氏名・権限・扱えるデータの範囲 */}
+          <div className="userbox">
+            <div className="name">
+              {affiliation && <>{affiliation}<span className="sep">/</span></>}
+              {user.name}
+            </div>
+            <div className="who">
+              <span className={`rbadge${isAdmin ? ' admin' : ''}`}
+                    title={isAdmin ? 'このアプリで承認やマスタ設定ができる権限です'
+                      : 'このアプリで日常の入力・閲覧ができる権限です'}>
+                {ROLE_NAMES[user.role]}
+              </span>
+              <span className="scope">{scopeText}</span>
+            </div>
+            <div className="btnrow">
+              <button className="btn secondary" onClick={() => navigate('/contact')}>
+                <IconInbox />お問い合わせ
+              </button>
               {/* 閲覧専用は共通IDのため、1人が変えると全員が入れなくなる。変更は管理者が行う */}
               {!viewer && (
-                <button className="btn secondary sm" onClick={() => navigate('/password')}>パスワード変更</button>
+                <button className="btn secondary" onClick={() => navigate('/password')}>
+                  パスワード変更
+                </button>
               )}
-              <button className="btn secondary sm" onClick={signOut}>ログアウト</button>
-              {/* 表示の切替。自動は画面の幅で決め、スマホ・PCは選んだ見た目で固定する */}
-              <button className="btn secondary sm" onClick={cycleView}
-                title="スマホ向けの見た目とPC向けの見た目を切り替えます（自動は画面の幅で決めます）">
-                表示: {VIEW_LABEL[viewMode]}
+              <button className="btn secondary" onClick={signOut}>
+                <IconLogout />ログアウト
               </button>
             </div>
           </div>

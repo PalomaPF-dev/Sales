@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { api, login } from '../api';
 import type { ApiError } from '../api';
 import type { User } from '../types';
-import { IconBrand } from '../components/icons';
 
 /**
  * ログイン画面。ポータル（業務アプリポータル）と同じ仕様:
@@ -140,10 +139,11 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
     <div className="login-wrap">
       <div className="login-card">
         <div className="lhead">
-          <span className="lapp"><IconBrand /></span>
+          {/* 会社ロゴ。ポータル・他のPFアプリと同じ見せ方にそろえる */}
+          <img className="llogo" src="/paloma-logo.png" alt="株式会社パロマ" />
           <p className="lorg">営業本部</p>
-          <h1 className="lname">値上げ単価管理</h1>
-          <p className="lsub">Price Management</p>
+          <h1 className="lname">価格交渉管理アプリ</h1>
+          <p className="lsub">値上げ交渉・単価管理</p>
         </div>
         <h2 className="ltitle">{TITLES[mode]}</h2>
         {lead && <p className="loginlead">{lead}</p>}
