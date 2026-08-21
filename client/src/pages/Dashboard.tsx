@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import SearchBox from '../components/SearchBox';
 import { api } from '../api';
 import { Card } from '../components/ui';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
-const FILTER_KEYS = ['equip', 'person', 'corp', 'branch', 'office', 'aDateYm', 'aDateOp'] as const;
+/** 絞り込みの項目。案件一覧と同じものを受ける（サーバー側の判定も同じ） */
+const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
+  'aState', 'act', 'aDateYm', 'aDateOp', 'gain'] as const;
 
 /**
  * 支店別・法人別の値上げ額の集計。
@@ -518,6 +521,8 @@ export default function Dashboard() {
   MONEY_MAN = mobile;
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<DashboardRes | null>(null);
+  // 集計中かどうか（絞り込みを変えたあと、前の内容を出したまま取り直す）
+  const [busy, setBusy] = useState(false);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [msg, setMsg] = useState('');
 
@@ -535,6 +540,24 @@ export default function Dashboard() {
     setParams(next, { replace: true });
   };
   const setParam = (key: string, value: string) => setMany({ [key]: value });
+
+  // 検索欄に打っている途中の文字。「絞り込む」で反映する（案件一覧と同じ）
+  const qDraft = useRef(get('q'));
+  /** いま絞り込みが掛かっているか（「解除」を出すかの判断） */
+  const hasFilters = FILTER_KEYS.some((k) => get(k));
+  /** 「絞り込む」。検索欄に打った文字を取り込んだうえで集計を取り直す */
+  const applyFilters = () => {
+    const q = qDraft.current.trim();
+    if (q !== get('q')) setParam('q', q);
+    else load();
+  };
+  /** 「解除」。検索・絞り込みをすべて外す */
+  const clearFilters = () => {
+    const next = new URLSearchParams(params);
+    for (const k of FILTER_KEYS) next.delete(k);
+    qDraft.current = '';
+    setParams(next, { replace: true });
+  };
 
   /**
    * いまの絞り込みを引き継いで、案件一覧の「売上改善額」で絞ったURLを作る。
@@ -579,15 +602,26 @@ export default function Dashboard() {
   // 表の切り替え（tab）は手元の値を出し分けるだけなので、10万件の集計は走らせない
   const filterQs = FILTER_KEYS.map((k) => `${k}=${get(k)}`).join('&');
 
-  useEffect(() => {
-    if (!ready) return;
+  /**
+   * 集計を取り直す。取り直している間も前の内容を出しておく
+   * （消してしまうと絞り込みの欄ごと画面が入れ替わり、続けて操作できない）。
+   */
+  const load = useCallback(() => {
     const qs = new URLSearchParams();
     for (const k of FILTER_KEYS) if (get(k)) qs.set(k, get(k));
-    setData(null);
-    api<DashboardRes>(`/dashboard?${qs}`).then(setData).catch((e) => setMsg(e.message));
-  }, [filterQs, ready]);
+    setBusy(true);
+    setMsg('');
+    api<DashboardRes>(`/dashboard?${qs}`)
+      .then(setData)
+      .catch((e) => setMsg(e.message))
+      .finally(() => setBusy(false));
+  }, [filterQs]);
 
-  if (msg) return <div className="alert error">{msg}</div>;
+  useEffect(() => {
+    if (ready) load();
+  }, [load, ready]);
+
+  if (msg && !data) return <div className="alert error">{msg}</div>;
   if (!data) return <p style={{ color: 'var(--muted)' }}>読み込み中...</p>;
 
   const t = data.abTotals;
@@ -641,8 +675,24 @@ export default function Dashboard() {
       </p>
 
       <div className="filters">
+        {/* 絞り込みの項目は案件一覧とそろえる（同じ条件で見比べられるように） */}
+        <label className="fld" style={{ minWidth: 240, flex: '1 1 240px' }}>
+          検索（含む・空白区切りでAND）
+          <SearchBox
+            value={get('q')}
+            onSearch={(q) => setParam('q', q)}
+            onDraft={(q) => { qDraft.current = q; }}
+            onPick={(filter, value) => {
+              // 候補で絞り込むときは、文字検索は消して条件を入れ替える
+              const next = new URLSearchParams(params);
+              next.delete('q');
+              if (value) next.set(filter, value); else next.delete(filter);
+              setParams(next, { replace: true });
+            }}
+          />
+        </label>
         <label className="fld">
-          法人
+          企業名
           <select value={get('corp')} onChange={(e) => setParam('corp', e.target.value)}>
             <option value="">すべて</option>
             {meta?.corps.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
@@ -676,6 +726,24 @@ export default function Dashboard() {
             {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           </select>
         </label>
+        <label className="fld">
+          マスタ登録単価
+          <select value={get('aState')} onChange={(e) => setParam('aState', e.target.value)}>
+            <option value="">すべて</option>
+            <option value="has">あり（値上げ対象）</option>
+            <option value="none">なし</option>
+          </select>
+        </label>
+        {/* 売上高（月次）との突合。ベースにだけあって当たらない品目は実績無し */}
+        <label className="fld"
+               title={`ベース（価格調査（毎日更新））へ売上高（${actLabel}）を突合しています。当たらない品目は${actLabel}実績無しです`}>
+          売上高（{actLabel}）
+          <select value={get('act')} onChange={(e) => setParam('act', e.target.value)}>
+            <option value="">すべて</option>
+            <option value="has">あり（突合済）</option>
+            <option value="none">なし（{actLabel}実績無し）</option>
+          </select>
+        </label>
         {/* 承認日での絞り込み（案件一覧と同じ。3か月後のA基準の承認日が基準） */}
         <label className="fld" title={`${m3}のマスタ登録単価の承認日で絞り込みます`}>
           承認日
@@ -696,6 +764,27 @@ export default function Dashboard() {
             </select>
           </div>
         </label>
+        <label className="fld">
+          売上改善額
+          <select value={get('gain')} onChange={(e) => setParam('gain', e.target.value)}
+                  title={`過去最新単価と${actLabel}のマスタ単価を比べた向きで絞り込みます`}>
+            <option value="">すべて</option>
+            <option value="plus">プラス（上がった）</option>
+            <option value="minus">マイナス（下がった）</option>
+            <option value="same">変わらず</option>
+            <option value="none">比較なし（過去単価なし）</option>
+          </select>
+        </label>
+        <div className="filter-actions">
+          <button className="btn sm" onClick={applyFilters} disabled={busy}
+                  title="いま選んでいる条件で集計し直します（検索欄に打った文字も反映します）">
+            {busy ? '集計中...' : '絞り込む'}
+          </button>
+          <button className="btn secondary sm" onClick={clearFilters} disabled={busy || !hasFilters}
+                  title="検索と絞り込みをすべて外します">
+            解除
+          </button>
+        </div>
       </div>
 
       {/*

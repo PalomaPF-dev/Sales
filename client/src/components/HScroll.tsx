@@ -15,7 +15,7 @@ export default function HScroll({
   className,
   fillViewport = false,
   /** 表の下に置くもの（ページ送り・余白）のぶん、空けておく高さ */
-  reserveBelow = 120,
+  reserveBelow = 80,
   /** これより低くはしない。低すぎると数行しか見えず使いにくい */
   minHeight = 320,
 }: {
