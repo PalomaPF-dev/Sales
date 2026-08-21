@@ -48,18 +48,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
--- ポータルからのSSOで使い終えたトークン。
--- 同じトークンを2回使えないようにするための記録で、
--- 有効期限（60秒）を過ぎた行は次回のSSO時にまとめて消す。
-CREATE TABLE IF NOT EXISTS sso_used_tokens (
-  jti        TEXT PRIMARY KEY,   -- トークンの識別子
-  user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
-  used_at    TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_sso_expires ON sso_used_tokens(expires_at);
-
 -- マスター単価種別（6種類）
 CREATE TABLE IF NOT EXISTS price_types (
   code     INTEGER PRIMARY KEY,

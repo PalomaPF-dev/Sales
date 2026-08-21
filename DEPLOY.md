@@ -74,14 +74,14 @@ Vercelダッシュボードから設定する場合は **Settings → Environmen
 | 変数 | 必須 | 内容 |
 |---|---|---|
 | `DATABASE_URL` | ○ | PostgreSQLの接続文字列。未設定だとローカルSQLiteを見に行き、データが保存されません |
-| `BASIC_AUTH_USER` | ○ | サイト全体にかけるBasic認証のユーザー名（例: `sales`） |
-| `BASIC_AUTH_PASS` | ○ | 同上のパスワード。半角英数32文字程度を推奨（下記「本番の認証設定」参照） |
+| `BASIC_AUTH_USER` | | Basic認証のユーザー名（例: `sales`）。**Vercelでは `/api` にしか掛かりません**（下記「本番の認証設定」参照） |
+| `BASIC_AUTH_PASS` | | 同上のパスワード。半角英数32文字程度を推奨 |
+| `SUPABASE_SERVICE_ROLE_KEY` | | 添付ファイルの保管庫（Supabase Storage）への読み書きに使う鍵。未設定ならデータベースに保存します |
+| `SUPABASE_URL` | | 保管庫の入口。省略すると `DATABASE_URL` から組み立てます |
+| `SUPABASE_BUCKET` | | 保管庫の名前（既定: `sales-attachments`） |
 | `DB_SCHEMA` | | テーブルを作成するスキーマ名（既定: `sales_pricing`） |
 | `DB_SSL_NO_VERIFY` | | `true` でTLS証明書の検証を緩める（社内認証局を使っている場合） |
 | `DISPLAY_TZ` | | 画面に出す時刻の時間帯（既定: `Asia/Tokyo`）。通常は設定不要 |
-| `PORTAL_SSO_SECRET` | | ポータルからのSSOで使う共有鍵。**設定するとSSOが有効になります**（未設定の間は入口が開きません）。[docs/SSO-PROPOSAL.md](docs/SSO-PROPOSAL.md) 参照 |
-| `PORTAL_SSO_AUTO_CREATE` | | `false` でSSO時の未登録者を拒否（既定は営業担当者として自動作成） |
-| `PORTAL_SSO_ISSUER` | | トークンの発行元の期待値（既定: `portal`） |
 | `ADMIN_RECOVERY_TOKEN` | | 管理者に入れなくなったときの復旧用の合言葉。**普段は設定しない**（下記「管理者に入れなくなったとき」参照） |
 
 `DISABLE_AUTH` と `DEV_LOGIN_AS` は認証を省略するための開発用の設定です。
@@ -171,8 +171,15 @@ npm run set-password -- --create devadmin "開発者" --role admin
 
 ## 本番の認証設定
 
-### 設定するもの
+### サイト全体を囲うとき（推奨）
 
+Vercelの **Settings → Deployment Protection → Password Protection** を有効にし、
+保護の対象に本番（独自ドメイン）を含めます。画面のファイルも含めて手前で止まります。
+
+### アプリのBasic認証（`/api` のみ）
+
+Vercelでは画面のファイルをCDNが直接返すため、この設定は `/api` にしか掛かりません。
+自前でサーバーを立てる場合はサイト全体に掛かります。
 Vercelの **Settings → Environment Variables** に、Production / Preview の双方へ登録します。
 
 ```
@@ -191,16 +198,16 @@ node -e "const{randomBytes:r}=require('node:crypto');const c='abcdefghijkmnopqrs
 
 ### 設定する順番（重要）
 
-**Basic認証は、利用者にURLを知らせる前に設定してください。**
+**保護は、利用者にURLを知らせる前に設定してください。**
 
 アプリはまだ誰もパスワードを持っていない間だけ「初期セットアップ」画面を開きます。
 この画面は、その時点ではログインなしで到達できます（誰も入れない状態を解消するために必要なため）。
 URLが知られている状態でここが開いていると、先に管理者のパスワードを設定されてしまいます。
-Basic認証を先に入れておけば、その手前で止まります。
+パスワード保護を先に入れておけば、その手前で止まります。
 
-1. `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定してデプロイする
+1. Vercelのパスワード保護を有効にする（または `npm run set-password` を先に済ませる）
 2. 初期セットアップ、または `npm run set-password` で最初の管理者のパスワードを決める
-3. そのあとで利用者にURLとBasic認証の情報を伝える
+3. そのあとで利用者にURLを伝える
 
 一度セットアップが済むと初期セットアップ画面は無効になり、以降は開きません。
 
@@ -276,8 +283,8 @@ Vercel Authentication の適用範囲は既定で **`*.vercel.app` のみ（カ�
 
 | 方法 | 内容 |
 |---|---|
-| Basic認証（本アプリの標準） | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定する。Edge Middlewareはカスタムドメインにも適用されるため、これが最も簡単で確実な方法です |
-| Vercelの保護範囲を変更 | Settings → Deployment Protection で、保護対象にカスタムドメインを含める（プランにより可否あり） |
+| Vercelのパスワード保護（推奨） | Settings → Deployment Protection → Password Protection。**独自ドメインにも掛かり、画面のファイルも含めて止まります**（プランにより可否あり） |
+| アプリのBasic認証 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` を設定する。**Vercelでは `/api` にしか掛かりません**（画面のファイルはCDNが直接返すため）。自前で立てる場合はサイト全体に掛かります |
 | IP制限 | Vercelの Trusted IPs で社内グローバルIPからのみ許可（Enterpriseプラン） |
 
 ### 4. 確認
