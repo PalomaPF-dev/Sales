@@ -2,8 +2,8 @@
  * 絞り込みの項目。案件一覧・ダッシュボード・平均単価で同じものを使う
  * （同じ条件のまま画面を行き来できるようにするため）。サーバー側の判定も同じ。
  */
-export const FILTER_KEYS = ['q', 'equip', 'category', 'model', 'person', 'customer', 'corp',
-  'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+export const FILTER_KEYS = ['industry', 'q', 'equip', 'category', 'model', 'person', 'customer',
+  'corp', 'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
 
 /**
  * 承認日の既定。今回の値上げの取り組みが始まった月。
