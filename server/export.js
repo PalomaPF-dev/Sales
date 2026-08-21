@@ -257,6 +257,27 @@ export function buildDashboardWorkbook(data, opts = {}) {
   }
   addSheet('まとめ', summary, [12, 8, 10, 12, 12, 18, 18, 18, 10]);
 
+  // ── 平均単価の比較（過去最新単価 → 計画）。画面のカードと同じ数字。
+  // 過去最新単価・その月の計画・当月の実績数が揃う品目だけで、
+  // 出荷数（当月の実績数）で重みを付けた平均単価を過去と計画で比べる
+  {
+    const a = data.aMonths ?? {};
+    const avg = [[
+      '計画の月', '対象件数', '出荷数（当月実績数）',
+      '過去最新単価（平均）', '計画単価（平均）', '上がり幅（1台あたり）', '上がり率',
+    ]];
+    for (const [i, ym] of [[0, m0], [1, m1], [2, m2], [3, m3]]) {
+      const cnt = n(a[`avg_cnt_m${i}`]);
+      const qty = n(a[`avg_qty_m${i}`]);
+      if (!(qty > 0)) { avg.push([ym, cnt, '', '', '', '', '']); continue; }
+      const past = n(a[`avg_past_m${i}`]) / qty;
+      const plan = n(a[`avg_plan_m${i}`]) / qty;
+      avg.push([ym, cnt, round(qty, 1), round(past, 1), round(plan, 1),
+        round(plan - past, 1), past > 0 ? round(((plan - past) / past) * 100, 1) / 100 : '']);
+    }
+    addSheet('平均単価', avg, [12, 10, 18, 18, 18, 18, 10]);
+  }
+
   // ── 器具区分別・支店別・法人別（画面と同じ数字）
   // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
   // 想定B基準は法人ごとに決める値のため、法人別のシートにだけ添える。

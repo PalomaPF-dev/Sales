@@ -1648,9 +1648,11 @@ api.get('/meta', wrap(async (req, res) => {
   const and = scope.where.length ? ` AND ${scope.where.join(' AND ')}` : '';
   const sp = scope.params;
 
-  const [priceTypes, equips, persons, customers, branches, offices, corps] = await Promise.all([
+  const [priceTypes, equips, categories, models, persons, customers, branches, offices, corps] = await Promise.all([
     db.all('SELECT * FROM price_types ORDER BY code'),
     db.all(`SELECT equip_name AS name, COUNT(*) AS count FROM deals WHERE equip_name IS NOT NULL${and} GROUP BY equip_name ORDER BY count DESC`, sp),
+    db.all(`SELECT category_name AS name, COUNT(*) AS count FROM deals WHERE category_name IS NOT NULL${and} GROUP BY category_name ORDER BY count DESC`, sp),
+    db.all(`SELECT model_name AS name, COUNT(*) AS count FROM deals WHERE model_name IS NOT NULL${and} GROUP BY model_name ORDER BY count DESC LIMIT 1000`, sp),
     db.all(`SELECT sales_person AS name, COUNT(*) AS count FROM deals WHERE sales_person IS NOT NULL${and} GROUP BY sales_person ORDER BY count DESC`, sp),
     db.all(`SELECT customer_code AS code, customer_name AS name, COUNT(*) AS count FROM deals WHERE customer_code IS NOT NULL${and} GROUP BY customer_code, customer_name ORDER BY count DESC LIMIT 500`, sp),
     db.all(`SELECT branch AS name, COUNT(*) AS count FROM deals WHERE branch IS NOT NULL${and} GROUP BY branch ORDER BY count DESC`, sp),
@@ -1665,7 +1667,7 @@ api.get('/meta', wrap(async (req, res) => {
   const { aggMeta, histMeta, actualMeta } = await loadImportMeta();
 
   const body = {
-    priceTypes, equips, persons, customers, branches, offices,
+    priceTypes, equips, categories, models, persons, customers, branches, offices,
     corps,
     aggMeta,
     histMeta,
@@ -1926,6 +1928,19 @@ async function dashboardData(query, user) {
   // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
   // 承認日などの絞り込み（dealFilters）はここにも効く。
   const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
+  // 平均単価の比較（過去最新単価 → 計画）。
+  // 絞り込んだ品目のうち「過去最新単価・その月の計画・7月の実績数」が揃う行だけで、
+  // 出荷数（7月実績数）で重みを付けた平均単価を、過去と計画それぞれで出す。
+  // 同じ行どうしで比べるので、平均の差がそのまま1台あたりの上がり幅になる。
+  const avgPair = (n) =>
+    `${aPrice(n)} > 0 AND past_price > 0 AND ${f('master_qty')} > 0${approved ? ` AND ${approved}` : ''}`;
+  const avgAgg = [0, 1, 2, 3].map((n) => `
+    SUM(CASE WHEN ${avgPair(n)} THEN 1 ELSE 0 END) AS avg_cnt_m${n},
+    SUM(CASE WHEN ${avgPair(n)} THEN ${f('master_qty')} END) AS avg_qty_m${n},
+    SUM(CASE WHEN ${avgPair(n)} THEN ${f(aPrice(n))} * ${f('master_qty')} END) AS avg_plan_m${n},
+    SUM(CASE WHEN ${avgPair(n)} THEN ${f('past_price')} * ${f('master_qty')} END) AS avg_past_m${n}`)
+    .join(',');
+
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
     SUM(${aGain(n)}) AS raise_m${n}`)
@@ -1950,7 +1965,7 @@ async function dashboardData(query, user) {
     db.get(`SELECT COUNT(*) AS deals, SUM(${effQty}) AS qty, ${actAmt}
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
-    db.get(`SELECT ${monthAgg},
+    db.get(`SELECT ${monthAgg}, ${avgAgg},
               SUM(CASE WHEN ${planned(3)} THEN 1 ELSE 0 END) AS covered
             FROM deal_calc ${planJoin} ${where}`, p),
     db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
@@ -2042,7 +2057,8 @@ function dashboardFilterLabels(q) {
   const items = [];
   for (const [key, label] of [
     ['corp', '法人'], ['branch', '支店'], ['office', '営業所'],
-    ['equip', '器具区分'], ['person', '担当者'],
+    ['equip', '器具区分'], ['category', 'カテゴリー名（大）'], ['model', '品目階層名'],
+    ['person', '担当者'],
   ]) {
     if (q[key]) items.push([label, String(q[key])]);
   }
@@ -2297,6 +2313,7 @@ function dealFilters(q, user) {
     ['equip', 'equip_name'], ['person', 'sales_person'],
     ['customer', 'customer_code'], ['corp', 'corp_code'], ['priceType', 'price_type_code'],
     ['branch', 'branch'], ['office', 'office'],
+    ['category', 'category_name'], ['model', 'model_name'],
   ]) {
     if (q[key]) { where.push(`${col} = ?`); params.push(q[key]); }
   }
@@ -2609,7 +2626,7 @@ api.get('/suggest', wrap(async (req, res) => {
   const groups = [
     { key: 'corp', label: '法人', filter: 'corp', items: corps },
     { key: 'customer', label: '得意先', filter: 'customer', items: customers },
-    { key: 'model', label: '器種名', filter: 'q', items: models },
+    { key: 'model', label: '器種名', filter: 'model', items: models },
     { key: 'person', label: '担当者', filter: 'person', items: persons },
     { key: 'equip', label: '器具区分', filter: 'equip', items: equips },
   ].filter((g) => g.items.length > 0);
