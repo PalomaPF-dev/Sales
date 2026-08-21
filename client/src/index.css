@@ -892,3 +892,51 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 }
 .help-where .path { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.7; }
 .view-mobile .help-where .path { font-size: 14px; }
+
+/* ───────── 平均単価のグラフ ───────── */
+/*
+  縦軸を単価にして、内訳ごとに「基準 → 計画」を1本ずつ並べる図。
+  色は1色の濃淡2段（薄い＝基準／濃い＝計画）。
+  この2段は data-viz の ordinal（1色・明度が単調・薄い側も地に対して2:1以上）を
+  満たすことを確かめて選んでいる（#e88a84 は白地で 2.50:1）。
+*/
+.avgchart { --viz-base: #e88a84; --viz-plan: #dc000c; display: block; }
+.avgchart .grid { stroke: var(--grid); stroke-width: 1; }
+.avgchart .ytick {
+  fill: var(--muted); font-size: 11px; text-anchor: end; font-variant-numeric: tabular-nums;
+}
+.avgchart .xlabel { fill: var(--ink-2); font-size: 11px; text-anchor: end; }
+.avgchart .vlabel {
+  fill: var(--ink); font-size: 11px; font-weight: 700; text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+.avgchart .conn { stroke: var(--viz-base); stroke-width: 2; }
+/* 点は地の色の輪郭を付けて、重なっても数を見失わないようにする */
+.avgchart .dot { stroke: #fff; stroke-width: 2; }
+.avgchart .dot.base { fill: var(--viz-base); }
+.avgchart .dot.plan { fill: var(--viz-plan); }
+/* 点より広い当たり判定。カーソルを合わせたところを薄く示す */
+.avgchart .hit { fill: transparent; }
+.avgchart .mark:hover .hit { fill: rgba(51, 51, 51, 0.04); }
+.avgchart .mark:hover .dot { stroke-width: 2.5; }
+
+/* 凡例。2つある印は色だけに頼らず、必ず名前を添える */
+.chart-legend {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px;
+  font-size: 12px; color: var(--ink-2); margin-bottom: 10px;
+}
+.chart-legend i {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px;
+  vertical-align: -1px;
+}
+.chart-legend .note { color: var(--label); font-size: 11px; }
+
+/* 表とグラフの切替・並び替えの帯 */
+.chart-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px;
+}
+.chart-bar .grow { flex: 1; min-width: 0; }
+.chart-bar .fld.inline {
+  flex-direction: row; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted);
+}
+.chart-bar .fld.inline select { font-size: 12px; padding: 5px 8px; }
