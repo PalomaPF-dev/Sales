@@ -10,3 +10,14 @@ export function useUser(): User {
   if (!user) throw new Error('useUser はログイン後の画面でのみ使用できます');
   return user;
 }
+
+/**
+ * 閲覧専用（共通IDで配る権限）。入力の欄・ボタンを出さないために使う。
+ * サーバー側でも書き込みを止めているため、ここは見た目の整理のためのもの。
+ */
+export const isViewerRole = (role: string) => role === 'viewer';
+
+/** 値上げ交渉の入力ができるか（閲覧専用以外） */
+export function useCanEdit(): boolean {
+  return !isViewerRole(useUser().role);
+}

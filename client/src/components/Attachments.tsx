@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, jstDateTime } from '../api';
 import { Card } from './ui';
-import { useUser } from '../user';
+import { useUser, isViewerRole } from '../user';
 
 interface Attachment {
   id: number;
@@ -68,13 +68,16 @@ export default function Attachments({
     <Card title={`${title}（${rows.length}件）`}>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-        <input type="file" ref={fileRef} />
-        <button className="btn sm" onClick={upload} disabled={busy}>
-          {busy ? 'アップロード中...' : '添付する'}
-        </button>
-        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>1ファイル3MBまで</span>
-      </div>
+      {/* 閲覧専用（共通ID）は見るだけ。添付・削除の操作は出さない */}
+      {!isViewerRole(me.role) && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+          <input type="file" ref={fileRef} />
+          <button className="btn sm" onClick={upload} disabled={busy}>
+            {busy ? 'アップロード中...' : '添付する'}
+          </button>
+          <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>1ファイル3MBまで</span>
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <p style={{ color: 'var(--muted)', fontSize: 13 }}>添付ファイルはありません。</p>
@@ -93,7 +96,8 @@ export default function Attachments({
                 <td>{a.uploaded_by_name || '—'}</td>
                 <td>{jstDateTime(a.uploaded_at)}</td>
                 <td>
-                  {(['planning', 'admin', 'developer'].includes(me.role) || a.uploaded_by_name === me.name) && (
+                  {!isViewerRole(me.role)
+                    && (['planning', 'admin', 'developer'].includes(me.role) || a.uploaded_by_name === me.name) && (
                     <button className="btn secondary sm" onClick={() => remove(a)}>削除</button>
                   )}
                 </td>

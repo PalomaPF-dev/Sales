@@ -6,7 +6,7 @@ import type { Deal, Meta, RoundState } from '../types';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
 import type { BulkResult } from '../bulkUpdateClient';
-import { useUser } from '../user';
+import { useUser, isViewerRole } from '../user';
 import { useIsMobile } from '../view';
 
 interface DealsRes {
@@ -69,6 +69,8 @@ export default function Deals() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const isDev = me.role === 'developer';
+  // 閲覧専用（共通ID）。入力・一括入力の欄は出さない
+  const canEdit = !isViewerRole(me.role);
   const mobile = useIsMobile();
   /**
    * 合計の金額。スマホでは桁が多いと1行に収まらないため万円でまとめる。
@@ -511,8 +513,14 @@ export default function Deals() {
         見出しの<strong>◀ 実績／計画 ▶</strong>で表示する月を1か月ずつずらせます（既定は当月の計画から）。
         隣の<strong>目標単価</strong>は本社が設定します。
         <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
-        <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
-        商談結果の左のチェックで品目を選ぶと、<strong>入力の項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）をまとめて一括入力</strong>できます（空欄の項目は変更されません）。
+        {canEdit ? (
+          <>
+            <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
+            商談結果の左のチェックで品目を選ぶと、<strong>入力の項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）をまとめて一括入力</strong>できます（空欄の項目は変更されません）。
+          </>
+        ) : (
+          <>この画面は<strong>閲覧専用</strong>です。内容の入力・変更はできません（Excel出力はご利用いただけます）。</>
+        )}
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -659,9 +667,11 @@ export default function Deals() {
             </span>
           </span>
           <div className="grow" />
-          <button className="btn secondary sm" onClick={() => { setBulkOpen((v) => !v); setBulk(null); }}>
-            一括取込
-          </button>
+          {canEdit && (
+            <button className="btn secondary sm" onClick={() => { setBulkOpen((v) => !v); setBulk(null); }}>
+              一括取込
+            </button>
+          )}
           <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}>Excel出力</button>
         </div>
       )}
@@ -669,7 +679,7 @@ export default function Deals() {
       {/* 値上げ交渉の一括入力。商談結果の左のチェックで品目を選び、
           入力と同じ項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）を
           まとめて入れる。書き入れた項目だけが対象で、空欄の項目は変更しない */}
-      {data && (
+      {data && canEdit && (
         <div className="toolbar" style={{ flexWrap: 'wrap', rowGap: 8 }}>
           <span className="count">
             選択 <b>{sel.size.toLocaleString()}</b>件
@@ -790,8 +800,11 @@ export default function Deals() {
                   title={`その月のマスタ登録単価 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
                 値上げ幅（マスタ登録単価−{actLabel}マスタ単価）
               </th>
-              <th colSpan={6} className="grp sep">値上げ交渉（営業担当者が入力）</th>
-              <th className="grp"></th>
+              {/* 閲覧専用のときは、選択のチェックと「入力」の列を出さないぶん狭くする */}
+              <th colSpan={canEdit ? 6 : 5} className="grp sep">
+                値上げ交渉{canEdit && '（営業担当者が入力）'}
+              </th>
+              {canEdit && <th className="grp"></th>}
             </tr>
             <tr>
               <Th col="corp_name" className="fx fx2">企業名</Th>
@@ -851,14 +864,16 @@ export default function Deals() {
               <th className="num">{ymLabel(meta?.aggMeta?.m2, '翌々月')}</th>
               <th className="num">{ymLabel(meta?.aggMeta?.m3, '3か月後')}</th>
               {/* 商談結果の一括入力のための選択。見出しはページ内の全行をまとめて選ぶ */}
-              <th className="sep" title="表示中の行をまとめて選ぶ／外す">
-                <input type="checkbox"
-                  checked={(data?.rows.length ?? 0) > 0 && (data?.rows ?? []).every((r) => sel.has(r.id))}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    setSel(on ? new Set((data?.rows ?? []).map((r) => r.id)) : new Set());
-                  }} />
-              </th>
+              {canEdit && (
+                <th className="sep" title="表示中の行をまとめて選ぶ／外す">
+                  <input type="checkbox"
+                    checked={(data?.rows.length ?? 0) > 0 && (data?.rows ?? []).every((r) => sel.has(r.id))}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setSel(on ? new Set((data?.rows ?? []).map((r) => r.id)) : new Set());
+                    }} />
+                </th>
+              )}
               <Th col="nego_result"
                   title="商談の結果。〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談">
                 商談結果
@@ -867,7 +882,7 @@ export default function Deals() {
               <Th col="final_date" className="num">最終確定日</Th>
               <Th col="final_price" className="num">最終確定単価</Th>
               <Th col="r2_applied_ym" className="num">適用年月</Th>
-              <th></th>
+              {canEdit && <th></th>}
             </tr>
           </thead>
           <tbody>
@@ -976,9 +991,11 @@ export default function Deals() {
                   <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
 
                   {/* 値上げ交渉。選択（一括入力用）・商談結果・商談メモ・最終確定日・最終確定単価・適用年月 */}
-                  <td className="sep">
-                    <input type="checkbox" checked={sel.has(d.id)} onChange={() => toggleSel(d.id)} />
-                  </td>
+                  {canEdit && (
+                    <td className="sep">
+                      <input type="checkbox" checked={sel.has(d.id)} onChange={() => toggleSel(d.id)} />
+                    </td>
+                  )}
                   <td>
                     {isEditing ? (
                       <select className="cell" value={draft.nego_result}
@@ -1027,16 +1044,18 @@ export default function Deals() {
                         onChange={(e) => setDraft({ ...draft, r2_applied_ym: e.target.value })} />
                     ) : (d.r2_applied_ym || '—')}
                   </td>
-                  <td>
-                    <div className="round-actions">
-                      {isEditing && (
-                        <button className="btn sm" disabled={busy} onClick={() => saveRound(d)}>保存</button>
-                      )}
-                      <button className="btn secondary sm" onClick={() => (isEditing ? setEditing(null) : startEdit(d))}>
-                        {isEditing ? '閉じる' : '入力'}
-                      </button>
-                    </div>
-                  </td>
+                  {canEdit && (
+                    <td>
+                      <div className="round-actions">
+                        {isEditing && (
+                          <button className="btn sm" disabled={busy} onClick={() => saveRound(d)}>保存</button>
+                        )}
+                        <button className="btn secondary sm" onClick={() => (isEditing ? setEditing(null) : startEdit(d))}>
+                          {isEditing ? '閉じる' : '入力'}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               );
             })}
@@ -1057,11 +1076,15 @@ export default function Deals() {
           変更は入力欄を離れた時点で保存されます。
           コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
         </p>
-      ) : (
+      ) : canEdit ? (
         <p className="pt-note" style={{ marginTop: 10 }}>
           「入力」から商談結果・商談メモ・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
           商談結果の左のチェックで品目を選ぶと、入力の項目をまとめて一括入力できます（空欄の項目は変更されません）。
           {isHq && ' 本社・管理者は目標単価も「入力」から設定できます。'}
+        </p>
+      ) : (
+        <p className="pt-note" style={{ marginTop: 10 }}>
+          閲覧専用のため、入力の欄は表示していません。表の内容は「Excel出力」で持ち出せます。
         </p>
       )}
     </div>
