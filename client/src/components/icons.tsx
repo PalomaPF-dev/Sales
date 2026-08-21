@@ -127,18 +127,6 @@ export function IconLogout() {
   );
 }
 
-/** ポータル（アプリの一覧） */
-export function IconGrid() {
-  return (
-    <svg {...base} aria-hidden="true">
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <rect x="14" y="14" width="7" height="7" rx="1.5" />
-    </svg>
-  );
-}
-
 /** 平均単価（折れ線） */
 export function IconChart() {
   return (
