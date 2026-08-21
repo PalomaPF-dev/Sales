@@ -502,11 +502,13 @@ export default function Deals() {
     price: number | null | undefined,
     date: string | null | undefined,
     ringi: string | null | undefined,
+    note?: string,
   ) => {
     const day = dateLabel(date);
     // 指定した年月より前の登録は、日付を赤くしてどの月の登録が古いのか分かるようにする
     const old = isOldDate(date);
     const tip = [
+      note,
       date && `承認日（マスタ登録の登録日）: ${date}`,
       old && `${ymText(oldYm)}より前の登録です`,
       ringi && `稟議No: ${ringi}`,
@@ -568,14 +570,45 @@ export default function Deals() {
   const visCols = mCols.slice(mAt, mAt + M_WIN);
 
   /**
-   * 計画（当月〜3か月後の申請単価）の1マス。承認日・稟議Noつき。
-   * 翌月（9月計画）の承認日は出さない（当月と同じ日が並ぶだけで読みにくいため）。
+   * 翌月（9月計画）を当月（8月計画）で置き換える境目の日。
+   * 実績の月（当月の前月）の1日。当月が2026-08なら 2026-07-01。
+   * この日より前の登録は、今回の値上げより前の古い申請とみなす。
    */
-  const planCell = (d: Deal, n: 0 | 1 | 2 | 3) => aCell(
-    [d.a_price_m0, d.a_price_m1, d.a_price_m2, d.a_price_m3][n],
-    n === 1 ? null : [d.a_date_m0, d.a_date_m1, d.a_date_m2, d.a_date_m3][n],
-    [d.a_ringi_m0, d.a_ringi_m1, d.a_ringi_m2, d.a_ringi_m3][n],
-  );
+  const slideFrom = (() => {
+    const m0 = meta?.aggMeta?.m0;
+    if (!m0 || !/^\d{4}-\d{2}$/.test(m0)) return null;
+    const y = Number(m0.slice(0, 4));
+    const m = Number(m0.slice(5, 7));
+    const py = m === 1 ? y - 1 : y;
+    const pm = m === 1 ? 12 : m - 1;
+    return `${py}-${String(pm).padStart(2, '0')}-01`;
+  })();
+
+  /**
+   * 翌月（9月計画）は、承認日が境目の日より前なら当月（8月計画）をそのままスライドして出す。
+   * 古い登録のまま翌月の欄に出すと、値上げ後の単価と取り違えるため。
+   * 境目の日以降に登録し直されていれば、その内容をそのまま出す。
+   */
+  const isSlid = (d: Deal) => {
+    if (!slideFrom) return false;
+    const own = d.a_date_m1 ? String(d.a_date_m1).slice(0, 10) : '';
+    return own < slideFrom;   // 未記入（空）も古い扱いにしてスライドする
+  };
+
+  /** 計画（当月〜3か月後の申請単価）の1マス。承認日・稟議Noつき */
+  const planCell = (d: Deal, n: 0 | 1 | 2 | 3) => {
+    // 9月計画がスライドのときは、8月計画の単価・承認日・稟議Noをそのまま出す
+    const from = n === 1 && isSlid(d) ? 0 : n;
+    return aCell(
+      [d.a_price_m0, d.a_price_m1, d.a_price_m2, d.a_price_m3][from],
+      [d.a_date_m0, d.a_date_m1, d.a_date_m2, d.a_date_m3][from],
+      [d.a_ringi_m0, d.a_ringi_m1, d.a_ringi_m2, d.a_ringi_m3][from],
+      n === 1 && from === 0
+        ? `${planLabel(1)}計画は${planLabel(0)}計画をそのままスライドしています`
+          + `（${planLabel(1)}計画の承認日が ${slideFrom} より前のため）`
+        : undefined,
+    );
+  };
 
   return (
     <div>
@@ -594,6 +627,15 @@ export default function Deals() {
         <strong>マスタ登録単価</strong>は、4月からの<strong>月別実績</strong>（当月は取込前日まで）と、
         当月（本日時点）からの<strong>計画</strong>（申請単価。下段は承認日）を並べます。
         見出しの<strong>◀ 実績／計画 ▶</strong>で表示する月を1か月ずつずらせます（既定は当月の計画から）。
+        {slideFrom && (
+          <>
+            {' '}
+            <strong>{planLabel(1)}計画</strong>は、承認日が <strong>{slideFrom}</strong> より前のときは
+            今回の値上げより前の古い申請とみなし、<strong>{planLabel(0)}計画をそのままスライド</strong>して出します
+            （その2つのマスを<span className="slid-chip" />同じ色にしています）。
+            {planLabel(2)}計画・{planLabel(3)}計画は取り込んだとおりです。
+          </>
+        )}
         隣の<strong>目標単価</strong>は本社が設定します。
         <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
         {canEdit ? (
@@ -1104,7 +1146,10 @@ export default function Deals() {
                       {d.hist_prices?.[c.ym] == null ? '—' : yen(d.hist_prices[c.ym])}
                     </td>
                   ) : (
-                    <td key={`p${c.n}`} className={`num${i === 0 ? ' sep' : ''}`}>
+                    // スライドしたときは、元の8月計画と並べて同じ色にして組が分かるようにする
+                    <td key={`p${c.n}`}
+                        className={`num${i === 0 ? ' sep' : ''}`
+                          + ((c.n === 0 || c.n === 1) && isSlid(d) ? ' slid' : '')}>
                       {planCell(d, c.n)}
                     </td>
                   ))}
