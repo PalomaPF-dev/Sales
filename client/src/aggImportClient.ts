@@ -491,11 +491,15 @@ export interface AggResult {
 export async function sendAggImport(
   parsed: AggParsed,
   filename: string,
-  opts: { onProgress?: (done: number, total: number) => void }
+  /**
+   * keepNego … 商談結果・最終確定日・最終確定単価を今の値のままにする。
+   * ファイルの値で上書きしたくない取込のときに使う（取込ごとに選ぶ）。
+   */
+  opts: { onProgress?: (done: number, total: number) => void; keepNego?: boolean }
 ): Promise<AggResult> {
   await api('/agg-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, meta: parsed.meta }),
+    body: JSON.stringify({ filename, meta: parsed.meta, keepNego: opts.keepNego === true }),
   });
   let matched = 0;
   let unmatched = 0;

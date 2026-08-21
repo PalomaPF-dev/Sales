@@ -20,6 +20,8 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   const [parsed, setParsed] = useState<{ p: AggParsed; name: string } | null>(null);
   const [result, setResult] = useState<AggResult | null>(null);
   const [err, setErr] = useState('');
+  // この取込に限り、商談結果・最終確定日・最終確定単価を今の値のままにする
+  const [keepNego, setKeepNego] = useState(false);
 
   const onPick = async () => {
     const file = fileRef.current?.files?.[0];
@@ -54,6 +56,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       const r = await (await aggClient()).sendAggImport(parsed.p, parsed.name, {
         onProgress: (done, total) =>
           setProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行を取込中...`),
+        keepNego,
       });
       setResult(r);
       setProgress('');
@@ -138,6 +141,25 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
           </>
         )}
       </div>
+      {/* 画面で入れた交渉の記録を、ファイルの値で上書きしたくないときに使う。
+          取込ごとの選択で、次の取込には持ち越さない */}
+      {parsed && (
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, fontSize: 12.5 }}>
+          <input type="checkbox" checked={keepNego} disabled={busy}
+            onChange={(e) => setKeepNego(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>
+            <strong>商談結果・最終確定日・最終確定単価は今の値を残す</strong>
+            （ファイルの値で上書きしません）。
+            <br />
+            <span style={{ color: 'var(--muted)' }}>
+              画面で入れた交渉の記録を守りたい取込のときに印を付けます。
+              商談メモはファイルに無いため、印の有無にかかわらず変わりません。
+              新しく追加される案件にはファイルの値が入ります。
+              この選択は今回の取込にだけ効きます。
+            </span>
+          </span>
+        </label>
+      )}
       {progress && <p className="pt-note">{progress}</p>}
     </Card>
   );
