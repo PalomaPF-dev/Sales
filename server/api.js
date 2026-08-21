@@ -652,16 +652,6 @@ const ROLE_LABELS = {
   viewer: '閲覧専用',
 };
 
-/** 権限の日本語表記（一覧の出力用。取り込み直せるよう ROLE_ALIASES と揃える） */
-const ROLE_LABELS = {
-  sales: '営業担当者',
-  branch_manager: '支店長',
-  wide_area: '広域担当',
-  planning: '本社',
-  admin: '管理者',
-  developer: '開発者',
-};
-
 function parseRole(v) {
   const s = String(v ?? '').trim();
   return ROLE_ALIASES[s] || (ROLES.includes(s) ? s : null);
