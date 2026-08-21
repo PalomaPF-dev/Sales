@@ -26,6 +26,15 @@ interface AdminUser {
   person_deals?: number;
 }
 
+/** 外部連携の状況（メール通知・Basic認証など）。設定できているかを画面で確かめる */
+interface StatusItem {
+  key: string;
+  name: string;
+  ok: boolean;
+  detail: string;
+  hint?: string;
+}
+
 /** 編集中の行。行ごとに入力してから「保存」でまとめて反映する */
 interface EditRow {
   id: number;
@@ -55,6 +64,7 @@ export default function Users() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   // ユーザーの一括削除（チェックで選んでまとめて消す）
   const [sel, setSel] = useState<Set<number>>(new Set());
+  const [status, setStatus] = useState<StatusItem[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
@@ -71,6 +81,9 @@ export default function Users() {
   };
   useEffect(load, []);
   useEffect(() => { api<Meta>('/meta').then(setMeta).catch(() => {}); }, []);
+  useEffect(() => {
+    api<{ items: StatusItem[] }>('/admin/status').then((r) => setStatus(r.items)).catch(() => {});
+  }, []);
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -243,6 +256,30 @@ export default function Users() {
         交渉履歴などの記録が残っている方は削除できません（「停止」にすればログインできなくなり、記録は残ります）。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
+
+      {/* 外部連携の状況。環境変数はVercelの画面でしか設定できず、
+          設定したつもりが効いていない、という食い違いが起きやすいため、
+          「今この本番で何が有効か」をここで確かめられるようにする */}
+      {status && (
+        <Card title="連携の状況">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {status.map((it) => (
+              <div key={it.key} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                {it.ok
+                  ? <span className="badge green" style={{ marginTop: 2 }}>有効</span>
+                  : <span className="badge yellow" style={{ marginTop: 2 }}>未設定</span>}
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>{it.name}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{it.detail}</div>
+                  {!it.ok && it.hint && (
+                    <div style={{ fontSize: 12, color: 'var(--muted)' }}>設定場所: {it.hint}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <Card title="名簿の一括取込">
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>

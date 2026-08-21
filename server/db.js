@@ -510,23 +510,24 @@ async function tryAlter(sql) {
 async function dropUserRoleCheck() {
   if (isPostgres) {
     // 制約名は既定で users_role_check だが、名前に頼らず role を見ている
-    // CHECK 制約をすべて外す（作られた時期で名前が違っていても効くように）
+    // CHECK 制約をすべて外す（作られた時期で名前が違っていても効くように）。
+    // テーブルはスキーマまで書いて指すこと。search_path 頼みだと、
+    // 効いていないときに「テーブルが無い」と静かに素通りしてしまう。
+    // to_regclass は無ければNULLを返すので、新規DBでもエラーにならない。
+    const table = `"${PG_SCHEMA}".users`;
     try {
       await db.exec(`DO $$
         DECLARE c text;
         BEGIN
           FOR c IN SELECT conname FROM pg_constraint
-                    WHERE conrelid = 'users'::regclass AND contype = 'c'
+                    WHERE conrelid = to_regclass('${table}') AND contype = 'c'
                       AND pg_get_constraintdef(oid) ILIKE '%role%'
           LOOP
-            EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', c);
+            EXECUTE format('ALTER TABLE ${table} DROP CONSTRAINT %I', c);
           END LOOP;
         END $$;`);
     } catch (e) {
-      // users がまだ無い（新規DB）ならこのあとのスキーマ適用で制約なしで作られる
-      if (!/does not exist/i.test(e?.message || '')) {
-        console.warn(`マイグレーション警告: role の制約を外せませんでした → ${e.message}`);
-      }
+      console.warn(`マイグレーション警告: role の制約を外せませんでした → ${e.message}`);
     }
     return;
   }
