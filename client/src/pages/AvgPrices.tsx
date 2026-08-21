@@ -66,6 +66,130 @@ function AvgCell({ v }: { v: ReturnType<typeof planOf> }) {
 }
 
 /**
+ * 平均単価の散布（ダンベル）図。
+ *
+ * 縦軸を単価にして、内訳（法人・支店・器具区分）ごとに
+ * 「基準の平均単価 → その月の計画の平均単価」を1本ずつ並べる。
+ * どこが高くてどこが安いか、どれだけ上がるかを一目で見比べるためのもの。
+ *
+ * 棒ではなく点で描く。単価は0から数える量ではないので、
+ * 0を含めない目盛りにしても読み違えない形にしている。
+ */
+function AvgChart({ rows, monthIdx, monthLabel, baseName, total }: {
+  rows: AvgRow[];
+  monthIdx: number;
+  monthLabel: string;
+  baseName: string;
+  /** 内訳の全件数（表示を上位に絞ったときに、隠した数を伝えるため） */
+  total: number;
+}) {
+  // 描く点の値を先に取り出す。基準か計画のどちらかが無い内訳は描けない
+  const pts = rows
+    .map((r) => {
+      const v = planOf(r, monthIdx);
+      return v ? { name: String(r.name ?? '—'), base: v.base, plan: v.plan, qty: v.qty } : null;
+    })
+    .filter((v): v is NonNullable<typeof v> => v != null);
+
+  if (pts.length === 0) {
+    return <p className="pt-note" style={{ margin: 0 }}>グラフに出せる内訳がありません。</p>;
+  }
+
+  // 目盛り。単価は0から数える量ではないので、値の範囲に合わせて上下に少し余白を取る
+  const vals = pts.flatMap((p) => [p.base, p.plan]);
+  const lo0 = Math.min(...vals);
+  const hi0 = Math.max(...vals);
+  const pad = Math.max((hi0 - lo0) * 0.12, hi0 * 0.02, 1);
+  const lo = Math.max(0, lo0 - pad);
+  const hi = hi0 + pad;
+  const TICKS = 5;
+  const ticks = Array.from({ length: TICKS }, (_, i) => lo + ((hi - lo) * i) / (TICKS - 1));
+
+  // 1件ぶんの幅と、図全体の大きさ。
+  // 件数が少ないときは幅いっぱいに広げ、多いときは横スクロールにする
+  const PAD_L = 78;
+  const PAD_R = 18;
+  const PAD_T = 14;
+  const PLOT_H = 300;
+  const PAD_B = 104;            // 斜めに倒した内訳名のぶん
+  const SLOT_MIN = 52;
+  const FIT_W = 1020;           // だいたいこの幅までは広げて使う
+  const SLOT = Math.max(SLOT_MIN,
+    Math.min(120, (FIT_W - PAD_L - PAD_R) / pts.length));
+  const w = PAD_L + pts.length * SLOT + PAD_R;
+  const h = PAD_T + PLOT_H + PAD_B;
+  const y = (v: number) => PAD_T + PLOT_H - ((v - lo) / (hi - lo)) * PLOT_H;
+  const x = (i: number) => PAD_L + i * SLOT + SLOT / 2;
+
+  // 値を書き添えるのは、いちばん高い所と安い所だけ（全部に付けると読めなくなる）
+  const hiAt = pts.reduce((b, p, i) => (p.plan > pts[b].plan ? i : b), 0);
+  const loAt0 = pts.reduce((b, p, i) => (p.plan < pts[b].plan ? i : b), 0);
+  // 端の値が同じなら1つだけにする（同じ数字が2つ並ぶと読み手が迷う）
+  const loAt = pts[loAt0].plan === pts[hiAt].plan ? hiAt : loAt0;
+
+  const yen = (v: number) => `¥${Math.round(v).toLocaleString()}`;
+  const short = (s: string) => (s.length > 11 ? `${s.slice(0, 10)}…` : s);
+
+  return (
+    <>
+      {/* 2つの点が何を指すかは、色だけに頼らず必ず凡例で示す */}
+      <div className="chart-legend">
+        <span><i style={{ background: 'var(--viz-base)' }} />基準（{baseName}）</span>
+        <span><i style={{ background: 'var(--viz-plan)' }} />{monthLabel} の計画</span>
+        <span className="note">縦軸は単価。0から始まっていません</span>
+      </div>
+      <HScroll className="tbl-scroll">
+        <svg className="avgchart" width={w} height={h} role="img"
+             aria-label={`内訳ごとの平均単価（${baseName} と ${monthLabel} の計画）`}>
+          {/* 目盛り。細い実線で、読み取りの邪魔にならない濃さにする */}
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={PAD_L - 6} y1={y(t)} x2={w - PAD_R} y2={y(t)} className="grid" />
+              <text x={PAD_L - 10} y={y(t) + 4} className="ytick">{yen(t)}</text>
+            </g>
+          ))}
+          {pts.map((p, i) => {
+            const up = p.plan >= p.base;
+            return (
+              <g key={`${p.name}-${i}`} className="mark">
+                {/* 基準から計画への動き */}
+                <line x1={x(i)} y1={y(p.base)} x2={x(i)} y2={y(p.plan)} className="conn" />
+                <circle cx={x(i)} cy={y(p.base)} r="5" className="dot base" />
+                <circle cx={x(i)} cy={y(p.plan)} r="5" className="dot plan" />
+                {/* 高い所・安い所だけ値を書く */}
+                {(i === hiAt || i === loAt) && (
+                  <text x={x(i)} y={y(p.plan) - 12} className="vlabel">{yen(p.plan)}</text>
+                )}
+                {/* 内訳名。長いものは省略し、全体はカーソルを合わせると出す */}
+                <text x={x(i)} y={PAD_T + PLOT_H + 12}
+                      className="xlabel" transform={`rotate(-45 ${x(i)} ${PAD_T + PLOT_H + 12})`}>
+                  {short(p.name)}
+                </text>
+                {/* 点より広い当たり判定。カーソルを合わせると中身が出る */}
+                <rect x={x(i) - SLOT / 2} y={PAD_T} width={SLOT} height={PLOT_H} className="hit">
+                  <title>
+                    {`${p.name}\n基準（${baseName}）: ${yen(p.base)}\n`
+                      + `${monthLabel} の計画: ${yen(p.plan)}\n`
+                      + `差: ${up ? '＋' : '−'}${yen(Math.abs(p.plan - p.base))}\n`
+                      + `出荷数: ${Math.round(p.qty).toLocaleString()}`}
+                  </title>
+                </rect>
+              </g>
+            );
+          })}
+        </svg>
+      </HScroll>
+      {total > pts.length && (
+        <p className="pt-note" style={{ marginBottom: 0 }}>
+          全 {total.toLocaleString()} 件のうち、並び替えの上位 {pts.length} 件を出しています
+          （多すぎると読めないため）。絞り込みで対象を狭めると、残りも見られます。
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
  * 平均単価の比較（基準 → 計画）。
  *
  * 「この器具区分は平均でいくら上がるのか」「この支店・法人はどうか」を見比べる画面。
@@ -79,6 +203,12 @@ export default function AvgPrices() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [data, setData] = useState<AvgRes | null>(null);
   const [group, setGroup] = useState<Group>('equip');
+  // 表とグラフの切替。どちらも同じ並び順で出す
+  const [view, setView] = useState<'table' | 'chart'>('table');
+  // 並び替え。col は 'name' / 'cnt' / 'qty' / 'base' / 'm0'…'m3'
+  const [sort, setSort] = useState<{ col: string; desc: boolean }>({ col: 'qty', desc: true });
+  // グラフに出す月（基準と比べる相手）
+  const [chartMonth, setChartMonth] = useState(0);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   // 「絞り込む」を押したときの取り直しの合図。条件が同じでも押せば取り直す
@@ -147,8 +277,46 @@ export default function AvgPrices() {
     : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
   const am = data?.aggMeta ?? meta?.aggMeta;
   const months = [am?.m0 || '当月', am?.m1 || '翌月', am?.m2 || '翌々月', am?.m3 || '3か月後'];
-  const rows = data?.rows ?? [];
   const head = TABS.find((t) => t.key === group)?.head ?? '内訳';
+
+  /** 並び替えに使う値。名前だけ文字、ほかは数（出せない行は末尾に寄せる） */
+  const sortValue = (r: AvgRow, col: string): number | string => {
+    if (col === 'name') return String(r.name ?? '');
+    const b = baseOf(r);
+    if (!b) return Number.NEGATIVE_INFINITY;
+    if (col === 'cnt') return b.cnt;
+    if (col === 'qty') return b.qty;
+    if (col === 'base') return b.base;
+    const m = /^m(\d)$/.exec(col);
+    if (m) return planOf(r, Number(m[1]))?.plan ?? Number.NEGATIVE_INFINITY;
+    return 0;
+  };
+  const rows = [...(data?.rows ?? [])].sort((a, b) => {
+    const va = sortValue(a, sort.col);
+    const vb = sortValue(b, sort.col);
+    const d = typeof va === 'string' || typeof vb === 'string'
+      ? String(va).localeCompare(String(vb), 'ja')
+      : va - vb;
+    return sort.desc ? -d : d;
+  });
+  /** 見出しを押したときの並び替え。もう一度押すと逆順になる */
+  const toggleSort = (col: string) =>
+    setSort((v) => ({ col, desc: v.col === col ? !v.desc : col !== 'name' }));
+  /** 並び替えできる見出し。いまの向きを矢印で示す */
+  const Th = ({ col, right, children, title }: {
+    col: string; right?: boolean; children: React.ReactNode; title?: string;
+  }) => (
+    <th style={right ? nums : undefined}
+        className={`sortable${sort.col === col ? ' sorted' : ''}`}
+        title={title ? `${title}（押すと並び替えます）` : '押すと並び替えます'}
+        onClick={() => toggleSort(col)}>
+      {children}
+      <span className="sort-mark">{sort.col === col ? (sort.desc ? '▼' : '▲') : ''}</span>
+    </th>
+  );
+  // グラフは多すぎると読めないので、並び替えの上位だけを出す
+  const CHART_MAX = 30;
+  const chartRows = rows.slice(0, CHART_MAX);
 
   return (
     <div>
@@ -298,34 +466,74 @@ export default function AvgPrices() {
           <strong>（計画の平均 − 基準の平均）× 出荷数 が、その月の値上げ額と一致します</strong>。
         </NoteFold>
 
-        {/* 内訳のまとめ方。値上げ額の内訳と同じ切替 */}
-        <div className="seg" style={{ marginBottom: 10 }}>
-          {TABS.map((t) => (
-            <button key={t.key} type="button"
-                    className={group === t.key ? 'on' : ''}
-                    onClick={() => setGroup(t.key)}>
-              {t.label}
-            </button>
-          ))}
+        {/* 内訳のまとめ方・表とグラフの切替・並び替え。表とグラフは同じ並び順で出す */}
+        <div className="chart-bar">
+          <div className="seg">
+            {TABS.map((t) => (
+              <button key={t.key} type="button"
+                      className={group === t.key ? 'on' : ''}
+                      onClick={() => setGroup(t.key)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="seg">
+            <button type="button" className={view === 'table' ? 'on' : ''}
+                    onClick={() => setView('table')}>表</button>
+            <button type="button" className={view === 'chart' ? 'on' : ''}
+                    onClick={() => setView('chart')}>グラフ</button>
+          </div>
+          <div className="grow" />
+          {view === 'chart' && (
+            <label className="fld inline">
+              比べる月
+              <select value={chartMonth} onChange={(e) => setChartMonth(Number(e.target.value))}>
+                {months.map((ym, i) => <option key={ym} value={i}>{ym} の計画</option>)}
+              </select>
+            </label>
+          )}
+          {/* 並び替えは表とグラフで共通。表は見出しを押しても変えられる */}
+          <label className="fld inline">
+            並び替え
+            <select value={sort.col} onChange={(e) => setSort((v) => ({ ...v, col: e.target.value }))}>
+              <option value="name">{head}の名前</option>
+              <option value="cnt">対象件数</option>
+              <option value="qty">出荷数</option>
+              <option value="base">基準の単価</option>
+              {months.map((ym, i) => <option key={ym} value={`m${i}`}>{ym} の計画単価</option>)}
+            </select>
+          </label>
+          <div className="seg">
+            <button type="button" className={!sort.desc ? 'on' : ''}
+                    onClick={() => setSort((v) => ({ ...v, desc: false }))}>安い順</button>
+            <button type="button" className={sort.desc ? 'on' : ''}
+                    onClick={() => setSort((v) => ({ ...v, desc: true }))}>高い順</button>
+          </div>
         </div>
 
+        {view === 'chart' ? (
+          <div style={busy ? { opacity: 0.45 } : undefined}>
+            <AvgChart rows={chartRows} monthIdx={chartMonth} monthLabel={months[chartMonth]}
+                      baseName={baseName} total={rows.length} />
+          </div>
+        ) : (
         <HScroll className="tbl-scroll">
           <table className="tbl" style={busy ? { opacity: 0.45 } : undefined}>
             <thead>
               <tr>
-                <th>{head}</th>
-                <th style={nums}>対象件数</th>
-                <th style={nums} title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>
+                <Th col="name">{head}</Th>
+                <Th col="cnt" right>対象件数</Th>
+                <Th col="qty" right title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>
                   出荷数<br /><small>{actLabel}実績数</small>
-                </th>
-                <th style={{ ...nums, borderLeft: '1px solid var(--baseline)' }}
+                </Th>
+                <Th col="base" right
                     title={`選んだ基準（${baseName}）の平均単価。右の各月はこれと比べています`}>
                   基準<br /><small>{baseName}</small>
-                </th>
-                {months.map((ym) => (
-                  <th key={ym} style={nums}>
+                </Th>
+                {months.map((ym, i) => (
+                  <Th key={ym} col={`m${i}`} right>
                     {ym}<br /><small>計画平均 / 基準との差</small>
-                  </th>
+                  </Th>
                 ))}
               </tr>
             </thead>
@@ -357,6 +565,7 @@ export default function AvgPrices() {
             </tbody>
           </table>
         </HScroll>
+        )}
       </Card>
     </div>
   );
