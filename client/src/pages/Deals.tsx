@@ -29,8 +29,8 @@ interface DealsRes {
 /** マスタ登録単価のまとまりに並べる月。実績（月別履歴）と計画（当月〜3か月後） */
 type MonthCol = { kind: 'hist'; ym: string } | { kind: 'plan'; n: 0 | 1 | 2 | 3 };
 
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+const FILTER_KEYS = ['q', 'equip', 'category', 'model', 'person', 'customer', 'corp',
+  'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
 
 /**
  * 値上げ幅の「基準」（比較のもと）。
@@ -754,6 +754,20 @@ export default function Deals() {
           <select value={get('equip')} onChange={(e) => setParam('equip', e.target.value)}>
             <option value="">すべて</option>
             {meta?.equips.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          カテゴリー名（大）
+          <select value={get('category')} onChange={(e) => setParam('category', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.categories?.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          品目階層名（器種名）
+          <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.models?.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
           </select>
         </label>
         <label className="fld">

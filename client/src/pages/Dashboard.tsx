@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import SearchBox from '../components/SearchBox';
+import HScroll from '../components/HScroll';
 import { api } from '../api';
 import { Card } from '../components/ui';
 import type { Meta } from '../types';
@@ -8,8 +9,8 @@ import { useIsMobile } from '../view';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
 /** 絞り込みの項目。案件一覧と同じものを受ける（サーバー側の判定も同じ） */
-const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+const FILTER_KEYS = ['q', 'equip', 'category', 'model', 'person', 'customer', 'corp',
+  'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
 
 /**
  * 値上げ幅の「基準」（比較のもと）。案件一覧と同じものを選ぶ。
@@ -76,6 +77,15 @@ interface DashboardRes {
     /** 想定B基準にした場合の値上げ額（3か月後のA基準と同じ土俵で比べる） */
     raise_bsim: number | null;
     b_rows: number;
+    /**
+     * 平均単価の比較（過去最新単価 → 計画）。
+     * 過去最新単価・その月の計画・7月の実績数が揃う行だけで、
+     * qty=7月実績数の合計、plan/past=単価×実績数の合計（÷qtyで加重平均になる）
+     */
+    avg_cnt_m0?: number; avg_cnt_m1?: number; avg_cnt_m2?: number; avg_cnt_m3?: number;
+    avg_qty_m0?: number | null; avg_qty_m1?: number | null; avg_qty_m2?: number | null; avg_qty_m3?: number | null;
+    avg_plan_m0?: number | null; avg_plan_m1?: number | null; avg_plan_m2?: number | null; avg_plan_m3?: number | null;
+    avg_past_m0?: number | null; avg_past_m1?: number | null; avg_past_m2?: number | null; avg_past_m3?: number | null;
   };
   /**
    * 実績（過去最新単価 → 当月）。過去最新単価のある品目だけで集計する。
@@ -737,6 +747,20 @@ export default function Dashboard() {
           </select>
         </label>
         <label className="fld">
+          カテゴリー名（大）
+          <select value={get('category')} onChange={(e) => setParam('category', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.categories?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          品目階層名（器種名）
+          <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.models?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
           担当者
           <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
             <option value="">すべて</option>
@@ -1014,6 +1038,79 @@ export default function Dashboard() {
           </tbody>
         </table>
       </Card>
+
+      {/*
+        平均単価の比較（過去最新単価 → 計画）。
+        器具区分・カテゴリー名（大）・品目階層名などで絞り込むと、
+        そのまとまりの平均単価が過去からいくら上がる計画かを1台あたりで見られる。
+        平均は出荷数（7月の実績数）で重みを付ける。単価なので万円にはまとめない。
+      */}
+      {(() => {
+        const a = data.aMonths;
+        const unit = (v: number) =>
+          `¥${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+        const rows = ([[0, m0], [1, m1], [2, m2], [3, m3]] as const).map(([n, ym]) => {
+          const cnt = num(a?.[`avg_cnt_m${n}`]);
+          const qty = num(a?.[`avg_qty_m${n}`]);
+          const plan = num(a?.[`avg_plan_m${n}`]);
+          const past = num(a?.[`avg_past_m${n}`]);
+          if (!(qty > 0)) return { ym, cnt, qty, past: null, plan: null, diff: null, rate: null };
+          const pastAvg = past / qty;
+          const planAvg = plan / qty;
+          const diff = planAvg - pastAvg;
+          return {
+            ym, cnt, qty, past: pastAvg, plan: planAvg, diff,
+            rate: pastAvg > 0 ? Math.round((diff / pastAvg) * 1000) / 10 : null,
+          };
+        });
+        return (
+          <Card title={`平均単価の比較（過去最新単価 → 計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
+            <p className="pt-note" style={{ marginTop: 0 }}>
+              いまの絞り込み（器具区分・カテゴリー名（大）・品目階層名など）のまとまりで、
+              <strong>1台あたりの平均単価</strong>を過去最新単価と各月の計画（マスタ登録単価）で比べます。
+              平均は<strong>出荷数（{actLabel}の実績数）で重みを付けた平均</strong>
+              （単価×実績数の合計 ÷ 実績数の合計）です。
+              過去最新単価・その月の計画・{actLabel}の実績数の<strong>3つが揃う品目だけ</strong>が対象で、
+              同じ品目どうしで比べるため、差がそのまま1台あたりの上がり幅になります
+              （実績や単価の無い品目は含めません。値上げ額の合計とは対象の数が異なります）。
+            </p>
+            <HScroll className="tbl-scroll">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>計画の月</th>
+                    <th style={nums}>対象件数</th>
+                    <th style={nums} title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>出荷数<br /><small>{actLabel}実績数</small></th>
+                    <th style={nums}>過去最新単価<br /><small>平均</small></th>
+                    <th style={nums}>計画単価<br /><small>平均</small></th>
+                    <th style={nums} title="計画単価（平均） − 過去最新単価（平均）">上がり幅<br /><small>1台あたり</small></th>
+                    <th style={nums} title="上がり幅 ÷ 過去最新単価（平均）">上がり率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.ym}>
+                      <td>{r.ym}</td>
+                      <td style={nums}>{r.cnt.toLocaleString()}</td>
+                      <td style={nums}>{r.qty > 0 ? Math.round(r.qty).toLocaleString() : '—'}</td>
+                      <td style={nums}>{r.past == null ? '—' : unit(r.past)}</td>
+                      <td style={nums}>{r.plan == null ? '—' : unit(r.plan)}</td>
+                      <td style={{ ...nums, fontWeight: 700,
+                                   color: r.diff == null ? undefined
+                                     : r.diff < 0 ? '#c2410c' : r.diff > 0 ? '#15803d' : undefined }}>
+                        {r.diff == null ? '—'
+                          : Math.abs(r.diff) < 0.05 ? '±0'
+                            : `${r.diff > 0 ? '＋' : '−'}${unit(Math.abs(r.diff))}`}
+                      </td>
+                      <td style={nums}>{r.rate == null ? '—' : `${r.rate > 0 ? '+' : ''}${r.rate}%`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </HScroll>
+          </Card>
+        );
+      })()}
 
       {/*
         値上げ額の内訳。器具区分別・支店別・法人別をそれぞれ別のカードで縦に並べ、

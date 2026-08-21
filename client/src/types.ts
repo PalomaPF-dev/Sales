@@ -141,6 +141,8 @@ export interface NegotiationLogEntry {
 export interface Meta {
   priceTypes: PriceType[];
   equips: { name: string; count: number }[];
+  categories: { name: string; count: number }[];
+  models: { name: string; count: number }[];
   persons: { name: string; count: number }[];
   customers: { code: string; name: string; count: number }[];
   corps: { code: string; name: string; count: number }[];
