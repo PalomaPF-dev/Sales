@@ -1170,7 +1170,10 @@ export default function Deals() {
 
                   {/* 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価は月ごとに変わる */}
                   <td className="num sep">{aDiff(d, d.a_price_m0, ymLabel(meta?.aggMeta?.m0, '当月'))}</td>
-                  <td className="num">{aDiff(d, d.a_price_m1, ymLabel(meta?.aggMeta?.m1, '翌月'))}</td>
+                  {/* 9月は、スライドしたときは8月の単価で幅を出す（表示している単価と合わせる） */}
+                  <td className={`num${isSlid(d) ? ' slid' : ''}`}>
+                    {aDiff(d, isSlid(d) ? d.a_price_m0 : d.a_price_m1, ymLabel(meta?.aggMeta?.m1, '翌月'))}
+                  </td>
                   <td className="num">{aDiff(d, d.a_price_m2, ymLabel(meta?.aggMeta?.m2, '翌々月'))}</td>
                   <td className="num">{aDiff(d, d.a_price_m3, ymLabel(meta?.aggMeta?.m3, '3か月後'))}</td>
 

@@ -1738,6 +1738,34 @@ function scopeInfo(user) {
   return { level: 'branch', label: `${user.branch}（支店全体）` };
 }
 
+/**
+ * 翌月（9月計画）を当月（8月計画）で置き換える境目の日。
+ * 実績の月（当月の前月）の1日。当月が 2026-08 なら 2026-07-01。
+ * この日より前の登録は、今回の値上げより前の古い申請とみなす。
+ */
+function slideFromDate(aggMeta) {
+  const m0 = String(aggMeta?.m0 ?? '');
+  if (!/^\d{4}-\d{2}$/.test(m0)) return null;
+  const y = Number(m0.slice(0, 4));
+  const m = Number(m0.slice(5, 7));
+  const py = m === 1 ? y - 1 : y;
+  const pm = m === 1 ? 12 : m - 1;
+  return `${py}-${String(pm).padStart(2, '0')}-01`;
+}
+
+/**
+ * その月の申請単価（マスタ登録単価）のSQL。
+ * 翌月（9月計画）は、承認日が境目の日より前か未記入なら
+ * 当月（8月計画）をそのままスライドして使う。画面の表示と値上げ額の集計をそろえる。
+ * 日付は slideFromDate が作る YYYY-MM-DD だけなので、そのまま埋め込んでよい。
+ */
+function aPriceSql(n, slideFrom, prefix = '') {
+  const col = (c) => `${prefix}${c}`;
+  if (n !== 1 || !slideFrom) return col(`a_price_m${n}`);
+  return `(CASE WHEN COALESCE(${col('a_date_m1')}, '') < '${slideFrom}'
+                THEN ${col('a_price_m0')} ELSE ${col('a_price_m1')} END)`;
+}
+
 // ---- ダッシュボード（進捗） ----
 
 /**
@@ -1801,9 +1829,12 @@ async function dashboardData(query, user) {
   // 実単価（見積ぶんで下がる）と混ざらない。その幅を 7月金額（合計）に足すことで、
   // 土台（実績の金額）を崩さずに計画額を出せる。
   const approved = aDateCond(query);
-  const aGain = (n) => `(${f(`a_price_m${n}`)} - (${mPrice})) * (${planQty})`;
+  // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（一覧の表示と同じ）
+  const slideFrom = slideFromDate(aggMeta);
+  const aPrice = (n) => aPriceSql(n, slideFrom);
+  const aGain = (n) => `(${f(aPrice(n))} - (${mPrice})) * (${planQty})`;
   const aCol = (n) =>
-    `CASE WHEN a_price_m${n} > 0${approved ? ` AND ${approved}` : ''}
+    `CASE WHEN ${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}
           THEN ${planBase} + ${aGain(n)} ELSE ${planBase} END`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
@@ -1891,7 +1922,7 @@ async function dashboardData(query, user) {
   // 月別のマスタ登録（A基準）。当月〜3か月後それぞれで、
   // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
   // 承認日などの絞り込み（dealFilters）はここにも効く。
-  const planned = (n) => `a_price_m${n} > 0${approved ? ` AND ${approved}` : ''}`;
+  const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
     SUM(CASE WHEN ${planned(n)} AND (${mPrice}) IS NOT NULL
@@ -2449,11 +2480,15 @@ api.get('/deals', wrap(async (req, res) => {
                        AND ${MASTER_PRICE} - CAST(past_price AS FLOAT) <= -0.5
                       THEN (${MASTER_PRICE} - CAST(past_price AS FLOAT))
                            * (${planMonthlyQty()}) ELSE 0 END) AS gain_minus,
-             ${[0, 1, 2, 3].map((n) => `
-             SUM(CASE WHEN a_price_m${n} > 0 AND ${MASTER_PRICE} IS NOT NULL
-                       THEN (CAST(a_price_m${n} AS FLOAT) - ${MASTER_PRICE})
+             ${[0, 1, 2, 3].map((n) => {
+               // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（表示と同じ）
+               const a = aPriceSql(n, slideFromDate(aggMeta));
+               return `
+             SUM(CASE WHEN ${a} > 0 AND ${MASTER_PRICE} IS NOT NULL
+                       THEN (CAST(${a} AS FLOAT) - ${MASTER_PRICE})
                             * (${planMonthlyQty()})
-                  END) AS raise_m${n}`).join(',')}
+                  END) AS raise_m${n}`;
+             }).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
     // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
