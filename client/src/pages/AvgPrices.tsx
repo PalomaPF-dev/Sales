@@ -301,20 +301,26 @@ export default function AvgPrices() {
   const head = TABS.find((t) => t.key === group)?.head ?? '内訳';
 
   /** 並び替えに使う値。名前だけ文字、ほかは数（出せない行は末尾に寄せる） */
-  const sortValue = (r: AvgRow, col: string): number | string => {
+  const sortValue = (r: AvgRow, col: string): number | string | null => {
     if (col === 'name') return String(r.name ?? '');
     const b = baseOf(r);
-    if (!b) return Number.NEGATIVE_INFINITY;
+    // 値の出せない内訳（基準の単価や実績数が無い）は null。並びの末尾に寄せる
+    if (!b) return null;
     if (col === 'cnt') return b.cnt;
     if (col === 'qty') return b.qty;
     if (col === 'base') return b.base;
     const m = /^m(\d)$/.exec(col);
-    if (m) return planOf(r, Number(m[1]))?.plan ?? Number.NEGATIVE_INFINITY;
+    if (m) return planOf(r, Number(m[1]))?.plan ?? null;
     return 0;
   };
   const rows = [...(data?.rows ?? [])].sort((a, b) => {
     const va = sortValue(a, sort.col);
     const vb = sortValue(b, sort.col);
+    // 値の無い行は、安い順・高い順のどちらでも末尾に置く。
+    // 安い順で先頭に並ぶと、いちばん見たい安い内訳が押し出されてしまう
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
     const d = typeof va === 'string' || typeof vb === 'string'
       ? String(va).localeCompare(String(vb), 'ja')
       : va - vb;
@@ -339,7 +345,10 @@ export default function AvgPrices() {
   const sortByPrice = `m${chartMonth}`;
   // グラフは多すぎると読めないので、価格の並び替えの上位だけを出す
   const CHART_MAX = 30;
-  const chartRows = rows.slice(0, CHART_MAX);
+  // 単価の出ない内訳（基準の単価や実績数が無い）はグラフに描けないので、
+  // 数える前に外す。残しておくと、その枠のぶんグラフが空いてしまう
+  const plottable = rows.filter((r) => planOf(r, chartMonth) != null);
+  const chartRows = plottable.slice(0, CHART_MAX);
 
   return (
     <div>
@@ -538,7 +547,7 @@ export default function AvgPrices() {
         {view === 'chart' ? (
           <div style={busy ? { opacity: 0.45 } : undefined}>
             <AvgChart rows={chartRows} monthIdx={chartMonth} monthLabel={months[chartMonth]}
-                      baseName={baseName} total={rows.length} showValues={showValues} />
+                      baseName={baseName} total={plottable.length} showValues={showValues} />
           </div>
         ) : (
         <HScroll className="tbl-scroll">
