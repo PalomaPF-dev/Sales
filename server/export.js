@@ -119,7 +119,7 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     ['交渉状況（法人）', (r) => CORP_STATUS_LABELS[r.corp_status] ?? ''],
   ];
 
-  if (withCost) cols.push(['実績原価（管理者のみ）', (r) => round(r.cost_price)]);
+  if (withCost) cols.push(['実績原価（社外秘）', (r) => round(r.cost_price)]);
   return cols;
 }
 

@@ -21,3 +21,11 @@ export const isViewerRole = (role: string) => role === 'viewer';
 export function useCanEdit(): boolean {
   return !isViewerRole(useUser().role);
 }
+
+/**
+ * 実績原価まで含めて、すべての情報を見られる権限。
+ * 閲覧専用は「見るだけで全部見える」ため、管理者と同じ範囲を出す。
+ * サーバーの canSeeAllInfo と揃える。
+ */
+export const canSeeAllInfo = (role: string) =>
+  role === 'admin' || role === 'developer' || isViewerRole(role);
