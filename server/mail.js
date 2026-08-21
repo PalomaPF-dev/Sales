@@ -22,31 +22,55 @@ export async function sendMail({ to, subject, html }) {
   const list = (Array.isArray(to) ? to : [to])
     .map((v) => String(v ?? '').trim())
     .filter((v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v));
-  if (!list.length) return false;
+  if (!list.length) return { ok: false, error: '宛先のメールアドレスがありません' };
   if (!key) {
     console.warn('[mail] RESEND_API_KEY が未設定のため通知メールを送りません:', subject);
-    return false;
+    return { ok: false, error: 'RESEND_API_KEY が設定されていません' };
   }
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: process.env.MAIL_FROM || '値上げ単価管理 <noreply@paloma-pf.com>',
-        to: list,
-        subject,
-        html,
-      }),
+      body: JSON.stringify({ from: mailFrom(), to: list, subject, html }),
     });
+    const text = (await r.text()).slice(0, 400);
     if (!r.ok) {
-      console.warn('[mail] 送信に失敗しました', r.status, (await r.text()).slice(0, 300));
-      return false;
+      console.warn('[mail] 送信に失敗しました', r.status, text);
+      return { ok: false, error: `${r.status} ${resendMessage(text)}`, to: list };
     }
-    return true;
+    return { ok: true, to: list };
   } catch (e) {
     console.warn('[mail] 送信でエラー', e?.message ?? e);
-    return false;
+    return { ok: false, error: String(e?.message ?? e) };
   }
+}
+
+/** 差出人。Resendで認証済みのドメインである必要がある */
+export const mailFrom = () =>
+  process.env.MAIL_FROM || '値上げ単価管理 <noreply@paloma-pf.com>';
+
+/** Resendの応答から、画面に出す短い理由を取り出す */
+function resendMessage(text) {
+  try {
+    const j = JSON.parse(text);
+    return String(j.message ?? j.error ?? text);
+  } catch {
+    return text;
+  }
+}
+
+/** 設定を確かめるためのテストメール */
+export function testMail(byName) {
+  const subject = '【値上げ単価管理】メール通知のテスト';
+  const html = `
+    <p>値上げ単価管理アプリからのテストメールです。</p>
+    <p>このメールが届いていれば、お問い合わせが入ったときの通知も同じ経路で届きます。</p>
+    <p style="color:#64748b;font-size:12px">
+      送信者: ${esc(byName)}<br>
+      差出人: ${esc(mailFrom())}<br>
+      アプリ: ${esc(appOrigin())}
+    </p>`;
+  return { subject, html };
 }
 
 /** 新しい問い合わせの通知メール（本社 営業企画部の回答担当者あて） */

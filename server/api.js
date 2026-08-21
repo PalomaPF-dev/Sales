@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import multer from 'multer';
 import XLSX from 'xlsx';
 import { db, initDb } from './db.js';
-import { sendMail, inquiryMail } from './mail.js';
+import { sendMail, inquiryMail, testMail, mailFrom } from './mail.js';
 import {
   addBatchCount, assertNotDuplicate, buildRow, createBatch, importWorkbook,
   isSkippableRow, summarizeWarnings, upsertRows, validateMapping,
@@ -879,6 +879,32 @@ api.get('/admin/status', wrap(async (req, res) => {
       },
     ],
   });
+}));
+
+/**
+ * メール通知のテスト送信。
+ *
+ * 鍵が正しいかどうかは、実際に送ってみないと分からない
+ * （設定されていても、失効した鍵や別アカウントの鍵だと拒まれる）。
+ * 管理者が自分のメール宛に1通送り、Resendの応答をそのまま画面に返す。
+ */
+api.post('/admin/mail-test', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const own = String(req.user.email ?? '').trim();
+  const extra = String(process.env.MAIL_NOTIFY_TO ?? '')
+    .split(',').map((v) => v.trim()).filter(Boolean);
+  const to = own || extra[0];
+  if (!to) {
+    return res.status(400).json({
+      error: 'ご自身のメールが未登録です。ユーザー一覧の「編集」でメールを入れてからお試しください',
+    });
+  }
+  const { subject, html } = testMail(req.user.name);
+  const r = await sendMail({ to, subject, html });
+  if (!r.ok) {
+    return res.status(502).json({ error: `送信できませんでした: ${r.error}`, to, from: mailFrom() });
+  }
+  res.json({ ok: true, to, from: mailFrom() });
 }));
 
 /**
