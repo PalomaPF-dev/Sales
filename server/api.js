@@ -927,7 +927,7 @@ api.post('/admin/mail-test', wrap(async (req, res) => {
       error: 'ご自身のメールが未登録です。ユーザー一覧の「編集」でメールを入れてからお試しください',
     });
   }
-  const { subject, html } = testMail(req.user.name);
+  const { subject, html } = testMail(req.user.name, req.user);
   const r = await sendMail({ to, subject, html });
   if (!r.ok) {
     return res.status(502).json({ error: `送信できませんでした: ${r.error}`, to, from: mailFrom() });
@@ -1348,9 +1348,13 @@ api.post('/inquiries', wrap(async (req, res) => {
 
   let loginId;
   let name;
+  // 通知メールに「どこの誰から」を出すための所属。
+  // 未ログインの送信でも、社員番号で登録者が見つかれば補う
+  let from = {};
   if (req.user) {
     loginId = req.user.login_id ?? null;
     name = req.user.name;
+    from = req.user;
   } else {
     // 未ログインで送れるのは「ログインできない」（管理者宛）だけ
     if (dest !== 'app' || category !== 'ログインできない') {
@@ -1362,6 +1366,9 @@ api.post('/inquiries', wrap(async (req, res) => {
     if (loginId.length > 64 || name.length > 100) {
       return res.status(400).json({ error: '社員番号・氏名が長すぎます' });
     }
+    from = await db.get(
+      'SELECT branch, office, title FROM users WHERE login_id = ?', [loginId]
+    ).catch(() => null) ?? {};
   }
 
   const ins = await db.run(
@@ -1371,7 +1378,10 @@ api.post('/inquiries', wrap(async (req, res) => {
   );
   // 受付はここで完了。回答担当者への通知は待たせずに送る
   res.status(201).json({ ok: true });
-  await notifyInquiry({ id: ins?.lastInsertRowid, login_id: loginId, name, dest, category, message });
+  await notifyInquiry({
+    id: ins?.lastInsertRowid, login_id: loginId, name, dest, category, message,
+    branch: from.branch ?? null, office: from.office ?? null, title: from.title ?? null,
+  });
 }));
 
 api.get('/inquiries', wrap(async (req, res) => {
@@ -1380,12 +1390,21 @@ api.get('/inquiries', wrap(async (req, res) => {
   // 宛先の無い古い分は、これまでどおり管理者が見る「アプリのこと」として扱う
   const dests = destsFor(req.user.role);
   const cond = dests.map(() => '?').join(',');
-  const legacy = dests.includes('app') ? " OR dest IS NULL OR dest = ''" : '';
+  const legacy = dests.includes('app') ? " OR i.dest IS NULL OR i.dest = ''" : '';
   // 未対応を上に、その中では新しい順
+  // 送信者の所属（支店・営業所・役職）も添える。誰からの問い合わせかが
+  // 分からないと、回答の重さも当たり先も判断できないため。
+  // ログイン前に送られた分は user_id が無いので、社員番号で引き当てる
   const rows = await db.all(`
-    SELECT * FROM inquiries
-     WHERE dest IN (${cond})${legacy}
-     ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, id DESC`, dests);
+    SELECT i.*,
+           COALESCE(u.branch, u2.branch) AS branch,
+           COALESCE(u.office, u2.office) AS office,
+           COALESCE(u.title,  u2.title)  AS title
+      FROM inquiries i
+      LEFT JOIN users u  ON u.id = i.user_id
+      LEFT JOIN users u2 ON i.user_id IS NULL AND u2.login_id = i.login_id
+     WHERE i.dest IN (${cond})${legacy}
+     ORDER BY CASE i.status WHEN 'open' THEN 0 ELSE 1 END, i.id DESC`, dests);
   res.json(rows);
 }));
 

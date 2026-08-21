@@ -21,6 +21,10 @@ interface Inquiry {
   dest?: string | null;
   category: string;
   message: string;
+  /** 送信者の所属（登録内容から引く。届いた一覧にだけ出る） */
+  branch?: string | null;
+  office?: string | null;
+  title?: string | null;
   status: 'open' | 'resolved';
   reply: string | null;
   replied_by: string | null;
@@ -191,6 +195,10 @@ export default function Contact() {
                       : <span className="badge yellow">未対応</span>}
                     <strong>{q.name}</strong>
                     <span style={{ color: 'var(--muted)' }}>{q.login_id ?? 'IDなし'} ・ {dt(q.created_at)}</span>
+                  </div>
+                  {/* どこの誰からか。支店・営業所が分かると当たり先を決めやすい */}
+                  <div style={{ marginTop: 4, fontSize: 12.5, color: 'var(--ink-2)' }}>
+                    {[q.branch, q.office, q.title].filter(Boolean).join('　/　') || '所属の登録なし'}
                   </div>
                   <p style={{ margin: '8px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{q.message}</p>
                   {q.reply && (
