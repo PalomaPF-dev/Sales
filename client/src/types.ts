@@ -141,8 +141,10 @@ export interface NegotiationLogEntry {
 export interface Meta {
   priceTypes: PriceType[];
   equips: { name: string; count: number }[];
-  categories: { name: string; count: number }[];
-  models: { name: string; count: number }[];
+  /** カテゴリー名（大）。器具区分（大分類）ごとに分かれる */
+  categories: { equip: string | null; name: string; count: number }[];
+  /** 品目階層名。器具区分・カテゴリー名（大）ごとに分かれる */
+  models: { equip: string | null; category: string | null; name: string; count: number }[];
   persons: { name: string; count: number }[];
   customers: { code: string; name: string; count: number }[];
   corps: { code: string; name: string; count: number }[];

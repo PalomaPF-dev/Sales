@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
+import { narrowByParent } from '../filterOptions';
 import { NEGO_LABELS } from '../types';
 import type { Deal, Meta, RoundState } from '../types';
 import SearchBox from '../components/SearchBox';
@@ -594,6 +595,11 @@ export default function Deals() {
 
     const pages = data ? Math.max(1, Math.ceil(data.totals.count / data.size)) : 1;
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
+  // 品目は 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順に絞り込む。
+  // 親を選ぶとその中身だけが選択肢に残る（支店→営業所と同じ）
+  const categories = narrowByParent(meta?.categories, [['equip', get('equip')]]);
+  const models = narrowByParent(meta?.models,
+    [['equip', get('equip')], ['category', get('category')]]);
 
   // ---- マスタ登録単価のまとまり（実績 → 計画）----
   // 4月〜取込前日の実績（月別履歴）に続けて、当月（本日時点）〜3か月後の計画を並べる。
@@ -749,11 +755,28 @@ export default function Deals() {
             {offices.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
           </select>
         </label>
-        <label className="fld">
-          器具区分
-          <select value={get('equip')} onChange={(e) => setParam('equip', e.target.value)}>
+        {/* 品目の絞り込みは 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順 */}
+        <label className="fld" title="品目の大分類。選ぶと下のカテゴリー名（大）・品目階層名がその中だけになります">
+          器具区分<small style={{ fontWeight: 400 }}>（大分類）</small>
+          <select value={get('equip')}
+                  onChange={(e) => setMany({ equip: e.target.value, category: '', model: '' })}>
             <option value="">すべて</option>
             {meta?.equips.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
+          </select>
+        </label>
+        <label className="fld" title="器具区分の中の分類。選ぶと品目階層名がその中だけになります">
+          カテゴリー名（大）
+          <select value={get('category')}
+                  onChange={(e) => setMany({ category: e.target.value, model: '' })}>
+            <option value="">すべて</option>
+            {categories.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
+          </select>
+        </label>
+        <label className="fld" title="カテゴリー名（大）の中の品目（器種名）">
+          品目階層名
+          <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
+            <option value="">すべて</option>
+            {models.map((x) => <option key={x.name} value={x.name}>{x.name}（{x.count.toLocaleString()}）</option>)}
           </select>
         </label>
         <label className="fld">
