@@ -184,4 +184,5 @@ export const ROLE_NAMES: Record<string, string> = {
   planning: '本社',
   admin: '管理者',
   developer: '開発者',
+  viewer: '閲覧専用',
 };

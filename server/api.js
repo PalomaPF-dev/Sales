@@ -181,6 +181,17 @@ api.use((req, res, next) => {
   next();
 });
 
+// 閲覧専用（共通ID）は書き込みを一切通さない。
+// 画面で欄を隠すだけだと、URLを直接叩かれたときに素通りしてしまうため、
+// 個々のハンドラに書き忘れても止まるよう、ここでまとめて拒否する。
+// パスワードの変更も通さない（共通IDのため、1人が変えると全員が入れなくなる）。
+api.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  if (!req.user || !isViewerRole(req.user.role)) return next();
+  if (viewerMayWrite(req.path)) return next();
+  res.status(403).json({ error: '閲覧専用のため、この操作はできません' });
+});
+
 function requireLogin(req, res) {
   if (!req.user) {
     res.status(401).json({ error: 'ログインしてください' });
@@ -192,6 +203,20 @@ function requireLogin(req, res) {
     return false;
   }
   return true;
+}
+
+/**
+ * 閲覧専用。共通IDを配って「見るだけ」にしてもらうための権限。
+ * 画面から入力の欄を隠すだけでは足りない（URLを直接叩けば通ってしまう）ため、
+ * サーバー側でも書き込みをまとめて止める。
+ */
+const isViewerRole = (role) => role === 'viewer';
+
+/** 閲覧専用でも通す書き込み。ログアウトと、お問い合わせの送信・既読だけ */
+function viewerMayWrite(path) {
+  return path === '/logout'
+    || path === '/inquiries'
+    || /^\/inquiries\/mine\/\d+\/read$/.test(path);
 }
 
 /**
@@ -603,7 +628,7 @@ api.post('/password', wrap(async (req, res) => {
 
 // ---- ユーザー管理（管理者のみ） ----
 
-const ROLES = ['sales', 'branch_manager', 'wide_area', 'planning', 'admin', 'developer'];
+const ROLES = ['sales', 'branch_manager', 'wide_area', 'planning', 'admin', 'developer', 'viewer'];
 // 名簿では日本語で書かれることが多いため、権限名の表記ゆれを吸収する。
 // planning は旧・営業企画部の内部名で、いまは「本社」を指す
 const ROLE_ALIASES = {
@@ -613,6 +638,7 @@ const ROLE_ALIASES = {
   '本社': 'planning', '営業企画部': 'planning', '企画': 'planning', 'planning': 'planning',
   '管理者': 'admin', 'admin': 'admin',
   '開発者': 'developer', 'developer': 'developer',
+  '閲覧専用': 'viewer', '閲覧': 'viewer', '閲覧のみ': 'viewer', 'viewer': 'viewer',
 };
 
 /** 権限の日本語表記（一覧の出力用。取り込み直せるよう ROLE_ALIASES と揃える） */
@@ -623,6 +649,7 @@ const ROLE_LABELS = {
   planning: '本社',
   admin: '管理者',
   developer: '開発者',
+  viewer: '閲覧専用',
 };
 
 function parseRole(v) {
@@ -672,9 +699,11 @@ api.get('/admin/users', wrap(async (req, res) => {
   // 突合の鍵はSQL側と同じ（姓名の間の空白の違いを無視する）
   const key = (v) => String(v ?? '').replace(/[\s　]/g, '');
   const ALL_BRANCHES = ['admin', 'developer', 'planning', 'branch_manager', 'wide_area'];
+  // 閲覧専用は支店を入れればその支店だけ、空欄なら全社（閲覧範囲の判定と揃える）
+  const seesAll = (u) => ALL_BRANCHES.includes(u.role) || (isViewerRole(u.role) && !u.branch);
   res.json(rows.map((u) => ({
     ...u,
-    visible_deals: ALL_BRANCHES.includes(u.role) ? total : (branchCount.get(u.branch) ?? 0),
+    visible_deals: seesAll(u) ? total : (branchCount.get(u.branch) ?? 0),
     person_deals: personCount.get(key(u.name)) ?? 0,
   })));
 }));
@@ -1626,6 +1655,10 @@ function scopeConditions(user, alias = '') {
   if (isAdminRole(user.role) || ['planning', 'branch_manager', 'wide_area'].includes(user.role)) {
     return { where: [], params: [] };
   }
+  // 閲覧専用（共通ID）。支店を入れればその支店だけ、空欄なら全社を見る
+  if (isViewerRole(user.role)) {
+    return user.branch ? { where: [`${p}branch = ?`], params: [user.branch] } : { where: [], params: [] };
+  }
 
   // 営業担当者（既定）。自分の支店のみ
   if (!user.branch) {
@@ -1640,6 +1673,11 @@ function scopeInfo(user) {
   if (!user) return { level: 'none', label: '—' };
   if (isAdminRole(user.role) || ['planning', 'branch_manager', 'wide_area'].includes(user.role)) {
     return { level: 'all', label: user.role === 'planning' ? '全社（本社）' : '全社' };
+  }
+  if (isViewerRole(user.role)) {
+    return user.branch
+      ? { level: 'branch', label: `${user.branch}（支店全体・閲覧のみ）` }
+      : { level: 'all', label: '全社（閲覧のみ）' };
   }
   if (s.missing) {
     return {

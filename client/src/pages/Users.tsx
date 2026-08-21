@@ -274,7 +274,8 @@ export default function Users() {
           ログインIDと氏名以外は省略できます（権限を省くと営業担当者）。
           権限は <strong>営業担当者</strong>（自分の支店のみ閲覧・値上げ交渉の入力のみ）／
           <strong>支店長</strong>・<strong>広域担当</strong>（全支店を閲覧）／
-          <strong>本社</strong>（全て閲覧＋目標値の設定）／<strong>管理者</strong> のいずれかで記入します。
+          <strong>本社</strong>（全て閲覧＋目標値の設定）／<strong>管理者</strong>／
+          <strong>閲覧専用</strong>（見るだけ。入力・取込はできません）のいずれかで記入します。
         </p>
         <p className="pt-note">
           パスワードの発行はありません。追加された人は、初回ログイン時にログイン画面の
@@ -361,6 +362,13 @@ export default function Users() {
           </label>
           <button className="btn" type="submit" disabled={busy}>追加する</button>
         </form>
+        <p className="pt-note" style={{ marginBottom: 0 }}>
+          <strong>閲覧専用</strong>は、見るだけの方へ配る共通ID向けの権限です。入力・変更・取込は
+          いっさいできません（画面に欄が出ないうえ、サーバー側でも受け付けません）。
+          支店（管轄）を空欄にすると全社、支店を入れるとその支店だけが見えます。
+          パスワードは、はじめに管理者がログイン画面の「パスワード設定」から決めて配ってください
+          （共通IDのため、利用者側からは変更できないようにしています。変え直すときは「PW再設定」）。
+        </p>
       </Card>
 
       {/* 一括削除。行頭のチェックで選び、まとめて消す（消せない人は理由つきで残る） */}
@@ -461,6 +469,13 @@ export default function Users() {
                       <div>
                         <span className="badge blue" title="営業担当者は自分の支店（管轄）の案件のみ閲覧できます">
                           支店のみ閲覧
+                        </span>
+                      </div>
+                    )}
+                    {u.active === 1 && u.role === 'viewer' && (
+                      <div>
+                        <span className="badge gray" title="閲覧専用。入力・変更はできません">
+                          {u.branch ? '支店のみ・閲覧のみ' : '全社・閲覧のみ'}
                         </span>
                       </div>
                     )}

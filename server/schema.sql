@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
   -- 権限。planning は旧・営業企画部の内部名で、いまは「本社」を指す
-  role       TEXT NOT NULL CHECK (role IN ('sales','branch_manager','wide_area','planning','admin','developer')),
+  -- 権限の妥当性は server/api.js の ROLES で確かめる。
+  -- 権限を足すたびにCHECK制約の作り直しが要るため、ここでは縛らない
+  role       TEXT NOT NULL,
   branch     TEXT,               -- 支店（管轄）
   office     TEXT,               -- 営業所（部署）
   title      TEXT,               -- 役職（表示用。権限には影響しない）

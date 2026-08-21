@@ -414,7 +414,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-23-email';
+const SCHEMA_VERSION = '2026-08-24-viewer';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -499,12 +499,97 @@ async function tryAlter(sql) {
   }
 }
 
+
+/**
+ * users.role の CHECK 制約を外す。
+ *
+ * 権限を1つ足すたびに「CHECK constraint failed」で登録できなくなるため、
+ * 権限の妥当性はサーバー側（api.js の ROLES）だけで見る形にそろえる。
+ * 既にあるDBは制約を持ったままなので、ここで外す。
+ */
+async function dropUserRoleCheck() {
+  if (isPostgres) {
+    // 制約名は既定で users_role_check だが、名前に頼らず role を見ている
+    // CHECK 制約をすべて外す（作られた時期で名前が違っていても効くように）
+    try {
+      await db.exec(`DO $$
+        DECLARE c text;
+        BEGIN
+          FOR c IN SELECT conname FROM pg_constraint
+                    WHERE conrelid = 'users'::regclass AND contype = 'c'
+                      AND pg_get_constraintdef(oid) ILIKE '%role%'
+          LOOP
+            EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', c);
+          END LOOP;
+        END $$;`);
+    } catch (e) {
+      // users がまだ無い（新規DB）ならこのあとのスキーマ適用で制約なしで作られる
+      if (!/does not exist/i.test(e?.message || '')) {
+        console.warn(`マイグレーション警告: role の制約を外せませんでした → ${e.message}`);
+      }
+    }
+    return;
+  }
+
+  // SQLite は CHECK 制約を後から外せないため、テーブルを作り直す。
+  // 制約が残っているときだけ実行する（通常の起動では何もしない）。
+  let def;
+  try {
+    def = (await db.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"))?.sql;
+  } catch { return; }
+  if (!def || !/CHECK\s*\(\s*role/i.test(def)) return;
+
+  console.log('users.role の CHECK 制約を外します（権限の追加のため）');
+  const cols = (await db.all('PRAGMA table_info(users)')).map((c) => c.name);
+  const copy = [
+    'id', 'name', 'role', 'branch', 'office', 'title', 'email', 'active', 'login_id',
+    'password_hash', 'must_change_password', 'failed_attempts', 'locked_until', 'last_login_at',
+  ].filter((c) => cols.includes(c));
+  // 作り直しの間だけ外部キーの検査を止める。
+  // 止めないと DROP TABLE users で sessions などが道連れに消える
+  await db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    await db.exec(`
+      CREATE TABLE users_rebuild (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        role       TEXT NOT NULL,
+        branch     TEXT,
+        office     TEXT,
+        title      TEXT,
+        email      TEXT,
+        active     INTEGER NOT NULL DEFAULT 1,
+        login_id   TEXT,
+        password_hash TEXT,
+        must_change_password INTEGER NOT NULL DEFAULT 0,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        last_login_at TEXT
+      );
+      INSERT INTO users_rebuild (${copy.join(', ')}) SELECT ${copy.join(', ')} FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_rebuild RENAME TO users;
+    `);
+  } catch (e) {
+    console.warn(`マイグレーション警告: users を作り直せませんでした → ${e.message}`);
+    await db.exec('DROP TABLE IF EXISTS users_rebuild').catch(() => {});
+  } finally {
+    await db.exec('PRAGMA foreign_keys = ON');
+  }
+  // login_id の一意インデックスはテーブルと一緒に消えるため、ここで戻す
+  // （migrate() でも作るが、その前に使われても困らないようにしておく）
+  await tryAlter('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id)');
+}
+
 /**
  * スキーマ適用の前に済ませておくこと。
  * 計算列ビューは列構成が変わったら作り直す必要があり、
  * かつビューが参照する列はスキーマ適用時点で存在していなければならない。
  */
 async function beforeSchema() {
+  // 権限に「閲覧専用」を足したため、role を縛っていた制約を外す
+  await dropUserRoleCheck();
+
   // SQLiteの CREATE VIEW IF NOT EXISTS は旧定義を置き換えないため落としておく。
   // PostgreSQLは CREATE OR REPLACE VIEW で置き換わるので落とさない。
   // （本番はサーバーが並行して起動する。ここで落とすと、作り直すまでの

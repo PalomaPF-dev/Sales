@@ -3,7 +3,7 @@ import { NavLink, Route, Routes, useNavigate } from 'react-router-dom';
 import { api, fetchMe, logout } from './api';
 import type { User } from './types';
 import { ROLE_NAMES } from './types';
-import { UserContext } from './user';
+import { UserContext, isViewerRole } from './user';
 import { MobileContext } from './view';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
@@ -192,6 +192,8 @@ export default function App() {
 
 
   const isAdmin = user.role === 'admin' || user.role === 'developer';
+  // 閲覧専用（共通ID）。取込やパスワード変更は出さない
+  const viewer = isViewerRole(user.role);
 
   return (
     <UserContext.Provider value={user}>
@@ -234,7 +236,7 @@ export default function App() {
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <div className="nav-sep" />
-            <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>
+            {!viewer && <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>}
             <NavLink to="/help"><IconHelp /><span className="lbl">使い方</span></NavLink>
             <NavLink to="/contact">
               <IconInbox />
@@ -254,7 +256,10 @@ export default function App() {
               {user.branch ? ` ・ ${user.branch}` : ''}
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button className="btn secondary sm" onClick={() => navigate('/password')}>パスワード変更</button>
+              {/* 閲覧専用は共通IDのため、1人が変えると全員が入れなくなる。変更は管理者が行う */}
+              {!viewer && (
+                <button className="btn secondary sm" onClick={() => navigate('/password')}>パスワード変更</button>
+              )}
               <button className="btn secondary sm" onClick={signOut}>ログアウト</button>
               {/* 表示の切替。自動は画面の幅で決め、スマホ・PCは選んだ見た目で固定する */}
               <button className="btn secondary sm" onClick={cycleView}
@@ -285,12 +290,13 @@ export default function App() {
               <Route path="/deals" element={<Deals />} />
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
-              <Route path="/import" element={<ImportPage />} />
+              <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />
               <Route path="/contact" element={<Contact />} />
               <Route path="/help" element={<Help />} />
               <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
-              <Route path="/password" element={<ChangePassword onDone={() => navigate('/')} />} />
+              <Route path="/password"
+                     element={viewer ? <Dashboard /> : <ChangePassword onDone={() => navigate('/')} />} />
             </Routes>
           </Suspense>
         </main>
