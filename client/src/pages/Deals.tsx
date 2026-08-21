@@ -30,7 +30,19 @@ interface DealsRes {
 type MonthCol = { kind: 'hist'; ym: string } | { kind: 'plan'; n: 0 | 1 | 2 | 3 };
 
 const FILTER_KEYS = ['q', 'equip', 'person', 'customer', 'corp', 'branch', 'office',
-  'aState', 'act', 'aDateYm', 'aDateOp', 'gain'] as const;
+  'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+
+/**
+ * 値上げ幅の「基準」（比較のもと）。
+ * マスタ登録単価（A基準）とこの単価との差が値上げ幅になる。
+ * 数量は当月の実績数なので、基準の単価が無い品目・実績数の無い品目は変動なしになる。
+ */
+const BASE_OPTIONS = [
+  { key: 'master', label: 'マスタ単価', note: '値決めの単価' },
+  { key: 'actual', label: '実単価', note: '金額÷数量。見積ぶんが混ざる' },
+  { key: 'past', label: '過去最新単価', note: '値上げ前の単価' },
+] as const;
+type BaseKey = typeof BASE_OPTIONS[number]['key'];
 
 // 並び替えに使うキー。サーバー側の許可リスト（SORTABLE）と揃える
 const SORT_KEYS = ['sort', 'dir'] as const;
@@ -456,10 +468,26 @@ export default function Deals() {
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
   /** 当月の実単価（金額÷数量）。見積ぶんが混ざるとマスタ単価より下がる。実績の正 */
   const effPrice = (d: Deal) => d.master_avg_price ?? null;
-  /** 当月のマスタ単価（値決めの単価）。A基準はこれと比べる。無い行は実単価で代用 */
-  const mPrice = (d: Deal) => d.master_price ?? d.master_avg_price ?? null;
-  /** 当月の数量 */
+  /** 当月の数量（実績数）。値上げ額はこの数量に対して出す */
   const monthlyQty = (d: Deal) => (d.master_qty == null ? null : Number(d.master_qty));
+
+  // ---- 値上げ幅の基準（比較のもと）----
+  // 「基準」で選んだ単価とマスタ登録単価（A基準）との差が値上げ幅になる。
+  const base = (BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master') as BaseKey;
+  const baseName = base === 'past' ? '過去最新単価'
+    : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
+  /** 選んだ基準の単価。0以下・未設定は「基準が無い」＝変動なしとして扱う */
+  const basePrice = (d: Deal) => {
+    const v = base === 'past' ? d.past_price
+      : base === 'actual' ? d.master_avg_price : d.master_price;
+    return v == null || Number(v) <= 0 ? null : Number(v);
+  };
+  /** 変動なしの理由。基準の単価が無い／当月の実績数が無い */
+  const noChange = (d: Deal) => {
+    if (basePrice(d) == null) return `${baseName}が無いため変動なしとして扱います`;
+    if (!(Number(monthlyQty(d)) > 0)) return `${actLabel}の実績数が無いため変動なしとして扱います`;
+    return null;
+  };
 
   /**
    * 差額を「＋1,000 / +2.5%」の形で出す小さな部品。
@@ -489,18 +517,18 @@ export default function Deals() {
   };
 
   /**
-   * 目標値（第2弾新値上げ単価）の値上げ幅。目標 − 当月のマスタ単価。
+   * 目標値（第2弾新値上げ単価）の値上げ幅。目標 − 基準の単価。
    * A基準の値上げ幅と同じ土俵で、目標がいくらの値上げにあたるかを添える。
    */
   const targetDiff = (d: Deal) => {
     const price = d.r2_target_price;
-    if (price == null || Number(price) <= 0 || mPrice(d) == null) return null;
-    const base = Number(mPrice(d));
-    const diff = Number(price) - base;
+    const b = basePrice(d);
+    if (price == null || Number(price) <= 0 || b == null) return null;
+    const diff = Number(price) - b;
     return (
       <div className="sub"
            style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : { fontWeight: 700 }}
-           title={`目標単価 − ${actLabel}のマスタ単価 ${yen(base)}`}>
+           title={`目標単価 − ${baseName} ${yen(b)}`}>
         {diff === 0 ? '±0' : `${diff < 0 ? '−' : '＋'}${yen(Math.abs(diff))}`}
       </div>
     );
@@ -540,23 +568,26 @@ export default function Deals() {
   };
 
   /**
-   * 当月のマスタ単価とA基準との差額。1台あたりの値上げ幅にあたる。
-   * 値決めどうしの比較なので、見積ぶんで下がる実単価とは混ぜない。
+   * 基準の単価とA基準との差額。1台あたりの値上げ幅にあたる。
+   * 基準（マスタ単価／実単価／過去最新単価）は絞り込みの「基準」で選ぶ。
    * 単価は月ごとに変わるため、当月〜3か月後をそれぞれ出す。
-   * マイナス（申請がマスタ単価を下回る）は赤で示す。
+   * マイナス（申請が基準を下回る）は赤で示す。
    */
   const aDiff = (d: Deal, price: number | null | undefined, label: string) => {
     // 申請単価0は「未申請」の印。値上げ幅としては出さない
-    if (price == null || Number(price) <= 0 || mPrice(d) == null) return '—';
-    const base = Number(mPrice(d));
-    const diff = Number(price) - base;
+    if (price == null || Number(price) <= 0) return '—';
+    // 基準の単価が無い／当月の実績数が無い品目は変動なし（合計にも入れない）
+    const why = noChange(d);
+    if (why) return <span className="uncounted" title={why}>変動なし</span>;
+    const b = basePrice(d) as number;
+    const diff = Number(price) - b;
     if (diff === 0) return '0';
-    const rate = base > 0 ? Math.round((diff / base) * 1000) / 10 : null;
+    const rate = Math.round((diff / b) * 1000) / 10;
     return (
       <span style={diff < 0 ? { color: '#c2410c', fontWeight: 700 } : undefined}
-            title={`マスタ登録単価（${label}の申請単価）− ${actLabel}のマスタ単価 ${yen(base)}`}>
+            title={`マスタ登録単価（${label}の申請単価）− ${baseName} ${yen(b)}`}>
         {diff < 0 ? '−' : '＋'}{yen(Math.abs(diff))}
-        {rate != null && <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>}
+        <div className="sub">{rate > 0 ? '+' : ''}{rate}%</div>
       </span>
     );
   };
@@ -651,7 +682,10 @@ export default function Deals() {
           </>
         )}
         隣の<strong>目標単価</strong>は本社が設定します。
-        <strong>値上げ幅</strong>は「マスタ登録単価 − {actLabel}のマスタ単価」の差額で、当月から4か月分を並べます。
+        <strong>値上げ幅</strong>は「マスタ登録単価 − <strong>{baseName}</strong>」の差額で、当月から4か月分を並べます
+        （比較のもとは絞り込みの<strong>基準</strong>で選べます）。
+        値上げ額は<strong>この差額 × {actLabel}の実績数</strong>です。
+        {baseName}が無い品目・{actLabel}の実績数が無い品目は<strong>変動なし</strong>として扱います。
         {canEdit ? (
           <>
             <strong>商談結果・商談メモ・最終確定日・最終確定単価・適用年月</strong>は「入力」から営業担当者が入れられます。
@@ -727,6 +761,23 @@ export default function Deals() {
           <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
             <option value="">すべて</option>
             {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select>
+        </label>
+        {/*
+          値上げ幅の「基準」（比較のもと）。マスタ登録単価との差が値上げ幅になる。
+          数量は当月の実績数なので、基準の単価や実績数の無い品目は変動なしになる。
+        */}
+        <label className="fld"
+               title={`マスタ登録単価（A基準）と比べる単価を選びます。差が値上げ幅、`
+                 + `それに${actLabel}の実績数を掛けたものが値上げ額です。`
+                 + `選んだ単価が無い品目と、${actLabel}の実績数が無い品目は変動なしになります`}>
+          基準<small style={{ fontWeight: 400 }}>（比較のもと）</small>
+          <select value={base} onChange={(e) => setParam('base', e.target.value === 'master' ? '' : e.target.value)}>
+            {BASE_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key} title={o.note}>
+                {o.key === 'past' ? o.label : `${actLabel}の${o.label}`}
+              </option>
+            ))}
           </select>
         </label>
         <label className="fld">
@@ -834,7 +885,7 @@ export default function Deals() {
                 );
               })()}
             </span>
-            <span title={`値上げ幅（A基準−${actLabel}のマスタ単価）× ${actLabel}の数量 を、絞り込んだ全件で合計した金額`}>
+            <span title={`値上げ幅（A基準−${baseName}）× ${actLabel}の実績数 を、絞り込んだ全件で合計した金額`}>
               {' ・ '}値上げ額（月）合計{' '}
               {([['m0', data.totals.raise_m0], ['m1', data.totals.raise_m1],
                  ['m2', data.totals.raise_m2], ['m3', data.totals.raise_m3]] as const)
@@ -989,8 +1040,9 @@ export default function Deals() {
                 )}
               </th>
               <th colSpan={4} className="grp sep"
-                  title={`その月のマスタ登録単価 − ${actLabel}のマスタ単価。値決めどうしの比較です`}>
-                値上げ幅（マスタ登録単価−{actLabel}マスタ単価）
+                  title={`その月のマスタ登録単価 − ${baseName}。`
+                    + `比較のもとは絞り込みの「基準」で選べます`}>
+                値上げ幅（マスタ登録単価−{baseName}）
               </th>
               {/* 閲覧専用のときは、選択のチェックと「入力」の列を出さないぶん狭くする */}
               <th colSpan={canEdit ? 6 : 5} className="grp sep">
@@ -1020,7 +1072,8 @@ export default function Deals() {
                 {actLabel}単価
               </Th>
               <Th col="master_price" className="num"
-                  title={`${actLabel}のマスタ単価（値決めの単価）。マスタ登録単価・目標単価の値上げ幅はこれと比べます`}>
+                  title={`${actLabel}のマスタ単価（値決めの単価）`
+                    + (base === 'master' ? '。マスタ登録単価・目標単価の値上げ幅はこれと比べます' : '')}>
                 {actLabel}マスタ
               </Th>
               <th className="num" title={`${actLabel}の実単価 − 過去最新単価。実際に上がった幅`}>
@@ -1048,7 +1101,7 @@ export default function Deals() {
                 </Th>
               ))}
               <Th col="r2_target_price" className="num"
-                  title={`目標単価（本社にて設定）。下段は目標の値上げ幅（目標単価 − ${actLabel}のマスタ単価）`}>
+                  title={`目標単価（本社にて設定）。下段は目標の値上げ幅（目標単価 − ${baseName}）`}>
                 目標単価<br /><small>本社設定</small>
               </Th>
               <th className="num sep">{ymLabel(meta?.aggMeta?.m0, '当月')}</th>
@@ -1169,7 +1222,7 @@ export default function Deals() {
                       {planCell(d, c.n)}
                     </td>
                   ))}
-                  {/* 目標単価。下段に目標の値上げ幅（目標単価 − 当月のマスタ単価）を添える。
+                  {/* 目標単価。下段に目標の値上げ幅（目標単価 − 基準の単価）を添える。
                       本社・管理者は「入力」からここで直接入れられる */}
                   <td className="num">
                     {isEditing && isHq ? (
@@ -1184,7 +1237,7 @@ export default function Deals() {
                     )}
                   </td>
 
-                  {/* 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価は月ごとに変わる */}
+                  {/* 値上げ幅 = その月のA基準 − 基準の単価。単価は月ごとに変わる */}
                   {/* 承認日の条件に合わない品目は、幅は出すが合計には入れない（薄く出す） */}
                   <td className={`num sep${inRaise(d) ? '' : ' uncounted'}`}
                       title={inRaise(d) ? undefined : '承認日の条件に合わないため、上の合計には入れていません'}>

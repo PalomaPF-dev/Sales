@@ -1832,12 +1832,13 @@ async function dashboardData(query, user) {
   // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（一覧の表示と同じ）
   const slideFrom = slideFromDate(aggMeta);
   const aPrice = (n) => aPriceSql(n, slideFrom);
-  const aGain = (n) => `(${f(aPrice(n))} - (${mPrice})) * (${planQty})`;
-  // マスタ単価の無い品目は値上げ幅を出せない。ここで除いておかないと
-  // 「金額 + NULL = NULL」となり、その品目の金額ごと合計から消えてしまう
-  const aCol = (n) =>
-    `CASE WHEN ${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''} AND (${mPrice}) IS NOT NULL
-          THEN ${planBase} + ${aGain(n)} ELSE ${planBase} END`;
+  // 値上げ幅の基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
+  // 数量は当月の実績数に揃えてあり、基準の単価が無い品目・実績数が無い品目は
+  // 変動なし（0）になる。0なので金額に足しても土台の金額を消してしまわない
+  const basePrice = basePriceSql(query);
+  const raiseQty = raiseQtySql();
+  const aGain = (n) => raiseAmtSql(aPrice(n), query, approved);
+  const aCol = (n) => `(${planBase} + ${aGain(n)})`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -1854,9 +1855,10 @@ async function dashboardData(query, user) {
   const planRate = 'COALESCE(pe.pe_rate, pc.pc_rate, 100)';
   const bsimUnit = `CASE WHEN b_price IS NOT NULL THEN ${f('b_price')}
                          WHEN a_price_m3 > 0 THEN ${f('a_price_m3')} * ${planRate} / 100
-                         ELSE ${mPrice} END`;
-  // 想定B基準にした場合の値上げ幅（A基準と同じくマスタ単価が起点・マスタ分の数量）
-  const bsimGain = `((${bsimUnit}) - (${mPrice})) * (${planQty})`;
+                         ELSE ${basePrice} END`;
+  // 想定B基準にした場合の値上げ幅（A基準と同じく、選んだ基準が起点・当月の実績数）
+  const bsimGain = `CASE WHEN ${basePrice} > 0 AND ${raiseQty} > 0
+                         THEN ((${bsimUnit}) - ${basePrice}) * ${raiseQty} ELSE 0 END`;
 
   // 器具区分別などの表に出す「実績」。取り込んだ月ごとに出す
   // （4月からの推移を、まとめの表と同じ粒度で見られるようにする）。
@@ -1913,8 +1915,7 @@ async function dashboardData(query, user) {
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
-    SUM(CASE WHEN (b_price IS NOT NULL OR a_price_m3 > 0) AND (${mPrice}) IS NOT NULL
-             THEN ${planBase} + ${bsimGain} ELSE ${planBase} END) AS bsim_amt,
+    SUM(${planBase} + ${bsimGain}) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows${abAct}`;
   // 土台は価格調査の全品目。A基準の有無でも、当月の売上の有無でも絞らない
   // （当月に売上の無い品目は金額0として数える）。
@@ -1927,13 +1928,11 @@ async function dashboardData(query, user) {
   const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
-    SUM(CASE WHEN ${planned(n)} AND (${mPrice}) IS NOT NULL
-         THEN ${aGain(n)} END) AS raise_m${n}`)
+    SUM(${aGain(n)}) AS raise_m${n}`)
     .join(',')
     // 想定B基準（法人ごとの妥結見通し）にした場合の値上げ額。A基準との比較に使う
     + `,
-    SUM(CASE WHEN ${planned(3)} AND (${mPrice}) IS NOT NULL
-         THEN ${bsimGain} END) AS raise_bsim,
+    SUM(CASE WHEN ${planned(3)} THEN ${bsimGain} ELSE 0 END) AS raise_bsim,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
@@ -2050,6 +2049,8 @@ function dashboardFilterLabels(q) {
   if (q.aDateYm) {
     items.push(['承認日', `${q.aDateYm} ${q.aDateOp === 'before' ? 'より前' : '以降'}`]);
   }
+  // どの単価と比べた値上げ額なのかは、書き出したファイルだけでは分からないため必ず残す
+  items.push(['基準（比較のもと）', BASE_LABELS[baseKey(q)]]);
   return items;
 }
 
@@ -2446,6 +2447,38 @@ const effMonthlyQty = () => 'COALESCE(CAST(master_qty AS FLOAT), 0)';
 const planMonthlyQty = () => 'COALESCE(CAST(plan_qty AS FLOAT), CAST(master_qty AS FLOAT), 0)';
 
 /**
+ * 値上げ幅の「基準」（比較のもと）。画面の「基準」で選ぶ。
+ *   past   … 過去最新単価（値上げ前の単価）
+ *   master … 当月のマスタ単価（値決めの単価）※既定
+ *   actual … 当月の実単価（金額÷数量。見積ぶんが混ざる）
+ *
+ * どの基準でも
+ *   値上げ幅 = マスタ登録単価（A基準） − 基準の単価
+ *   値上げ額 = 値上げ幅 × 当月の実績数
+ * とする。数量は当月（＝実績の月）の実績数に揃えているので、
+ * 実績数の無い品目・基準の単価が無い品目は「変動なし」（0）として扱う。
+ */
+const BASE_COLS = { past: 'past_price', master: 'master_price', actual: 'master_avg_price' };
+const BASE_LABELS = { past: '過去最新単価', master: 'マスタ単価', actual: '実単価' };
+/** 選ばれている基準。知らない値・未指定はマスタ単価にする */
+const baseKey = (q) => (BASE_COLS[String(q?.base ?? '')] ? String(q.base) : 'master');
+/** 基準の単価。0以下・未設定は「基準が無い」として扱う */
+const basePriceSql = (q, prefix = '') => `CAST(${prefix}${BASE_COLS[baseKey(q)]} AS FLOAT)`;
+/** 値上げ額を出すときの数量。当月の実績数。無ければ0＝変動なし */
+const raiseQtySql = (prefix = '') => `COALESCE(CAST(${prefix}master_qty AS FLOAT), 0)`;
+/**
+ * 値上げ額（1か月あたり）のSQL。
+ * 未申請（A基準が0以下）・基準の単価が無い・実績数が無い、のいずれかなら0（変動なし）。
+ * NULLではなく0を返すので、金額に足しても他の金額を消してしまわない。
+ */
+function raiseAmtSql(aExpr, q, extraCond = '', prefix = '') {
+  const base = basePriceSql(q, prefix);
+  const qty = raiseQtySql(prefix);
+  return `CASE WHEN ${aExpr} > 0 AND ${base} > 0 AND ${qty} > 0${extraCond ? ` AND ${extraCond}` : ''}
+               THEN (CAST(${aExpr} AS FLOAT) - ${base}) * ${qty} ELSE 0 END`;
+}
+
+/**
  * 一覧の実績列に出す月。ファイルに「N月実績」の列が無くても、
  * 毎日の取込で月別履歴（master_price_history）に当月の値が貯まるため、
  * そこにある月を実績の月として使う。一覧のたびに数えないよう1分だけ使い回す。
@@ -2471,8 +2504,9 @@ api.get('/deals', wrap(async (req, res) => {
   const approvedCond = aDateCond(req.query);
   const [totals, rows] = await Promise.all([
     // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
-    // 値上げ幅は「その月のA基準 − 当月のマスタ単価」× マスタ分の数量。
-    // 値決めどうしの比較なので、実単価（見積ぶんで下がる）とは混ぜない。
+    // 値上げ幅は「その月のA基準 − 基準の単価」× 当月の実績数。
+    // 基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
+    // 基準の単価が無い品目・当月の実績数が無い品目は変動なし（0）として扱う。
     db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
@@ -2490,10 +2524,7 @@ api.get('/deals', wrap(async (req, res) => {
                // 承認日の絞り込みは、ダッシュボードと同じく「値上げ額を計上するか」に効かせる。
                // 案件は全部そのまま出したうえで、合計だけ条件に合うものを足す。
                return `
-             SUM(CASE WHEN ${a} > 0 AND ${MASTER_PRICE} IS NOT NULL${approvedCond ? ` AND ${approvedCond}` : ''}
-                       THEN (CAST(${a} AS FLOAT) - ${MASTER_PRICE})
-                            * (${planMonthlyQty()})
-                  END) AS raise_m${n}`;
+             SUM(${raiseAmtSql(a, req.query, approvedCond)}) AS raise_m${n}`;
              }).join(',')}
       FROM deal_calc ${where}`, params),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
@@ -2608,7 +2639,7 @@ api.get('/deals/export', wrap(async (req, res) => {
   // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = canSeeAllInfo(req.user.role);
   const buffer = buildWorkbook(rows, priceTypes,
-    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta });
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query) });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));

@@ -29,7 +29,7 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
  * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
-function buildColumns({ months, withCost, aggMeta, actualMeta }) {
+function buildColumns({ months, withCost, aggMeta, actualMeta, base }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
   const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
@@ -38,14 +38,16 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
 
   // 現状は価格調査の当月実績（単価・数量）。過去最新単価と比べると実際の値上がりが分かる
   const effPrice = (r) => (r.master_avg_price ?? null);
-  /** マスタ単価（値決めの単価）。A基準はこれと比べる。無い行は実単価で代用 */
-  const mPrice = (r) => (r.master_price ?? r.master_avg_price ?? null);
   const monthlyQty = (r) => (r.master_qty == null ? null : Number(r.master_qty));
-  /** マスタ分の数量（値決めどおりに出た分）。A基準の値上げ額はこれに対して出す */
-  const planQty = (r) => {
-    const v = r.plan_qty ?? r.master_qty;
-    return v == null ? null : Number(v);
-  };
+  /**
+   * 値上げ幅の基準（比較のもと）。画面の「基準」で選んだものを使う。
+   *   past … 過去最新単価 / master … マスタ単価 / actual … 実単価
+   */
+  const baseCol = { past: 'past_price', master: 'master_price', actual: 'master_avg_price' }[base]
+    ?? 'master_price';
+  const baseName = { past_price: '過去最新単価', master_price: 'マスタ単価', master_avg_price: '実単価' }[baseCol];
+  /** 基準の単価。0以下・未設定は「基準が無い」＝変動なしとして扱う */
+  const basePrice = (r) => (Number(r[baseCol]) > 0 ? Number(r[baseCol]) : null);
   const actYm = String(actualMeta?.ym ?? '');
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
 
@@ -66,11 +68,16 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
   /** その行のその月の申請単価。翌月はスライドの決まりを当てはめる */
   const aPrice = (r, key) => (key === 'a_price_m1' && slid(r) ? r.a_price_m0 : r[key]);
 
-  /** 値上げ幅 = その月のA基準 − 当月のマスタ単価。単価0は未申請なので空にする */
+  /**
+   * 値上げ幅 = その月のA基準 − 基準の単価。
+   * 単価0は未申請なので空にする。基準の単価が無い・当月の実績数が無い品目は
+   * 「変動なし」として空にする（数量が当月の実績数のため、比べる土台が無い）。
+   */
   const diff = (key) => (r) => {
     const a = Number(aPrice(r, key));
-    if (!(a > 0) || mPrice(r) == null) return '';
-    return round(a - Number(mPrice(r)));
+    const b = basePrice(r);
+    if (!(a > 0) || b == null || !(Number(monthlyQty(r)) > 0)) return '';
+    return round(a - b);
   };
 
   const cols = [
@@ -115,15 +122,17 @@ function buildColumns({ months, withCost, aggMeta, actualMeta }) {
     [`稟議No ${m3}`, (r) => r.a_ringi_m3],
     ['目標単価（本社設定）', (r) => round(r.r2_target_price)],
 
-    // 値上げ幅（A基準 − 実績）と、月あたりの値上げ額
-    [`値上げ幅 ${m0}`, diff('a_price_m0')],
-    [`値上げ幅 ${m1}`, diff('a_price_m1')],
-    [`値上げ幅 ${m2}`, diff('a_price_m2')],
-    [`値上げ幅 ${m3}`, diff('a_price_m3')],
+    // 値上げ幅（A基準 − 選んだ基準の単価）と、月あたりの値上げ額
+    [`値上げ幅 ${m0}（対 ${baseName}）`, diff('a_price_m0')],
+    [`値上げ幅 ${m1}（対 ${baseName}）`, diff('a_price_m1')],
+    [`値上げ幅 ${m2}（対 ${baseName}）`, diff('a_price_m2')],
+    [`値上げ幅 ${m3}（対 ${baseName}）`, diff('a_price_m3')],
     [`値上げ額（月あたり）${m3}`, (r) => {
       const a = Number(r.a_price_m3);
-      if (!(a > 0) || mPrice(r) == null || planQty(r) == null) return '';
-      return round((a - Number(mPrice(r))) * Number(planQty(r)));
+      const b = basePrice(r);
+      const qty = Number(monthlyQty(r));
+      if (!(a > 0) || b == null || !(qty > 0)) return '';
+      return round((a - b) * qty);
     }],
 
     // 交渉（営業担当者が入力する）。商談結果は記号のまま出す
@@ -323,6 +332,7 @@ export function buildWorkbook(rows, priceTypes = [], opts = {}) {
     withCost: Boolean(opts.withCost),
     aggMeta: opts.aggMeta,
     actualMeta: opts.actualMeta,
+    base: opts.base,
   });
 
   const header = columns.map(([label]) => label);
