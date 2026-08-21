@@ -292,8 +292,8 @@ function sortValue(r: AbRow, col: SortCol): number | string {
   if (gp) return num(r[`gain_plus_${Number(gp[1]) + 1}`]);
   const gm = /^gm(\d+)$/.exec(col);
   if (gm) return -num(r[`gain_minus_${Number(gm[1]) + 1}`]);
-  // 値上げ額の大きい順に並べるため、A基準の列は値上げ前当初との差で比べる
-  const pre = num(r.base_amt) - (num(r.gain_plus_1) + num(r.gain_minus_1));
+  // 値上げ額の大きい順に並べるため、A基準の列は現状額との差で比べる（案件一覧と同じ）
+  const pre = num(r.base_amt);
   switch (col) {
     case 'name': return r.name ?? '';
     case 'deals': return num(r.deals);
@@ -408,10 +408,10 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
         <tbody>
           {[...sorted, ...(total ? [{ ...total, name: '合計' }] : [])].map((r, i) => {
             const last = i === sorted.length;
-            // 現状額は当月の金額（合計）。A基準（計画）は値上げ前当初と比べるため、
-            // 売上改善額を引いた額をその比較のもとにする
+            // 現状額は当月の金額（合計）。A基準（計画）もここと比べる。
+            // 案件一覧の「値上げ額（月）合計」と同じ数字になる
             const base = num(r.base_amt);
-            const pre = base - (num(r.gain_plus_1) + num(r.gain_minus_1));
+            const pre = base;
             return (
               <tr key={i} style={last ? { fontWeight: 700, borderTop: '2px solid var(--grid)' } : undefined}>
                 {/* 法人名は長いものがあるため、幅を決めて折り返す（表が横に伸びないように） */}
@@ -462,7 +462,7 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
                     cell('minus', gm, num(r[`act_down_${i + 1}`])),
                   ];
                 })}
-                {/* A基準（計画）は値上げ前当初と比べる */}
+                {/* A基準（計画）は現状額（当月のマスタ単価）と比べる＝案件一覧と同じ */}
                 {view === 'plan' && (
                   <>
                     <AmtCell amt={num(r.a0_amt)} base={pre} months={months} />
@@ -834,7 +834,8 @@ export default function Dashboard() {
           <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
           <strong>計画</strong>は、この{actLabel}の金額（合計）へ
           「マスタ登録単価 − {actLabel}のマスタ単価」×マスタ分の数量を足したもので、
-          <strong>値上げ前当初と比べます</strong>（当初からマスタ登録単価までの上がり幅が値上げ額）。
+          <strong>実績（{actLabel}の金額）と比べます</strong>
+          （案件一覧の「値上げ額（月）合計」と同じ数字になります）。
           <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
           実績との差が見積ぶんなどにあたります。
           どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
@@ -888,7 +889,7 @@ export default function Dashboard() {
                 内訳<br /><small>上がった / 同じ</small>
               </th>
               <th style={nums}
-                  title="実績・計画とも値上げ前当初の金額と比べます">
+                  title="実績は値上げ前当初と、計画は実績（当月の金額）と比べます">
                 比較のもと<br /><small>月あたり</small>
               </th>
               <th style={nums}>金額<br /><small>月あたり</small></th>
@@ -930,8 +931,9 @@ export default function Dashboard() {
                 .map(([label, amt]) => ({
                   key: `plan-${label}`, ym: label, kind: '計画' as const,
                   deals: num(t?.deals),
-                  // 比較のもとは値上げ前当初。当初からA基準までの上がり幅が値上げ額になる
-                  base: (gain == null ? num(t?.base_amt) : num(t?.base_amt) - gain) as number | null,
+                  // 比較のもとは実績（当月の金額）。ここからA基準までの上がり幅が値上げ額で、
+                  // 案件一覧の「値上げ額（月）合計」と同じ数字になる
+                  base: num(t?.base_amt) as number | null,
                   amt, up: null, same: null,
                 })),
             ]
