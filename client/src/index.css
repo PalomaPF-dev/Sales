@@ -663,3 +663,16 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 }
 .sub-toggle:hover { background: #f8fafc; border-color: #cbd5e1; }
 .view-mobile .sub-toggle { display: none; }
+
+/* 9月計画を8月計画からスライドしたときの組。
+   どちらも同じ色にして、同じ内容を並べていることが分かるようにする。
+   古い登録の赤塗りより後に書いて、こちらを優先させる */
+.tbl.deals tbody tr td.slid { background: #e0f2fe; }
+.tbl.deals tbody tr.old-master td.slid { background: #dbeafe; }
+.tbl.deals tbody tr:hover td.slid { background: #bae6fd; }
+
+/* 説明の中に出す色見本（スライドの組） */
+.slid-chip {
+  display: inline-block; width: 12px; height: 12px; margin: 0 4px;
+  border: 1px solid #bae6fd; border-radius: 3px; background: #e0f2fe; vertical-align: -1px;
+}
