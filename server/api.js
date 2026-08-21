@@ -1790,6 +1790,30 @@ function aPriceSql(n, slideFrom, prefix = '') {
  * ダッシュボードの集計をまとめて作る。画面（/dashboard）と
  * Excel出力（/dashboard/export）で同じ数字を使うため、ここに集約している。
  */
+/**
+ * 平均単価の比較（過去最新単価 → 計画）の集計SQL。
+ *
+ * 絞り込んだ品目のうち「過去最新単価・その月の計画・当月の実績数」が揃う行だけで、
+ * 出荷数（当月の実績数）で重みを付けた平均単価を、過去と計画それぞれで出す。
+ * 同じ行どうしで比べるので、平均の差がそのまま1台あたりの上がり幅になる。
+ *
+ * ダッシュボード全体（/dashboard）と、カードの中だけで絞り込み直す
+ * /dashboard/avg-prices の両方がこれを使う。
+ */
+function avgPriceAgg(query, aggMeta) {
+  const f = (c) => `CAST(${c} AS FLOAT)`;
+  const approved = aDateCond(query);
+  const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta));
+  const pair = (n) =>
+    `${aPrice(n)} > 0 AND past_price > 0 AND ${f('master_qty')} > 0${approved ? ` AND ${approved}` : ''}`;
+  return [0, 1, 2, 3].map((n) => `
+    SUM(CASE WHEN ${pair(n)} THEN 1 ELSE 0 END) AS avg_cnt_m${n},
+    SUM(CASE WHEN ${pair(n)} THEN ${f('master_qty')} END) AS avg_qty_m${n},
+    SUM(CASE WHEN ${pair(n)} THEN ${f(aPrice(n))} * ${f('master_qty')} END) AS avg_plan_m${n},
+    SUM(CASE WHEN ${pair(n)} THEN ${f('past_price')} * ${f('master_qty')} END) AS avg_past_m${n}`)
+    .join(',');
+}
+
 async function dashboardData(query, user) {
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
   const { where, params: p } = dealFilters(query, user);
@@ -1938,18 +1962,7 @@ async function dashboardData(query, user) {
   // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
   // 承認日などの絞り込み（dealFilters）はここにも効く。
   const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
-  // 平均単価の比較（過去最新単価 → 計画）。
-  // 絞り込んだ品目のうち「過去最新単価・その月の計画・7月の実績数」が揃う行だけで、
-  // 出荷数（7月実績数）で重みを付けた平均単価を、過去と計画それぞれで出す。
-  // 同じ行どうしで比べるので、平均の差がそのまま1台あたりの上がり幅になる。
-  const avgPair = (n) =>
-    `${aPrice(n)} > 0 AND past_price > 0 AND ${f('master_qty')} > 0${approved ? ` AND ${approved}` : ''}`;
-  const avgAgg = [0, 1, 2, 3].map((n) => `
-    SUM(CASE WHEN ${avgPair(n)} THEN 1 ELSE 0 END) AS avg_cnt_m${n},
-    SUM(CASE WHEN ${avgPair(n)} THEN ${f('master_qty')} END) AS avg_qty_m${n},
-    SUM(CASE WHEN ${avgPair(n)} THEN ${f(aPrice(n))} * ${f('master_qty')} END) AS avg_plan_m${n},
-    SUM(CASE WHEN ${avgPair(n)} THEN ${f('past_price')} * ${f('master_qty')} END) AS avg_past_m${n}`)
-    .join(',');
+  const avgAgg = avgPriceAgg(query, aggMeta);
 
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
@@ -2048,6 +2061,22 @@ async function dashboardData(query, user) {
 api.get('/dashboard', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   res.json(await dashboardData(req.query, req.user));
+}));
+
+/**
+ * 平均単価の比較だけを出し直す入口。
+ *
+ * 「カテゴリー名（大）ごと」「品目階層名ごと」に単価を見比べたいとき、
+ * 画面全体の絞り込みを動かすと他のカードまで作り直しになる（18万件の集計で数秒）。
+ * この入口はカードの中の選び直しだけに応え、平均単価の集計1本だけを走らせる。
+ */
+api.get('/dashboard/avg-prices', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const { where, params } = dealFilters(req.query, req.user);
+  const { aggMeta } = await loadImportMeta();
+  const row = await db.get(
+    `SELECT ${avgPriceAgg(req.query, aggMeta)} FROM deal_calc ${where}`, params);
+  res.json({ aMonths: row ?? {}, aggMeta });
 }));
 
 /** ダッシュボードの表をそのままExcelにする。絞り込みは画面と同じものが効く */

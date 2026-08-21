@@ -537,6 +537,161 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link
   );
 }
 
+/**
+ * 平均単価の比較（過去最新単価 → 計画）。
+ *
+ * 「このカテゴリーは平均でいくら上がるのか」「この器種はどうか」を見比べるカード。
+ * 画面全体の絞り込みを動かすと他のカードまで作り直しになる（18万件で数秒）ため、
+ * 器具区分・カテゴリー名（大）・品目階層名はこのカードの中で選び直せるようにし、
+ * 平均単価の集計だけを取り直す。ほかの絞り込み（支店・承認日など）は画面のものが効く。
+ */
+function AvgPriceCard({ meta, pageQs, pageEquip, pageCategory, pageModel, months, actLabel, aDateLabel }: {
+  meta: Meta | null;
+  /** 画面の絞り込み（品目の3つを除いたもの）をつないだ文字列 */
+  pageQs: string;
+  pageEquip: string; pageCategory: string; pageModel: string;
+  months: { m0: string; m1: string; m2: string; m3: string };
+  actLabel: string;
+  aDateLabel: string;
+}) {
+  // カードの中の選び直し。初めは画面の絞り込みと同じ内容から始める
+  const [equip, setEquip] = useState(pageEquip);
+  const [category, setCategory] = useState(pageCategory);
+  const [model, setModel] = useState(pageModel);
+  const [data, setData] = useState<Record<string, number | null> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  // 画面側の絞り込みが変わったら、カードの中もそれに合わせ直す
+  useEffect(() => { setEquip(pageEquip); setCategory(pageCategory); setModel(pageModel); },
+    [pageEquip, pageCategory, pageModel]);
+
+  const qs = (() => {
+    const q = new URLSearchParams(pageQs);
+    if (equip) q.set('equip', equip); else q.delete('equip');
+    if (category) q.set('category', category); else q.delete('category');
+    if (model) q.set('model', model); else q.delete('model');
+    return q.toString();
+  })();
+
+  useEffect(() => {
+    let alive = true;
+    setBusy(true);
+    setErr('');
+    api<{ aMonths: Record<string, number | null> }>(`/dashboard/avg-prices?${qs}`)
+      .then((r) => { if (alive) setData(r.aMonths); })
+      .catch((e) => { if (alive) setErr((e as Error).message); })
+      .finally(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+  }, [qs]);
+
+  const categories = narrowByParent(meta?.categories, [['equip', equip]]);
+  const modelOpts = narrowByParent(meta?.models, [['equip', equip], ['category', category]]);
+
+  const unit = (v: number) => `¥${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+  const rows = ([[0, months.m0], [1, months.m1], [2, months.m2], [3, months.m3]] as const)
+    .map(([n, ym]) => {
+      const cnt = num(data?.[`avg_cnt_m${n}`]);
+      const qty = num(data?.[`avg_qty_m${n}`]);
+      if (!(qty > 0)) return { ym, cnt, qty, past: null, plan: null, diff: null, rate: null };
+      const past = num(data?.[`avg_past_m${n}`]) / qty;
+      const plan = num(data?.[`avg_plan_m${n}`]) / qty;
+      const diff = plan - past;
+      return { ym, cnt, qty, past, plan, diff, rate: past > 0 ? Math.round((diff / past) * 1000) / 10 : null };
+    });
+
+  // いま何のまとまりを見ているか（表題の下に出す）
+  const scope = [model && `品目階層名: ${model}`, category && `カテゴリー名（大）: ${category}`,
+    equip && `器具区分: ${equip}`].filter(Boolean)[0] ?? '絞り込みなし（全品目）';
+
+  return (
+    <Card title={`平均単価の比較（過去最新単価 → 計画）${aDateLabel}`}>
+      <p className="pt-note" style={{ marginTop: 0 }}>
+        <strong>1台あたりの平均単価</strong>を、過去最新単価と各月の計画（マスタ登録単価）で比べます。
+        平均は<strong>出荷数（{actLabel}の実績数）で重みを付けた平均</strong>
+        （単価×実績数の合計 ÷ 実績数の合計）です。
+        過去最新単価・その月の計画・{actLabel}の実績数の<strong>3つが揃う品目だけ</strong>が対象で、
+        同じ品目どうしで比べるため、差がそのまま1台あたりの上がり幅になります
+        （実績や単価の無い品目は含めません。値上げ額の合計とは対象の数が異なります）。
+        下の<strong>器具区分・カテゴリー名（大）・品目階層名</strong>は<strong>このカードだけ</strong>に効きます
+        （ほかの絞り込み（支店・承認日など）は画面上部のものが効きます）。
+      </p>
+      {/* カードの中だけの選び直し。器具区分→カテゴリー名（大）→品目階層名 の順 */}
+      <div className="filters" style={{ marginBottom: 10 }}>
+        <label className="fld">
+          器具区分<small style={{ fontWeight: 400 }}>（大分類）</small>
+          <select value={equip}
+                  onChange={(e) => { setEquip(e.target.value); setCategory(''); setModel(''); }}>
+            <option value="">すべて</option>
+            {meta?.equips.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          カテゴリー名（大）
+          <select value={category}
+                  onChange={(e) => { setCategory(e.target.value); setModel(''); }}>
+            <option value="">すべて</option>
+            {categories.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          </select>
+        </label>
+        <label className="fld" style={{ minWidth: 240 }}>
+          品目階層名<small style={{ fontWeight: 400 }}>（器種名）</small>
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <option value="">すべて</option>
+            {modelOpts.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          </select>
+        </label>
+        <div className="filter-actions">
+          <button className="btn secondary sm"
+                  disabled={!equip && !category && !model}
+                  onClick={() => { setEquip(''); setCategory(''); setModel(''); }}
+                  title="このカードの絞り込みだけを外します">
+            解除
+          </button>
+        </div>
+      </div>
+      <p className="pt-note" style={{ marginTop: 0 }}>
+        いま見ているまとまり: <strong>{scope}</strong>{busy && ' （集計中…）'}
+      </p>
+      {err && <div className="alert error">{err}</div>}
+      <HScroll className="tbl-scroll">
+        <table className="tbl" style={busy ? { opacity: 0.45 } : undefined}>
+          <thead>
+            <tr>
+              <th>計画の月</th>
+              <th style={nums}>対象件数</th>
+              <th style={nums} title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>出荷数<br /><small>{actLabel}実績数</small></th>
+              <th style={nums}>過去最新単価<br /><small>平均</small></th>
+              <th style={nums}>計画単価<br /><small>平均</small></th>
+              <th style={nums} title="計画単価（平均） − 過去最新単価（平均）">上がり幅<br /><small>1台あたり</small></th>
+              <th style={nums} title="上がり幅 ÷ 過去最新単価（平均）">上がり率</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.ym}>
+                <td>{r.ym}</td>
+                <td style={nums}>{r.cnt.toLocaleString()}</td>
+                <td style={nums}>{r.qty > 0 ? Math.round(r.qty).toLocaleString() : '—'}</td>
+                <td style={nums}>{r.past == null ? '—' : unit(r.past)}</td>
+                <td style={nums}>{r.plan == null ? '—' : unit(r.plan)}</td>
+                <td style={{ ...nums, fontWeight: 700,
+                             color: r.diff == null ? undefined
+                               : r.diff < 0 ? '#c2410c' : r.diff > 0 ? '#15803d' : undefined }}>
+                  {r.diff == null ? '—'
+                    : Math.abs(r.diff) < 0.05 ? '±0'
+                      : `${r.diff > 0 ? '＋' : '−'}${unit(Math.abs(r.diff))}`}
+                </td>
+                <td style={nums}>{r.rate == null ? '—' : `${r.rate > 0 ? '+' : ''}${r.rate}%`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </HScroll>
+    </Card>
+  );
+}
+
 export default function Dashboard() {
   const mobile = useIsMobile();
   // スマホでは金額を万円で出す（この画面の中の表・タイル・まとめが揃う）
@@ -766,20 +921,6 @@ export default function Dashboard() {
           <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
             <option value="">すべて</option>
             {models.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          カテゴリー名（大）
-          <select value={get('category')} onChange={(e) => setParam('category', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.categories?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          品目階層名（器種名）
-          <select value={get('model')} onChange={(e) => setParam('model', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.models?.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
           </select>
         </label>
         <label className="fld">
@@ -1073,78 +1214,26 @@ export default function Dashboard() {
         </table>
       </Card>
 
+      </div>
+
       {/*
         平均単価の比較（過去最新単価 → 計画）。
-        器具区分・カテゴリー名（大）・品目階層名などで絞り込むと、
-        そのまとまりの平均単価が過去からいくら上がる計画かを1台あたりで見られる。
-        平均は出荷数（7月の実績数）で重みを付ける。単価なので万円にはまとめない。
+        カードの中で器具区分・カテゴリー名（大）・品目階層名を選び直せる。
+        画面全体を作り直さずに済むよう、このカードだけで集計を取り直すので、
+        上の「集計中」の薄い表示の外に置く。
       */}
-      {(() => {
-        const a = data.aMonths;
-        const unit = (v: number) =>
-          `¥${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
-        const rows = ([[0, m0], [1, m1], [2, m2], [3, m3]] as const).map(([n, ym]) => {
-          const cnt = num(a?.[`avg_cnt_m${n}`]);
-          const qty = num(a?.[`avg_qty_m${n}`]);
-          const plan = num(a?.[`avg_plan_m${n}`]);
-          const past = num(a?.[`avg_past_m${n}`]);
-          if (!(qty > 0)) return { ym, cnt, qty, past: null, plan: null, diff: null, rate: null };
-          const pastAvg = past / qty;
-          const planAvg = plan / qty;
-          const diff = planAvg - pastAvg;
-          return {
-            ym, cnt, qty, past: pastAvg, plan: planAvg, diff,
-            rate: pastAvg > 0 ? Math.round((diff / pastAvg) * 1000) / 10 : null,
-          };
-        });
-        return (
-          <Card title={`平均単価の比較（過去最新単価 → 計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
-            <p className="pt-note" style={{ marginTop: 0 }}>
-              いまの絞り込み（器具区分・カテゴリー名（大）・品目階層名など）のまとまりで、
-              <strong>1台あたりの平均単価</strong>を過去最新単価と各月の計画（マスタ登録単価）で比べます。
-              平均は<strong>出荷数（{actLabel}の実績数）で重みを付けた平均</strong>
-              （単価×実績数の合計 ÷ 実績数の合計）です。
-              過去最新単価・その月の計画・{actLabel}の実績数の<strong>3つが揃う品目だけ</strong>が対象で、
-              同じ品目どうしで比べるため、差がそのまま1台あたりの上がり幅になります
-              （実績や単価の無い品目は含めません。値上げ額の合計とは対象の数が異なります）。
-            </p>
-            <HScroll className="tbl-scroll">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>計画の月</th>
-                    <th style={nums}>対象件数</th>
-                    <th style={nums} title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>出荷数<br /><small>{actLabel}実績数</small></th>
-                    <th style={nums}>過去最新単価<br /><small>平均</small></th>
-                    <th style={nums}>計画単価<br /><small>平均</small></th>
-                    <th style={nums} title="計画単価（平均） − 過去最新単価（平均）">上がり幅<br /><small>1台あたり</small></th>
-                    <th style={nums} title="上がり幅 ÷ 過去最新単価（平均）">上がり率</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.ym}>
-                      <td>{r.ym}</td>
-                      <td style={nums}>{r.cnt.toLocaleString()}</td>
-                      <td style={nums}>{r.qty > 0 ? Math.round(r.qty).toLocaleString() : '—'}</td>
-                      <td style={nums}>{r.past == null ? '—' : unit(r.past)}</td>
-                      <td style={nums}>{r.plan == null ? '—' : unit(r.plan)}</td>
-                      <td style={{ ...nums, fontWeight: 700,
-                                   color: r.diff == null ? undefined
-                                     : r.diff < 0 ? '#c2410c' : r.diff > 0 ? '#15803d' : undefined }}>
-                        {r.diff == null ? '—'
-                          : Math.abs(r.diff) < 0.05 ? '±0'
-                            : `${r.diff > 0 ? '＋' : '−'}${unit(Math.abs(r.diff))}`}
-                      </td>
-                      <td style={nums}>{r.rate == null ? '—' : `${r.rate > 0 ? '+' : ''}${r.rate}%`}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </HScroll>
-          </Card>
-        );
-      })()}
+      <AvgPriceCard
+        meta={meta}
+        pageQs={FILTER_KEYS.filter((k) => !['equip', 'category', 'model'].includes(k))
+          .reduce((q, k) => { if (get(k)) q.set(k, get(k)); return q; }, new URLSearchParams())
+          .toString()}
+        pageEquip={get('equip')} pageCategory={get('category')} pageModel={get('model')}
+        months={{ m0, m1, m2, m3 }}
+        actLabel={actLabel}
+        aDateLabel={get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}
+      />
+
+      <div style={busy ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
 
       {/*
         値上げ額の内訳。器具区分別・支店別・法人別をそれぞれ別のカードで縦に並べ、
