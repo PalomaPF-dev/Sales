@@ -637,3 +637,22 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 /* スマホでは点を大きめにして押しやすく */
 .view-mobile .help-slide { min-height: 0; padding: 16px; }
 .view-mobile .help-dots button { width: 12px; height: 12px; }
+
+/* 古いマスタ登録の色分け（案件一覧）。
+   「古い登録を赤く表示」で年月を指定したとき、その月より前に登録されたきりの行を塗る。
+   セルに背景を敷かないと、行の背景が hover の色で隠れてしまう */
+.tbl.deals tbody tr.old-master td { background: #fef2f2; }
+.tbl.deals tbody tr.old-master:hover td { background: #fee2e2; }
+.tbl.deals tbody tr.old-master.editing td { background: #fff1f2; }
+
+/* 凡例に出す色見本 */
+.old-master-chip {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #fecaca;
+  border-radius: 3px;
+  background: #fef2f2;
+  vertical-align: -2px;
+  margin-right: 6px;
+}

@@ -52,6 +52,24 @@ const normNego = (v: string | null | undefined) => {
   return t;
 };
 
+/**
+ * マスタ登録日（承認日）のうち一番新しいもの。
+ * 計画（当月〜3か月後）のどこかに登録があれば、その最新日で「いつ登録された単価か」を見る。
+ */
+const newestMasterDate = (d: Deal) => {
+  const days = [d.a_date_m0, d.a_date_m1, d.a_date_m2, d.a_date_m3]
+    .map((v) => String(v ?? '').trim())
+    .filter((v) => /^\d{4}-\d{2}-\d{2}$/.test(v))
+    .sort();
+  return days.length ? days[days.length - 1] : null;
+};
+
+/** 「2026-05」→「2026年5月」 */
+const ymText = (ym: string) => {
+  const m = /^(\d{4})-(\d{2})$/.exec(ym);
+  return m ? `${m[1]}年${Number(m[2])}月` : ym;
+};
+
 /** 承認日（登録日）の表示。「2026-06-05」→「26/6/5」 */
 const dateLabel = (d: string | null | undefined) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d ?? ''));
@@ -189,6 +207,17 @@ export default function Deals() {
 
   const get = (k: string) => params.get(k) || '';
   const page = Number(params.get('page') || 1);
+
+  /**
+   * 古いマスタ登録の色分け。
+   * 指定した年月より前に登録されたきり更新されていない単価を、赤くして見つけやすくする。
+   * 例: 指定「2026-05」なら、2024-05-12 に登録された分は対象（2026年5月の登録は対象外）。
+   * 絞り込みではないため、一覧の件数は変わらない。
+   */
+  const oldYm = get('oldYm');
+  const isOldDate = (v: string | null | undefined) =>
+    Boolean(oldYm && v && String(v).slice(0, 10) < `${oldYm}-01`);
+  const isOldRow = (d: Deal) => isOldDate(newestMasterDate(d));
 
   /**
    * 絞り込みを書き換える。複数まとめて渡せるようにしてある。
@@ -437,15 +466,22 @@ export default function Deals() {
     ringi: string | null | undefined,
   ) => {
     const day = dateLabel(date);
+    // 指定した年月より前の登録は、日付を赤くしてどの月の登録が古いのか分かるようにする
+    const old = isOldDate(date);
     const tip = [
       date && `承認日（マスタ登録の登録日）: ${date}`,
+      old && `${ymText(oldYm)}より前の登録です`,
       ringi && `稟議No: ${ringi}`,
     ].filter(Boolean).join('\n');
     return (
       <span title={tip || undefined}>
         {/* 0は「未申請」の印なので出さない */}
         {price == null || Number(price) <= 0 ? '—' : yen(price)}
-        {day && <div className="sub">{day}{ringi ? ' ※' : ''}</div>}
+        {day && (
+          <div className="sub" style={old ? { color: '#b91c1c', fontWeight: 700 } : undefined}>
+            {day}{ringi ? ' ※' : ''}
+          </div>
+        )}
       </span>
     );
   };
@@ -619,6 +655,19 @@ export default function Deals() {
             </select>
           </div>
         </label>
+        {/*
+          古いマスタ登録の色分け。絞り込みではなく色を付けるだけなので、
+          全体を見ながら「まだ値上げできていない品目」を拾える。
+        */}
+        <label className="fld"
+               title="ここで指定した年月より前に登録されたきりの単価を、一覧で赤くします（絞り込みはしません）">
+          古い登録を赤く表示
+          <input
+            type="month"
+            value={oldYm}
+            onChange={(e) => setParam('oldYm', e.target.value)}
+          />
+        </label>
         <label className="fld">
           売上改善額
           <select value={get('gain')} onChange={(e) => setParam('gain', e.target.value)}
@@ -678,6 +727,16 @@ export default function Deals() {
           )}
           <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}>Excel出力</button>
         </div>
+      )}
+
+      {/* 色分けの凡例。件数はいま出しているページの中の数（全件ではない） */}
+      {data && oldYm && (
+        <p className="pt-note" style={{ marginTop: 0 }}>
+          <span className="old-master-chip" />
+          マスタ登録日が<strong>{ymText(oldYm)}より前</strong>の行を赤くしています
+          （このページ {data.rows.filter(isOldRow).length.toLocaleString()}件 / {data.rows.length.toLocaleString()}件中）。
+          マスタ登録日が入っていない品目は色を付けていません。
+        </p>
       )}
 
       {/* 値上げ交渉の一括入力。商談結果の左のチェックで品目を選び、
@@ -893,7 +952,12 @@ export default function Deals() {
             {data?.rows.map((d) => {
               const isEditing = editing === d.id;
               return (
-                <tr key={d.id} className={isEditing ? 'editing' : ''}>
+                <tr key={d.id}
+                    className={[isEditing ? 'editing' : '', isOldRow(d) ? 'old-master' : '']
+                      .filter(Boolean).join(' ')}
+                    title={isOldRow(d)
+                      ? `マスタ登録日 ${newestMasterDate(d)}（${ymText(oldYm)}より前）`
+                      : undefined}>
                   <td className="fx fx2" title={[d.corp_name, d.corp_code, d.industry].filter(Boolean).join(' / ')}>
                     {isEditing && isDev ? baseCell(d, 'corp_name') : (
                       <a href={`/corps/${d.corp_code}`}
