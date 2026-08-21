@@ -867,7 +867,7 @@ api.get('/admin/status', wrap(async (req, res) => {
           ? 'RESEND_API_KEY が未設定のため、通知メールは送られません（お問い合わせの受付とアプリ内での回答は通常どおり動きます）'
           : mailTo === 0
             ? '鍵は設定済みですが、宛先が0件です。本社（営業企画部）・管理者にメールを登録してください'
-            : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '値上げ単価管理 <noreply@paloma-pf.com>'}）`,
+            : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '価格交渉管理 <noreply@paloma-pf.com>'}）`,
         hint: 'Vercel → Settings → Environment Variables に RESEND_API_KEY'
           + '（任意で MAIL_FROM / APP_ORIGIN / MAIL_NOTIFY_TO）。設定後は再デプロイが必要です',
       },
@@ -2070,13 +2070,27 @@ api.get('/dashboard', wrap(async (req, res) => {
  * 画面全体の絞り込みを動かすと他のカードまで作り直しになる（18万件の集計で数秒）。
  * この入口はカードの中の選び直しだけに応え、平均単価の集計1本だけを走らせる。
  */
+/** 平均単価を内訳ごとに出すときのまとめ方。値上げ額の内訳カードと同じ3つ */
+const AVG_GROUPS = { equip: 'equip_name', branch: 'branch', corp: 'corp_name' };
+
 api.get('/dashboard/avg-prices', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const { where, params } = dealFilters(req.query, req.user);
   const { aggMeta } = await loadImportMeta();
-  const row = await db.get(
-    `SELECT ${avgPriceAgg(req.query, aggMeta)} FROM deal_calc ${where}`, params);
-  res.json({ aMonths: row ?? {}, aggMeta });
+  const agg = avgPriceAgg(req.query, aggMeta);
+  // 内訳（器具区分別・支店別・法人別）。まとめ方は画面のタブで選ぶ。
+  // 全体の合計は内訳を足して作るので、走査は1回で済む
+  const col = AVG_GROUPS[String(req.query.group ?? '')] ?? null;
+  const [total, rows] = await Promise.all([
+    db.get(`SELECT ${agg} FROM deal_calc ${where}`, params),
+    col
+      ? db.all(`SELECT ${col} AS name, ${agg} FROM deal_calc ${where}
+                 GROUP BY ${col} ORDER BY SUM(COALESCE(CAST(master_qty AS FLOAT), 0)) DESC`, params)
+      : Promise.resolve([]),
+  ]);
+  // 支店は都道府県順（選択肢と同じ並び）
+  if (col === 'branch') rows.sort((a, b) => comparePref(a.name, b.name));
+  res.json({ aMonths: total ?? {}, rows, aggMeta });
 }));
 
 /** ダッシュボードの表をそのままExcelにする。絞り込みは画面と同じものが効く */

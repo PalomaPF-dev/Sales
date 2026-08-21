@@ -115,3 +115,26 @@ export function IconHelp() {
     </svg>
   );
 }
+
+/** ログアウト（扉から出る矢印） */
+export function IconLogout() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
+    </svg>
+  );
+}
+
+/** ポータル（アプリの一覧） */
+export function IconGrid() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    </svg>
+  );
+}
