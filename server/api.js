@@ -14,7 +14,7 @@ import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
-import { buildWorkbook, buildDashboardWorkbook } from './export.js';
+import { buildExportTable, buildWorkbook, buildDashboardWorkbook } from './export.js';
 import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
 import {
   deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
@@ -31,8 +31,11 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 // 分割取込で1回に送る行数。JSONにして数百KBに収まる大きさにする
 const IMPORT_CHUNK_ROWS = 500;
 
-// Excel書き出しの上限。サーバーレスは応答サイズに制限があるため控えめにする
-const EXPORT_MAX_ROWS = process.env.VERCEL ? 6000 : 100000;
+// サーバーでExcelファイルを作って返せる上限。
+// サーバーレス（Vercel）は1回の応答が約4.5MBまでのため、それに収まる件数にする。
+// これを超える件数は /deals/export-rows の分割出力でブラウザ側が組み立てる。
+const EXPORT_MAX_ROWS = Number(process.env.EXPORT_MAX_ROWS)
+  || (process.env.VERCEL ? 6000 : 100000);
 
 const nv = (v) => (v === undefined ? null : v);
 const now = () => new Date().toISOString();
@@ -2668,6 +2671,47 @@ api.get('/deals/export', wrap(async (req, res) => {
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));
   res.send(buffer);
+}));
+
+/**
+ * 件数が多いときの分割出力。
+ *
+ * サーバーレス（Vercel）は1回の応答が約4.5MBまでのため、Excelファイルを
+ * サーバーで作って返せるのは数千件が限度（EXPORT_MAX_ROWS）。
+ * それを超える出力は、この入口で表の中身を数千行ずつJSONで取り出し、
+ * ブラウザ側でExcelファイルに組み立てる（取込と同じで、ブラウザなら
+ * 応答の大きさにも実行時間にも上限が無い）。
+ *
+ * ページ送りはOFFSETではなく「前回の最後の案件ID より後」で行う。
+ * OFFSETだと後ろのページほど並べ直しが重くなり、10万件で数十秒余計にかかる。
+ * このためこの出力の並びは案件ID順（Excel側で並べ替えて使う想定）。
+ */
+const EXPORT_CHUNK_ROWS = 4000;
+api.get('/deals/export-rows', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const { where, params } = dealFilters(req.query, req.user);
+  const sinceId = Number(req.query.sinceId) || 0;
+  const cond = where ? `${where} AND id > ?` : 'WHERE id > ?';
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  const [rows, totalRow] = await Promise.all([
+    db.all(`
+      SELECT deal_calc.*,
+        (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
+      FROM deal_calc ${cond}
+      ORDER BY id LIMIT ?`, [...params, sinceId, EXPORT_CHUNK_ROWS]),
+    // 全体の件数は最初の1回だけ数える（進み具合の表示用）
+    sinceId === 0 ? db.get(`SELECT COUNT(*) AS c FROM deal_calc ${where}`, params) : null,
+  ]);
+  const withCost = canSeeAllInfo(req.user.role);
+  const table = buildExportTable(rows,
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query) });
+  res.json({
+    rows: table.rows,
+    // 見出しなどの形は最初の1回だけ返す（毎回返しても害はないが応答を小さく保つ）
+    ...(sinceId === 0 ? { header: table.header, widths: table.widths, total: Number(totalRow?.c ?? 0) } : {}),
+    // 次のページはこのIDより後から。これ以上無ければ null
+    nextId: rows.length === EXPORT_CHUNK_ROWS ? rows[rows.length - 1].id : null,
+  });
 }));
 
 /**

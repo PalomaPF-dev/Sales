@@ -362,19 +362,33 @@ export default function Deals() {
 
   useEffect(load, [load]);
 
-  const exportExcel = () => {
+  // 分割出力（件数が多いときにブラウザでExcelを組み立てる）の進み具合
+  const [exporting, setExporting] = useState('');
+
+  const exportExcel = async () => {
     setMsg(null);
     const limit = meta?.exportMaxRows ?? Infinity;
-    if (data && data.totals.count > limit) {
-      setMsg({
-        kind: 'error',
-        text: `対象が${data.totals.count.toLocaleString()}件あります。`
-          + `一度に書き出せるのは${limit.toLocaleString()}件までです。`
-          + '器具区分・担当者・得意先などで絞り込んでから実行してください',
-      });
+    // 少ない件数はこれまでどおりサーバーでファイルを作る（速い）。
+    // サーバーの応答上限（約4.5MB）を超える件数は、表の中身を数千行ずつ
+    // 受け取り、ブラウザでExcelに組み立てる（取込と同じ考え方）。
+    if (!data || data.totals.count <= limit) {
+      window.location.href = `/api/deals/export?${queryString()}`;
       return;
     }
-    window.location.href = `/api/deals/export?${queryString()}`;
+    setExporting('出力の準備をしています...');
+    try {
+      const { exportLargeExcel } = await import('../exportClient');
+      await exportLargeExcel(queryString().toString(), (done, total) => {
+        setExporting(total > done
+          ? `表の中身を取得中... ${done.toLocaleString()} / ${total.toLocaleString()}行`
+          : `Excelファイルを組み立てています...（${done.toLocaleString()}行。1分ほどかかります）`);
+      });
+      setExporting('');
+      setMsg({ kind: 'ok', text: 'Excelファイルを出力しました' });
+    } catch (err) {
+      setExporting('');
+      setMsg({ kind: 'error', text: (err as Error).message });
+    }
   };
 
   const startEdit = (d: Deal) => {
@@ -943,7 +957,11 @@ export default function Deals() {
               一括取込
             </button>
           )}
-          <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}>Excel出力</button>
+          <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}
+                  disabled={Boolean(exporting)}
+                  title="絞り込んだ一覧をExcelにします。件数が多いときは数分かかります">
+            {exporting || 'Excel出力'}
+          </button>
         </div>
       )}
 
