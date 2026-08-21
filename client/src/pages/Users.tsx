@@ -65,6 +65,9 @@ export default function Users() {
   // ユーザーの一括削除（チェックで選んでまとめて消す）
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [status, setStatus] = useState<StatusItem[] | null>(null);
+  // メール通知のテスト送信の結果（鍵が正しいかは実際に送らないと分からない）
+  const [mailTest, setMailTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [mailTesting, setMailTesting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [updateExisting, setUpdateExisting] = useState(false);
@@ -84,6 +87,20 @@ export default function Users() {
   useEffect(() => {
     api<{ items: StatusItem[] }>('/admin/status').then((r) => setStatus(r.items)).catch(() => {});
   }, []);
+
+  /** メール通知のテスト送信。自分のメール宛に1通送り、結果をそのまま出す */
+  const sendMailTest = async () => {
+    setMailTesting(true);
+    setMailTest(null);
+    try {
+      const r = await api<{ to: string; from: string }>('/admin/mail-test', { method: 'POST' });
+      setMailTest({ ok: true, text: `${r.to} 宛に送りました（差出人: ${r.from}）。届かないときは迷惑メールもご確認ください` });
+    } catch (err) {
+      setMailTest({ ok: false, text: (err as Error).message });
+    } finally {
+      setMailTesting(false);
+    }
+  };
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -273,6 +290,21 @@ export default function Users() {
                   <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{it.detail}</div>
                   {!it.ok && it.hint && (
                     <div style={{ fontSize: 12, color: 'var(--muted)' }}>設定場所: {it.hint}</div>
+                  )}
+                  {it.key === 'mail' && (
+                    <div style={{ marginTop: 6 }}>
+                      <button className="btn secondary sm" disabled={mailTesting} onClick={sendMailTest}>
+                        {mailTesting ? '送信中...' : 'テスト送信'}
+                      </button>
+                      <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
+                        自分のメール宛に1通送って確かめます（鍵が正しいかは送ってみないと分かりません）
+                      </span>
+                      {mailTest && (
+                        <div className={`alert ${mailTest.ok ? 'ok' : 'error'}`} style={{ marginTop: 8 }}>
+                          {mailTest.text}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
