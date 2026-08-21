@@ -519,7 +519,11 @@ export default function Deals() {
             商談結果の左のチェックで品目を選ぶと、<strong>入力の項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）をまとめて一括入力</strong>できます（空欄の項目は変更されません）。
           </>
         ) : (
-          <>この画面は<strong>閲覧専用</strong>です。内容の入力・変更はできません（Excel出力はご利用いただけます）。</>
+          <>
+            この画面は<strong>閲覧専用</strong>です。
+            <strong>検索・絞り込み・並び替え・ページの移動・Excel出力</strong>はそのままお使いいただけます。
+            できないのは内容の入力・変更だけです。
+          </>
         )}
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
@@ -1084,7 +1088,9 @@ export default function Deals() {
         </p>
       ) : (
         <p className="pt-note" style={{ marginTop: 10 }}>
-          閲覧専用のため、入力の欄は表示していません。表の内容は「Excel出力」で持ち出せます。
+          閲覧専用のため、入力の欄は表示していません。
+          上の絞り込みや見出しを押しての並び替えは自由にお使いいただけます。
+          絞り込んだ内容は「Excel出力」でそのまま持ち出せます。
         </p>
       )}
     </div>
