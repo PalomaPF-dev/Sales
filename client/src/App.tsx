@@ -9,11 +9,12 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconDashboard, IconDeals, IconGrid, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
+import { IconChart, IconDashboard, IconDeals, IconGrid, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
 const Deals = lazy(() => import('./pages/Deals'));
+const AvgPrices = lazy(() => import('./pages/AvgPrices'));
 const DealDetail = lazy(() => import('./pages/DealDetail'));
 const CorpDetail = lazy(() => import('./pages/CorpDetail'));
 
@@ -22,13 +23,14 @@ const ImportPage = lazy(() => import('./pages/ImportPage'));
 const Contact = lazy(() => import('./pages/Contact'));
 const Help = lazy(() => import('./pages/Help'));
 const About = lazy(() => import('./pages/About'));
+const Terms = lazy(() => import('./pages/Terms'));
 
 
 /** 表示の切替。自動＝画面の幅で決める */
 type ViewMode = 'auto' | 'mobile' | 'pc';
 /** これ以下の幅ならスマホ向けの見た目にする（自動のとき） */
 const MOBILE_MAX = 860;
-const VIEW_LABEL: Record<ViewMode, string> = { auto: '自動', mobile: 'スマホ', pc: 'PC' };
+const VIEW_LABEL: Record<ViewMode, string> = { auto: '自動', mobile: 'スマホ固定', pc: 'PC固定' };
 
 /** 前に選んだ表示。覚えていなければ「自動」 */
 const initialViewMode = (): ViewMode => {
@@ -263,7 +265,6 @@ export default function App() {
             </span>
             <span className="txt">
               <b>価格交渉管理</b>
-              <small>値上げ交渉・単価管理</small>
             </span>
             <button className="side-close-btn" onClick={toggleSide}
               title="メニューをたたむ（一覧を広く使えます）" aria-label="メニューをたたむ">◀</button>
@@ -272,6 +273,7 @@ export default function App() {
             <div className="nav-head">日々の運用</div>
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
+            <NavLink to="/avg-prices"><IconChart /><span className="lbl">平均単価</span></NavLink>
             {(!viewer || isAdmin) && <div className="nav-head">取込・設定</div>}
             {!viewer && <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>}
             {/* 設定（ユーザー管理など）。管理者だけに見せる */}
@@ -342,6 +344,35 @@ export default function App() {
                 const sub = (e.target as HTMLElement).closest('.page-sub');
                 sub?.classList.toggle('open');
               }}>
+          {/*
+            ログインしている人の帯。
+            どの支店・営業所の立場で見ているかで数字が変わるアプリなので、
+            「いま誰として見ているか」を画面の上にはっきり出す。
+          */}
+          <header className="apphead">
+            <div className="who">
+              <span className="item">
+                <small>支店（部署）</small>
+                <b>{user.branch || '本社'}</b>
+              </span>
+              <span className="item">
+                <small>営業所（室）</small>
+                <b>{user.office || '—'}</b>
+              </span>
+              <span className="item">
+                <small>役職</small>
+                <b>{user.title || ROLE_NAMES[user.role]}</b>
+              </span>
+              <span className="item name">
+                <small>氏名</small>
+                <b>{user.name}</b>
+              </span>
+              <span className={`rbadge${isAdmin ? ' admin' : ''}`}
+                    title={`このアプリでの権限：${ROLE_NAMES[user.role]}（${scopeText}）`}>
+                {ROLE_NAMES[user.role]}
+              </span>
+            </div>
+          </header>
           {/* お問い合わせに回答が付いたことを知らせる（ポータルと同じ）。開くと消える */}
           {unreadReplies > 0 && (
             <div className="alert info" style={{ cursor: 'pointer' }}
@@ -349,31 +380,41 @@ export default function App() {
               <strong>お問い合わせに回答が届いています</strong>（{unreadReplies}件）。ここを押すと確認できます。
             </div>
           )}
+          <div className="main-body">
           <Suspense fallback={<p style={{ color: 'var(--muted)' }}>読み込み中...</p>}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/deals" element={<Deals />} />
+              <Route path="/avg-prices" element={<AvgPrices />} />
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />
               <Route path="/contact" element={<Contact />} />
               <Route path="/help" element={<Help />} />
               <Route path="/about" element={<About />} />
+              <Route path="/terms" element={<Terms />} />
               <Route path="/settings" element={<Users />} />
               <Route path="/users" element={<Users />} />
               <Route path="/password"
                      element={viewer ? <Dashboard /> : <ChangePassword onDone={() => navigate('/')} />} />
             </Routes>
           </Suspense>
+          </div>
           {/*
-            アプリ内フッター。規約はポータルに1つだけ置き、全アプリから同じ
-            ページを参照する決まりなので、ここもそのリンクにそろえる。
+            アプリ内フッター。画面の中身が短くても、いちばん下に置く。
+            規約はポータルに1つだけ置き、全アプリから同じページを参照する
+            決まりなので、共通の規約はそのリンクにそろえる。
           */}
           <footer className="appfoot">
             <span className="org">© {new Date().getFullYear()} 株式会社パロマ　営業本部</span>
-            <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer">
+            <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer"
+               title="全アプリ共通の決まり（生産・調達統括本部）">
               共通利用規約・著作権ポリシー
+            </a>
+            <a href="/terms" onClick={(e) => { e.preventDefault(); navigate('/terms'); }}
+               title="このアプリに固有の利用条件と免責（営業本部）">
+              本アプリの利用条件・免責
             </a>
             <a href="/about" onClick={(e) => { e.preventDefault(); navigate('/about'); }}>
               バックアップ・仕様の説明

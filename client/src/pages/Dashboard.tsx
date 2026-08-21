@@ -1,28 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import SearchBox from '../components/SearchBox';
-import HScroll from '../components/HScroll';
 import { api } from '../api';
-import { narrowByParent } from '../filterOptions';
-import { Card } from '../components/ui';
+import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
+import { Card, NoteFold, num, nums } from '../components/ui';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
 
 /** 案件一覧と同じ絞り込みを受ける。集計と一覧を同じ条件で行き来できるようにするため */
-/** 絞り込みの項目。案件一覧と同じものを受ける（サーバー側の判定も同じ） */
-const FILTER_KEYS = ['q', 'equip', 'category', 'model', 'person', 'customer', 'corp',
-  'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
 
-/**
- * 値上げ幅の「基準」（比較のもと）。案件一覧と同じものを選ぶ。
- * マスタ登録単価（A基準）とこの単価との差が値上げ幅で、
- * それに当月の実績数を掛けたものが値上げ額になる。
- */
-const BASE_OPTIONS = [
-  { key: 'master', label: 'マスタ単価', note: '値決めの単価' },
-  { key: 'actual', label: '実単価', note: '金額÷数量。見積ぶんが混ざる' },
-  { key: 'past', label: '過去最新単価', note: '値上げ前の単価' },
-] as const;
 
 /**
  * 支店別・法人別の値上げ額の集計。
@@ -126,7 +112,6 @@ const TABS = [
   { key: 'corp' as const, label: '法人別', head: '法人', title: '法人別の値上げ額（現状額の大きい順）' },
 ];
 
-const num = (n: unknown) => Number(n ?? 0);
 /*
   金額の出し方。スマホでは桁が多いと表が読めないため、万円でまとめて出す。
   ダッシュボードを描くたびに Dashboard が下の目印を更新し、
@@ -137,29 +122,6 @@ const yen = (v: number) => (MONEY_MAN
   ? `${Math.round(v / 1e4).toLocaleString()}万`
   : `¥${Math.round(v).toLocaleString()}`);
 
-const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
-
-/**
- * カードの説明文。長い説明で表が押し下げられないよう、既定では閉じておく。
- * 「読み方」を押すと開き、選んだ状態は覚える（カードごと）。
- */
-function NoteFold({ id, children }: { id: string; children: ReactNode }) {
-  const [open, setOpen] = useState(() => {
-    try { return localStorage.getItem(`note.${id}`) === '1'; } catch { return false; }
-  });
-  const toggle = () => setOpen((v) => {
-    try { localStorage.setItem(`note.${id}`, v ? '0' : '1'); } catch { /* 使えなくても困らない */ }
-    return !v;
-  });
-  return (
-    <div className="notefold">
-      <button type="button" className="notefold-btn" onClick={toggle} aria-expanded={open}>
-        <span className="mk">{open ? '▾' : '▸'}</span>この表の読み方
-      </button>
-      {open && <p className="pt-note" style={{ marginTop: 8 }}>{children}</p>}
-    </div>
-  );
-}
 
 
 /** 滝チャートの1本ぶん */
@@ -547,268 +509,6 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link
   );
 }
 
-/** 平均単価の内訳のまとめ方。値上げ額の内訳カードと同じ3つ */
-const AVG_TABS = [
-  { key: 'equip' as const, label: '器具区分別', head: '器具区分' },
-  { key: 'branch' as const, label: '支店別', head: '支店' },
-  { key: 'corp' as const, label: '法人別', head: '法人' },
-];
-type AvgGroup = typeof AVG_TABS[number]['key'];
-
-/** 平均単価の集計1件ぶん（全体の合計にも、内訳の1行にも同じ形を使う） */
-interface AvgRow {
-  name?: string | null;
-  /** avg_cnt / avg_qty / avg_base / avg_plan_m0… の集計値 */
-  [key: string]: string | number | null | undefined;
-}
-
-/**
- * 対象の件数・出荷数と、基準（比較のもと）の加重平均。
- * 単価×実績数の合計 ÷ 実績数の合計。どの月も同じ品目・同じ数量で比べる。
- */
-function baseOf(r: AvgRow | null | undefined) {
-  const qty = num(r?.avg_qty);
-  if (!(qty > 0)) return null;
-  return { cnt: num(r?.avg_cnt), qty, base: num(r?.avg_base) / qty };
-}
-
-/** その月の計画の加重平均と、基準からの上がり幅 */
-function planOf(r: AvgRow | null | undefined, n: number) {
-  const b = baseOf(r);
-  if (!b) return null;
-  const plan = num(r?.[`avg_plan_m${n}`]) / b.qty;
-  return { ...b, plan, diff: plan - b.base };
-}
-
-const unitYen = (v: number) => `¥${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-
-/** 計画の1マス。計画の平均単価と、基準からの上がり幅を重ねて出す */
-function AvgCell({ v }: { v: ReturnType<typeof planOf> }) {
-  if (!v) return <td style={nums}>—</td>;
-  const rate = v.base > 0 ? Math.round((v.diff / v.base) * 1000) / 10 : null;
-  return (
-    <td style={nums}>
-      <div style={{ fontWeight: 700 }}>{unitYen(v.plan)}</div>
-      <div className="sub" style={{ fontWeight: 700,
-                                    color: v.diff < 0 ? '#c2410c' : v.diff > 0 ? '#15803d' : undefined }}>
-        {Math.abs(v.diff) < 0.5 ? '±0'
-          : `${v.diff > 0 ? '＋' : '−'}${unitYen(Math.abs(v.diff))}`}
-        {rate != null && Math.abs(v.diff) >= 0.5 && `（${rate > 0 ? '+' : ''}${rate}%）`}
-      </div>
-    </td>
-  );
-}
-
-/**
- * 平均単価の比較（過去最新単価 → 計画）。
- *
- * 「このカテゴリーは平均でいくら上がるのか」「この支店・法人はどうか」を見比べるカード。
- * 値上げ額の内訳と同じで、横軸に計画の月、縦軸に内訳（器具区分・支店・法人）を並べる。
- *
- * 画面全体の絞り込みを動かすと他のカードまで作り直しになる（18万件で数秒）ため、
- * 品目の絞り込み・承認日・基準はこのカードの中で選び直せるようにし、
- * 平均単価の集計だけを取り直す。
- */
-function AvgPriceCard({ meta, pageQs, pageEquip, pageCategory, pageModel,
-                        pageADateYm, pageADateOp, pageBase, actLabel, m0, m1, m2, m3 }: {
-  meta: Meta | null;
-  /** 画面の絞り込み（このカードで選び直すものを除いたもの）をつないだ文字列 */
-  pageQs: string;
-  pageEquip: string; pageCategory: string; pageModel: string;
-  pageADateYm: string; pageADateOp: string; pageBase: string;
-  actLabel: string;
-  m0: string; m1: string; m2: string; m3: string;
-}) {
-  // カードの中の選び直し。初めは画面の絞り込みと同じ内容から始める
-  const [equip, setEquip] = useState(pageEquip);
-  const [category, setCategory] = useState(pageCategory);
-  const [model, setModel] = useState(pageModel);
-  const [aDateYm, setADateYm] = useState(pageADateYm);
-  const [aDateOp, setADateOp] = useState(pageADateOp);
-  const [base, setBase] = useState(pageBase);
-  const [group, setGroup] = useState<AvgGroup>('equip');
-  const [data, setData] = useState<{ aMonths: AvgRow; rows: AvgRow[] } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-
-  // 画面側の絞り込みが変わったら、カードの中もそれに合わせ直す
-  useEffect(() => {
-    setEquip(pageEquip); setCategory(pageCategory); setModel(pageModel);
-    setADateYm(pageADateYm); setADateOp(pageADateOp); setBase(pageBase);
-  }, [pageEquip, pageCategory, pageModel, pageADateYm, pageADateOp, pageBase]);
-
-  const qs = (() => {
-    const q = new URLSearchParams(pageQs);
-    const put = (k: string, v: string) => { if (v) q.set(k, v); else q.delete(k); };
-    put('equip', equip); put('category', category); put('model', model);
-    put('aDateYm', aDateYm); put('aDateOp', aDateOp); put('base', base);
-    q.set('group', group);
-    return q.toString();
-  })();
-
-  useEffect(() => {
-    let alive = true;
-    setBusy(true);
-    setErr('');
-    api<{ aMonths: AvgRow; rows: AvgRow[] }>(`/dashboard/avg-prices?${qs}`)
-      .then((r) => { if (alive) setData(r); })
-      .catch((e) => { if (alive) setErr((e as Error).message); })
-      .finally(() => { if (alive) setBusy(false); });
-    return () => { alive = false; };
-  }, [qs]);
-
-  const categories = narrowByParent(meta?.categories, [['equip', equip]]);
-  const modelOpts = narrowByParent(meta?.models, [['equip', equip], ['category', category]]);
-  const months = [m0, m1, m2, m3];
-  const rows = data?.rows ?? [];
-  const head = AVG_TABS.find((t) => t.key === group)?.head ?? '内訳';
-  // 比較のもとの呼び名。表の見出しと説明で使う
-  const baseName = base === 'past' ? '過去最新単価'
-    : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
-
-  const clear = () => {
-    setEquip(''); setCategory(''); setModel('');
-  };
-
-  return (
-    <Card title={`平均単価の比較（${baseName} → 計画）`}>
-      <NoteFold id="avg">
-        <strong>1台あたりの平均単価</strong>を、<strong>基準</strong>で選んだ単価
-        （いまは<strong>{baseName}</strong>）と各月の計画（マスタ登録単価）で比べます。
-        基準の平均単価は<strong>出荷数の右の列</strong>に出し、各月はこの列と比べた差を出します。
-        平均は<strong>出荷数（{actLabel}の実績数）で重みを付けた平均</strong>
-        （単価×実績数の合計 ÷ 実績数の合計）です。
-        マスの上段が<strong>計画単価の平均</strong>、下段が<strong>基準との差</strong>（1台あたり）です。
-        対象は<strong>{baseName}と{actLabel}の実績数がある品目</strong>で、
-        その月の計画が無い品目は<strong>変動なし</strong>（基準のまま）として数えます。
-        どの月も同じ品目・同じ数量で比べるので、
-        <strong>（計画の平均 − 基準の平均）× 出荷数 が、その月の値上げ額と一致します</strong>。
-        下の絞り込み・基準・承認日は<strong>このカードだけ</strong>に効きます。
-      </NoteFold>
-
-      {/* カードの中だけの選び直し。器具区分→カテゴリー名（大）→品目階層名 の順 */}
-      <div className="filters" style={{ marginBottom: 10 }}>
-        <label className="fld">
-          器具区分<small style={{ fontWeight: 400 }}>（大分類）</small>
-          <select value={equip}
-                  onChange={(e) => { setEquip(e.target.value); setCategory(''); setModel(''); }}>
-            <option value="">すべて</option>
-            {meta?.equips.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
-          </select>
-        </label>
-        <label className="fld">
-          カテゴリー名（大）
-          <select value={category}
-                  onChange={(e) => { setCategory(e.target.value); setModel(''); }}>
-            <option value="">すべて</option>
-            {categories.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
-          </select>
-        </label>
-        <label className="fld" style={{ minWidth: 220 }}>
-          品目階層名<small style={{ fontWeight: 400 }}>（器種名）</small>
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
-            <option value="">すべて</option>
-            {modelOpts.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
-          </select>
-        </label>
-        {/* 比較のもと。案件一覧・画面上部と同じ3択 */}
-        <label className="fld"
-               title="マスタ登録単価（A基準）と比べる単価を選びます。この表は過去最新単価との比較なので、基準は対象の絞り込みに効きます">
-          基準<small style={{ fontWeight: 400 }}>（比較のもと）</small>
-          <select value={base || 'master'}
-                  onChange={(e) => setBase(e.target.value === 'master' ? '' : e.target.value)}>
-            {BASE_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.key === 'past' ? o.label : `${actLabel}の${o.label}`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="fld"
-               title="この承認日の条件に合う品目だけを平均に入れます（画面上部とは別に選べます）">
-          承認日<small style={{ fontWeight: 400 }}>（対象）</small>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input type="month" value={aDateYm} onChange={(e) => setADateYm(e.target.value)}
-                   style={{ flex: '1 1 auto', minWidth: 0 }} />
-            <select value={aDateOp || 'from'}
-                    onChange={(e) => setADateOp(e.target.value === 'from' ? '' : e.target.value)}
-                    style={{ flex: '0 0 auto' }}>
-              <option value="from">以降</option>
-              <option value="before">より前</option>
-            </select>
-          </div>
-        </label>
-        <div className="filter-actions">
-          <button className="btn secondary sm"
-                  disabled={!equip && !category && !model}
-                  onClick={clear} title="このカードの品目の絞り込みだけを外します">
-            解除
-          </button>
-        </div>
-      </div>
-
-      {/* 内訳のまとめ方。値上げ額の内訳カードと同じ切替 */}
-      <div className="seg" style={{ marginBottom: 10 }}>
-        {AVG_TABS.map((t) => (
-          <button key={t.key} type="button"
-                  className={group === t.key ? 'on' : ''}
-                  onClick={() => setGroup(t.key)}>
-            {t.label}
-          </button>
-        ))}
-        {busy && <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--muted)' }}>集計中…</span>}
-      </div>
-      {err && <div className="alert error">{err}</div>}
-
-      <HScroll className="tbl-scroll">
-        <table className="tbl" style={busy ? { opacity: 0.45 } : undefined}>
-          <thead>
-            <tr>
-              <th>{head}</th>
-              <th style={nums}>対象件数</th>
-              <th style={nums} title={`${actLabel}の実績数の合計（対象の品目ぶん）`}>
-                出荷数<br /><small>{actLabel}実績数</small>
-              </th>
-              {/* 比較のもと。選んだ基準の平均単価を、計画の左に並べて置く */}
-              <th style={{ ...nums, borderLeft: '1px solid var(--baseline)' }}
-                  title={`選んだ基準（${baseName}）の平均単価。右の各月はこれと比べています`}>
-                基準<br /><small>{baseName}</small>
-              </th>
-              {months.map((ym) => (
-                <th key={ym} style={nums}>
-                  {ym}<br /><small>計画平均 / 基準との差</small>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && !busy && (
-              <tr><td colSpan={8} style={{ color: 'var(--muted)' }}>対象の品目がありません</td></tr>
-            )}
-            {[...rows, { ...(data?.aMonths ?? {}), name: '合計' }].map((r, i) => {
-              const last = i === rows.length;
-              const b = baseOf(r);
-              return (
-                <tr key={`${r.name ?? ''}-${i}`}
-                    style={last ? { fontWeight: 700, borderTop: '2px solid var(--baseline)' } : undefined}>
-                  <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                    {r.name || '—'}
-                  </td>
-                  <td style={nums}>{b ? b.cnt.toLocaleString() : '—'}</td>
-                  <td style={nums}>{b ? Math.round(b.qty).toLocaleString() : '—'}</td>
-                  <td style={{ ...nums, borderLeft: '1px solid var(--baseline)', fontWeight: 700 }}>
-                    {b ? unitYen(b.base) : '—'}
-                  </td>
-                  {[0, 1, 2, 3].map((n) => <AvgCell key={n} v={planOf(r, n)} />)}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </HScroll>
-    </Card>
-  );
-}
 
 export default function Dashboard() {
   const mobile = useIsMobile();
@@ -878,12 +578,12 @@ export default function Dashboard() {
     api<Meta>('/meta')
       .then((m) => {
         setMeta(m);
-        // 既定は「当月以降に承認された単価だけ」。それより前の承認は
-        // 値上げ前の古い単価が多く、値上げ額として見ると実態と合わない。
+        // 既定は「今回の取り組みが始まった月（RAISE_START_YM）以降に承認された単価だけ」。
+        // それより前の承認は前回までの古い単価が多く、値上げ額として見ると実態と合わない。
         // 全期間を見たいときは承認日の欄を空にする。
-        if (!params.get('aDateYm') && m.aggMeta?.m0) {
+        if (!params.get('aDateYm')) {
           const next = new URLSearchParams(params);
-          next.set('aDateYm', m.aggMeta.m0);
+          next.set('aDateYm', RAISE_START_YM);
           setParams(next, { replace: true });
         }
         // 既定の絞り込みと同じ回で集計を始める。
@@ -937,6 +637,14 @@ export default function Dashboard() {
   const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
   const baseName = base === 'past' ? '過去最新単価'
     : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
+  // 過去最新単価は「いつまでの受注か」を添える（取込のたびに動くのでデータから取る）
+  const pastMax = meta?.pastMax ?? '';
+  const pastUntil = base === 'past' && /^\d{4}-\d{2}/.test(pastMax)
+    ? `（${Number(pastMax.slice(0, 4))}年${Number(pastMax.slice(5, 7))}月まで）` : '';
+  // 承認日の条件。絞り込みで変わる
+  const aDateText = get('aDateYm')
+    ? `${Number(get('aDateYm').slice(0, 4))}年${Number(get('aDateYm').slice(5, 7))}月${get('aDateOp') === 'before' ? 'より前' : '以降'}`
+    : '全期間';
   const rowsOf = (key: 'equip' | 'branch' | 'corp') =>
     (key === 'equip' ? data.abByEquip : key === 'branch' ? data.abByBranch : data.abByCorp) ?? [];
   const offices = meta?.offices.filter((o) => !get('branch') || o.branch === get('branch')) || [];
@@ -963,7 +671,9 @@ export default function Dashboard() {
         </button>
       </div>
       <p className="page-sub">
-        値上げ額（マスタ登録単価 − {baseName}）を、絞り込んだまとまりで出します。
+        <strong>値上げ額</strong>は、<strong>{baseName}{pastUntil}</strong>から、
+        マスタ承認日 <strong>{aDateText}</strong>のアップ額を、計画の月ごとに示します。
+        実績数は<strong>{actLabel}</strong>（価格調査の取込月）。
         金額はすべて<strong>1か月あたり</strong>です。　表示範囲: <strong>{data.scope.label}</strong>
       </p>
       <NoteFold id="page">
@@ -978,8 +688,15 @@ export default function Dashboard() {
         その差が値上げ額、現状額に対する割合が<strong>値上げ率</strong>です。
       </NoteFold>
 
-      <div className="filters">
-        {/* 絞り込みの項目は案件一覧とそろえる（同じ条件で見比べられるように） */}
+      {/*
+        絞り込み。項目が多いので段を決めて並べる（画面の幅で並びが変わらないように）。
+          1段目 だれの・どこの案件か（検索・企業・支店・営業所・担当者）
+          2段目 どの品目か（器具区分 → カテゴリー名（大）→ 品目階層名）
+          3段目 どう数えるか（基準・マスタ登録単価・売上高・承認日・売上改善額）
+        絞り込みの項目は案件一覧とそろえる（同じ条件で見比べられるように）。
+      */}
+      <div className="filters rows">
+        <div className="frow">
         <label className="fld" style={{ minWidth: 240, flex: '1 1 240px' }}>
           検索（含む・空白区切りでAND）
           <SearchBox
@@ -1016,7 +733,17 @@ export default function Dashboard() {
             {offices.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
           </select>
         </label>
-        {/* 品目の絞り込みは 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順 */}
+        <label className="fld">
+          担当者
+          <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
+            <option value="">すべて</option>
+            {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select>
+        </label>
+        </div>
+
+        {/* 2段目。品目の絞り込みは 器具区分（大分類）→ カテゴリー名（大）→ 品目階層名 の順 */}
+        <div className="frow">
         <label className="fld" title="品目の大分類。選ぶと下のカテゴリー名（大）・品目階層名がその中だけになります">
           器具区分<small style={{ fontWeight: 400 }}>（大分類）</small>
           <select value={get('equip')}
@@ -1040,13 +767,10 @@ export default function Dashboard() {
             {models.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
           </select>
         </label>
-        <label className="fld">
-          担当者
-          <select value={get('person')} onChange={(e) => setParam('person', e.target.value)}>
-            <option value="">すべて</option>
-            {meta?.persons.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-          </select>
-        </label>
+        </div>
+
+        {/* 3段目。値上げ額をどう数えるか（基準・対象の条件） */}
+        <div className="frow">
         {/* 値上げ幅の「基準」（比較のもと）。案件一覧と同じ選択肢 */}
         <label className="fld"
                title={`マスタ登録単価（A基準）と比べる単価を選びます。差が値上げ幅、`
@@ -1119,6 +843,7 @@ export default function Dashboard() {
                   title="検索と絞り込みをすべて外します">
             解除
           </button>
+        </div>
         </div>
       </div>
 
@@ -1294,25 +1019,6 @@ export default function Dashboard() {
       </Card>
 
       </div>
-
-      {/*
-        平均単価の比較（過去最新単価 → 計画）。
-        カードの中で器具区分・カテゴリー名（大）・品目階層名を選び直せる。
-        画面全体を作り直さずに済むよう、このカードだけで集計を取り直すので、
-        上の「集計中」の薄い表示の外に置く。
-      */}
-      <AvgPriceCard
-        meta={meta}
-        /* このカードの中で選び直す項目は、画面側の値を初期値として渡すだけにする */
-        pageQs={FILTER_KEYS
-          .filter((k) => !['equip', 'category', 'model', 'aDateYm', 'aDateOp', 'base'].includes(k))
-          .reduce((q, k) => { if (get(k)) q.set(k, get(k)); return q; }, new URLSearchParams())
-          .toString()}
-        pageEquip={get('equip')} pageCategory={get('category')} pageModel={get('model')}
-        pageADateYm={get('aDateYm')} pageADateOp={get('aDateOp')} pageBase={get('base')}
-        actLabel={actLabel}
-        m0={m0} m1={m1} m2={m2} m3={m3}
-      />
 
       <div style={busy ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
 

@@ -136,7 +136,9 @@ export default function About() {
         <a href="https://portal.paloma-pf.com/terms.html" target="_blank" rel="noopener noreferrer">
           共通利用規約・著作権ポリシー
         </a>
-        （全アプリ共通）をご確認ください。
+        （全アプリ共通）と、
+        <a href="/terms">本アプリの利用条件・免責</a>
+        （営業本部）をご確認ください。
         操作の手引きは<strong>使い方</strong>の画面にあります。
       </p>
     </div>

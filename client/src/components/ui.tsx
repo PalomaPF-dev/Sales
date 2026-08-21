@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { CORP_STATUS_NAMES, ROUND_STATE_NAMES } from '../types';
 import type { RoundState } from '../types';
 
@@ -58,6 +58,34 @@ export function Card({ title, children }: { title?: string; children: ReactNode 
     <div className="card">
       {title && <h3>{title}</h3>}
       {children}
+    </div>
+  );
+}
+
+/** 数として読む。未入力・nullは0に落とす */
+export const num = (n: unknown) => Number(n ?? 0);
+
+/** 数字の列の見た目。桁を揃えて右寄せにする */
+export const nums = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } as const;
+
+/**
+ * カードの説明文。長い説明で表が押し下げられないよう、既定では閉じておく。
+ * 「この表の読み方」を押すと開き、選んだ状態は覚える（カードごと）。
+ */
+export function NoteFold({ id, children }: { id: string; children: ReactNode }) {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(`note.${id}`) === '1'; } catch { return false; }
+  });
+  const toggle = () => setOpen((v) => {
+    try { localStorage.setItem(`note.${id}`, v ? '0' : '1'); } catch { /* 使えなくても困らない */ }
+    return !v;
+  });
+  return (
+    <div className="notefold">
+      <button type="button" className="notefold-btn" onClick={toggle} aria-expanded={open}>
+        <span className="mk">{open ? '▾' : '▸'}</span>この表の読み方
+      </button>
+      {open && <p className="pt-note" style={{ marginTop: 8 }}>{children}</p>}
     </div>
   );
 }

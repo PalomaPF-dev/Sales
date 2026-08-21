@@ -138,3 +138,13 @@ export function IconGrid() {
     </svg>
   );
 }
+
+/** 平均単価（折れ線） */
+export function IconChart() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+      <path d="M7 15l4-5 3 3 5-6" />
+    </svg>
+  );
+}

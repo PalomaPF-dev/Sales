@@ -71,7 +71,7 @@ a { color: var(--accent); text-decoration: none; }
 .sidebar .brand .mark { display: flex; align-items: center; flex-shrink: 0; }
 .sidebar .brand .mark img { height: 26px; width: auto; display: block; }
 .sidebar .brand .txt { min-width: 0; line-height: 1.25; }
-.sidebar .brand .txt b { display: block; font-size: 13.5px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+.sidebar .brand .txt b { display: block; font-size: 14px; font-weight: 700; color: var(--ink); white-space: nowrap; }
 .sidebar .brand .txt small { display: block; font-size: 10px; color: var(--muted); margin-top: 1px; }
 
 .sidebar nav { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; }
@@ -124,7 +124,12 @@ a { color: var(--accent); text-decoration: none; }
 .sidebar .userbox .btn.secondary svg { width: 15px; height: 15px; }
 .sidebar .userbox .btnrow { display: flex; flex-direction: column; gap: 7px; }
 
-.main { flex: 1; padding: 24px 28px 64px; max-width: 1560px; min-width: 0; }
+/* 本文とフッター。中身が短くてもフッターはいちばん下に置く */
+.main {
+  flex: 1; padding: 24px 28px 20px; max-width: 1560px; min-width: 0;
+  display: flex; flex-direction: column;
+}
+.main-body { flex: 1 0 auto; min-width: 0; }
 
 /* 表示モードの切替（自動／スマホ／PC）。pf-ui のサイドバーと同じ3択の並び */
 .viewswitch { border-top: 1px solid var(--grid); padding: 10px 16px; }
@@ -136,7 +141,7 @@ a { color: var(--accent); text-decoration: none; }
   display: flex; overflow: hidden; border-radius: 8px; border: 1px solid var(--baseline);
 }
 .viewswitch .vs-seg button {
-  flex: 1; padding: 5px 2px; font-size: 11px; font-family: inherit; cursor: pointer;
+  flex: 1; padding: 5px 2px; font-size: 10.5px; white-space: nowrap; font-family: inherit; cursor: pointer;
   background: #fff; color: var(--muted); border: 0; border-left: 1px solid var(--baseline);
 }
 .viewswitch .vs-seg button:first-child { border-left: 0; }
@@ -244,6 +249,19 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
   padding: 13px 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+}
+/*
+  段を決めて並べる絞り込み（ダッシュボード）。
+  項目が多いと、画面の幅しだいでどこで折り返すかが変わり、
+  「器具区分がどの段にあるか」が毎回変わってしまう。
+  段ごとにまとめて、いつも同じ並びで出す。
+*/
+.filters.rows { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0; }
+.filters.rows .frow {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
+}
+.filters.rows .frow + .frow {
+  margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--grid);
 }
 
 .btn {
@@ -661,20 +679,24 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 .view-mobile .login-wrap { padding: 16px; }
 
 /* ───────── 使い方（スライド） ───────── */
-.help-wrap { max-width: 760px; }
-.help-slide { padding: 22px 26px 26px; min-height: 340px; }
-.help-step { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
-.help-slide h2 { margin: 0 0 14px; font-size: 19px; color: #333333; }
-.help-body { font-size: 14px; line-height: 1.9; color: var(--ink-2); }
+/*
+  使い方のスライド。説明会でも使うため、離れていても読める大きさにする。
+  小さいと「読む気にならない」「読み飛ばされる」ので、本文は16pxを下限にする。
+*/
+.help-wrap { max-width: 1000px; }
+.help-slide { padding: 30px 36px 34px; min-height: 460px; }
+.help-step { font-size: 13px; color: var(--muted); font-weight: 700; margin-bottom: 8px; }
+.help-slide h2 { margin: 0 0 18px; font-size: 25px; color: #333333; line-height: 1.4; }
+.help-body { font-size: 16px; line-height: 2; color: var(--ink-2); }
 .help-body b { color: var(--ink); }
-.help-body ol, .help-body ul { padding-left: 22px; margin: 8px 0; }
-.help-body li { margin-bottom: 6px; }
+.help-body ol, .help-body ul { padding-left: 26px; margin: 12px 0; }
+.help-body li { margin-bottom: 10px; }
 .help-note {
-  background: var(--accent-soft); border-radius: 8px; padding: 9px 12px;
-  font-size: 12.5px; color: var(--accent-deep); margin-top: 12px;
+  background: var(--soft); border: 1px solid var(--grid); border-radius: 8px; padding: 11px 14px;
+  font-size: 14px; line-height: 1.9; color: var(--ink-2); margin-top: 14px;
 }
 /* 項目説明の小さな表 */
-.help-terms { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.help-terms { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 15px; }
 .help-terms th {
   text-align: left; white-space: nowrap; vertical-align: top; color: var(--ink);
   padding: 7px 12px 7px 0; width: 9em; font-weight: 700;
@@ -690,7 +712,11 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 }
 .help-dots button.on { background: var(--accent); }
 /* スマホでは点を大きめにして押しやすく */
-.view-mobile .help-slide { min-height: 0; padding: 16px; }
+.view-mobile .help-wrap { max-width: none; }
+.view-mobile .help-slide { min-height: 0; padding: 18px; }
+.view-mobile .help-slide h2 { font-size: 20px; }
+.view-mobile .help-body { font-size: 15px; line-height: 1.9; }
+.view-mobile .help-terms { font-size: 14px; }
 .view-mobile .help-dots button { width: 12px; height: 12px; }
 
 /* 古いマスタ登録の色分け（案件一覧）。
@@ -785,7 +811,7 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   規約はポータルに1つだけ置く決まりなので、ここからはそのページへ送る。
 */
 .appfoot {
-  margin-top: 32px; padding: 14px 2px 0;
+  flex-shrink: 0; margin-top: 32px; padding: 14px 2px 0;
   border-top: 1px solid var(--baseline);
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px;
   font-size: 11.5px; color: var(--muted);
@@ -802,3 +828,56 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   background: var(--soft); border: 1px solid var(--grid); border-radius: 5px;
   padding: 1px 5px; font-size: 12px;
 }
+
+/* ───────── ログインしている人の帯 ───────── */
+/*
+  どの支店・営業所の立場で見ているかで数字が変わるので、
+  「いま誰として見ているか」を画面の上にはっきり出す。
+*/
+.apphead {
+  background: #fff; border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 16px; margin-bottom: 16px; box-shadow: var(--shadow);
+}
+.apphead .who { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 26px; }
+.apphead .item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.apphead .item small {
+  font-size: 10.5px; color: var(--label); letter-spacing: 0.04em; line-height: 1.4;
+}
+.apphead .item b {
+  font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.apphead .item.name b { font-size: 18px; }
+.apphead .rbadge {
+  align-self: center; margin-left: auto; flex-shrink: 0;
+  border-radius: 6px; padding: 3px 9px; font-size: 11.5px; font-weight: 700;
+  background: #eeeeee; color: var(--ink-2);
+}
+.apphead .rbadge.admin { background: #fdecea; color: var(--red); }
+.view-mobile .apphead { padding: 9px 12px; }
+.view-mobile .apphead .who { gap: 6px 16px; }
+.view-mobile .apphead .item b { font-size: 14px; }
+.view-mobile .apphead .item.name b { font-size: 15px; }
+.view-mobile .apphead .rbadge { margin-left: 0; }
+
+/* 利用条件・免責。読み物なので幅を抑えて行間を広く取る */
+.terms { max-width: 860px; }
+.terms .card h3 { margin-bottom: 10px; }
+.terms .card p { margin: 0 0 10px; font-size: 13.5px; line-height: 1.9; color: var(--ink-2); }
+.terms .card p:last-child { margin-bottom: 0; }
+
+/*
+  使い方に添える「場所」の道順。
+  画像を使わないぶん、どの画面のどこにあるかを文で必ず示す。
+*/
+.help-where {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 12px 0; padding: 10px 14px;
+  background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0;
+}
+.help-where .pin {
+  flex-shrink: 0; font-size: 11.5px; font-weight: 700; color: var(--accent);
+  border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px;
+}
+.help-where .path { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.7; }
+.view-mobile .help-where .path { font-size: 14px; }

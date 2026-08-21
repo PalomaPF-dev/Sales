@@ -372,6 +372,8 @@ CREATE TABLE IF NOT EXISTS inquiries (
   user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL, -- 未ログインの送信はNULL
   login_id   TEXT,             -- 社員番号（未ログインは自己申告）
   name       TEXT NOT NULL,    -- 氏名
+  -- 宛先。app=アプリのこと（管理者へ）／sales=営業本部内のこと（営業企画部へ）
+  dest       TEXT NOT NULL DEFAULT 'app',
   category   TEXT NOT NULL,    -- 分類（ログインできない など）
   message    TEXT NOT NULL,    -- 内容
   status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
