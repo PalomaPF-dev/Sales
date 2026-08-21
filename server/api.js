@@ -892,7 +892,7 @@ api.get('/admin/status', wrap(async (req, res) => {
           ? 'RESEND_API_KEY が未設定のため、通知メールは送られません（お問い合わせの受付とアプリ内での回答は通常どおり動きます）'
           : mailTo === 0
             ? '鍵は設定済みですが、宛先が0件です。本社（営業企画部）・管理者にメールを登録してください'
-            : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '価格交渉管理 <noreply@paloma-pf.com>'}）`,
+            : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '価格改定進捗 <noreply@paloma-pf.com>'}）`,
         hint: 'Vercel → Settings → Environment Variables に RESEND_API_KEY'
           + '（任意で MAIL_FROM / APP_ORIGIN / MAIL_NOTIFY_TO）。設定後は再デプロイが必要です',
       },
