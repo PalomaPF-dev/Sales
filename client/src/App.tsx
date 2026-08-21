@@ -122,8 +122,25 @@ export default function App() {
         } catch (e) {
           // DB未接続などサーバー側の問題を、ログイン画面で握りつぶさない。
           // 入れないログイン画面を見せても原因が分からないため、内容をそのまま表示する。
+          // 生のメッセージだけでは何を直せばよいか分からないので、
+          // /api/health から直し方（hint）と接続先も取って添える。
           setSetupCandidates(null);
           setServerError((e as Error).message);
+          try {
+            const res = await fetch('/api/health', { credentials: 'same-origin' });
+            const h = await res.json() as {
+              error?: string; hint?: string;
+              target?: { host: string; port: string; user: string; database: string };
+            };
+            if (h.hint || h.target) {
+              setServerError([
+                h.error ?? (e as Error).message,
+                h.hint && `\n${h.hint}`,
+                h.target && `\n接続先: ${h.target.host}:${h.target.port}`
+                  + ` / ユーザー: ${h.target.user} / データベース: ${h.target.database}`,
+              ].filter(Boolean).join('\n'));
+            }
+          } catch { /* 取れなければ元のメッセージのまま出す */ }
         }
         setLoading(false);
       })
