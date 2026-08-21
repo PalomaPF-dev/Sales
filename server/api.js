@@ -225,7 +225,8 @@ const canSeeAllInfo = (role) => isAdminRole(role) || isViewerRole(role);
 function viewerMayWrite(path) {
   return path === '/logout'
     || path === '/inquiries'
-    || /^\/inquiries\/mine\/\d+\/read$/.test(path);
+    || /^\/inquiries\/mine\/\d+\/read$/.test(path)
+    || /^\/inquiries\/\d+$/.test(path);
 }
 
 /**
@@ -246,11 +247,33 @@ function requireRole(req, res, roles) {
 
 /** 管理者だけが触れる操作（ユーザー管理・決裁者設定） */
 /**
- * 問い合わせの回答担当。本社（営業企画部）と管理者が対応する。
- * 通知メールもこの人たちの「メール」宛に送る。
+ * 問い合わせの宛先。話の中身で分ける。
+ *   app   … アプリの仕様・不具合のこと → 管理者が受ける
+ *   sales … 営業本部内のこと（価格・交渉の進め方など）→ 営業企画部（本社）が受ける
+ *
+ * notify … 届いたときにメールを送る相手の権限
+ * staff  … 一覧で見て回答できる権限。管理者はどちらも見られる（運用の面倒を見るため）
  */
-const INQUIRY_ROLES = ['planning', 'admin', 'developer'];
+const INQUIRY_DESTS = {
+  app: {
+    label: 'アプリのこと（管理者へ）',
+    notify: ['admin', 'developer'],
+    staff: ['admin', 'developer'],
+  },
+  sales: {
+    label: '営業本部内のこと（営業企画部へ）',
+    notify: ['planning'],
+    staff: ['planning', 'admin', 'developer'],
+  },
+};
+const destOf = (v) => (INQUIRY_DESTS[String(v ?? '')] ? String(v) : 'app');
+
+/** 問い合わせの回答担当。宛先ごとに決まる。どれか1つでも受け持つなら一覧を出す */
+const INQUIRY_ROLES = [...new Set(Object.values(INQUIRY_DESTS).flatMap((d) => d.staff))];
 const isInquiryStaff = (role) => INQUIRY_ROLES.includes(String(role ?? ''));
+/** その人が受け持つ宛先（一覧に出す範囲） */
+const destsFor = (role) => Object.keys(INQUIRY_DESTS)
+  .filter((k) => INQUIRY_DESTS[k].staff.includes(String(role ?? '')));
 
 function requireInquiryStaff(req, res) {
   if (!requireLogin(req, res)) return false;
@@ -267,10 +290,12 @@ function requireInquiryStaff(req, res) {
  */
 async function notifyInquiry(row) {
   try {
+    // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業企画部）ごとに送り先を変える
+    const roles = INQUIRY_DESTS[destOf(row.dest)].notify;
     const staff = await db.all(
       `SELECT email FROM users
         WHERE active = 1 AND email IS NOT NULL AND email <> ''
-          AND role IN (${INQUIRY_ROLES.map(() => '?').join(',')})`, INQUIRY_ROLES);
+          AND role IN (${roles.map(() => '?').join(',')})`, roles);
     const extra = String(process.env.MAIL_NOTIFY_TO ?? '').split(',');
     const to = [...staff.map((u) => u.email), ...extra];
     const { subject, html } = inquiryMail(row);
@@ -1265,15 +1290,28 @@ api.post('/admin/users/bulk-delete', wrap(async (req, res) => {
 //   PATCH /inquiries/:id   … 管理者の対応。{status} か {reply}（回答すると対応済み＋本人未読）。
 //   PATCH /inquiries/mine/:id/read … 本人が回答を既読にする。
 
-// 問い合わせ分類（画面の選択肢と一致させる。ポータルと同じ並び）
-const INQUIRY_CATEGORIES = [
-  'ログインできない',
-  'アプリのエラー・不具合',
-  'アカウント・権限（支店／営業所／担当）',
-  '操作方法について',
-  '機能の要望・改善',
-  'その他',
-];
+/**
+ * 問い合わせ分類（画面の選択肢と一致させる）。宛先ごとに分ける。
+ * アプリの使い方や不具合は管理者、値決めや交渉の進め方は営業企画部が受ける。
+ */
+const INQUIRY_CATEGORIES_BY_DEST = {
+  app: [
+    'ログインできない',
+    'アプリのエラー・不具合',
+    'アカウント・権限（支店／営業所／担当）',
+    '操作方法について',
+    '機能の要望・改善',
+    'その他（アプリ）',
+  ],
+  sales: [
+    '価格・単価について',
+    '値上げ交渉の進め方',
+    '取込データの内容について',
+    '集計・数字の見方',
+    'その他（営業本部）',
+  ],
+};
+const INQUIRY_CATEGORIES = Object.values(INQUIRY_CATEGORIES_BY_DEST).flat();
 
 // 送信のレート制限（同一IP 10分5回。ポータルの /api/contact と同じ）
 const INQUIRY_RL = new Map();
@@ -1301,7 +1339,8 @@ api.post('/inquiries', wrap(async (req, res) => {
 
   const category = String(body.category ?? '').trim();
   const message = String(body.message ?? '').trim();
-  if (!INQUIRY_CATEGORIES.includes(category)) {
+  const dest = destOf(body.dest);
+  if (!INQUIRY_CATEGORIES_BY_DEST[dest].includes(category)) {
     return res.status(400).json({ error: '分類を選んでください' });
   }
   if (!message) return res.status(400).json({ error: '内容を入力してください' });
@@ -1313,8 +1352,8 @@ api.post('/inquiries', wrap(async (req, res) => {
     loginId = req.user.login_id ?? null;
     name = req.user.name;
   } else {
-    // 未ログインで送れるのは「ログインできない」だけ
-    if (category !== 'ログインできない') {
+    // 未ログインで送れるのは「ログインできない」（管理者宛）だけ
+    if (dest !== 'app' || category !== 'ログインできない') {
       return res.status(401).json({ error: 'ログインしてください' });
     }
     loginId = String(body.loginId ?? '').trim();
@@ -1326,21 +1365,27 @@ api.post('/inquiries', wrap(async (req, res) => {
   }
 
   const ins = await db.run(
-    `INSERT INTO inquiries (user_id, login_id, name, category, message, status, created_at)
-     VALUES (?,?,?,?,?, 'open', ?)`,
-    [req.user?.id ?? null, loginId, name, category, message, now()]
+    `INSERT INTO inquiries (user_id, login_id, name, dest, category, message, status, created_at)
+     VALUES (?,?,?,?,?,?, 'open', ?)`,
+    [req.user?.id ?? null, loginId, name, dest, category, message, now()]
   );
   // 受付はここで完了。回答担当者への通知は待たせずに送る
   res.status(201).json({ ok: true });
-  await notifyInquiry({ id: ins?.lastInsertRowid, login_id: loginId, name, category, message });
+  await notifyInquiry({ id: ins?.lastInsertRowid, login_id: loginId, name, dest, category, message });
 }));
 
 api.get('/inquiries', wrap(async (req, res) => {
   if (!requireInquiryStaff(req, res)) return;
+  // 自分が受け持つ宛先だけ（営業企画部には営業本部内のことだけが届く）。
+  // 宛先の無い古い分は、これまでどおり管理者が見る「アプリのこと」として扱う
+  const dests = destsFor(req.user.role);
+  const cond = dests.map(() => '?').join(',');
+  const legacy = dests.includes('app') ? " OR dest IS NULL OR dest = ''" : '';
   // 未対応を上に、その中では新しい順
   const rows = await db.all(`
     SELECT * FROM inquiries
-    ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, id DESC`);
+     WHERE dest IN (${cond})${legacy}
+     ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, id DESC`, dests);
   res.json(rows);
 }));
 
@@ -1366,10 +1411,35 @@ api.patch('/inquiries/mine/:id/read', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/**
+ * 問い合わせを消す。
+ *
+ * 送った本人は自分の分を、回答担当は自分が受け持つ宛先の分を消せる。
+ * 履歴が溜まると本当に見るべきものが埋もれるため、
+ * 済んだやり取りを片づけられるようにする。消したものは戻せない。
+ */
+api.delete('/inquiries/:id', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: '問い合わせが見つかりません' });
+  const mine = row.user_id === req.user.id
+    || (row.login_id != null && row.login_id === (req.user.login_id ?? ''));
+  // 宛先の無い古い分は「アプリのこと」として扱う（一覧の出し方と同じ）
+  const staff = destsFor(req.user.role).includes(destOf(row.dest));
+  if (!mine && !staff) {
+    return res.status(403).json({ error: '自分の問い合わせか、受け持ちの問い合わせだけ消せます' });
+  }
+  await db.run('DELETE FROM inquiries WHERE id = ?', [row.id]);
+  res.json({ ok: true });
+}));
+
 api.patch('/inquiries/:id', wrap(async (req, res) => {
   if (!requireInquiryStaff(req, res)) return;
   const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
   if (!row) return res.status(404).json({ error: '問い合わせが見つかりません' });
+  if (!destsFor(req.user.role).includes(destOf(row.dest))) {
+    return res.status(403).json({ error: '受け持ちの問い合わせだけ対応できます' });
+  }
 
   if ('reply' in (req.body || {})) {
     const reply = String(req.body.reply ?? '').trim();

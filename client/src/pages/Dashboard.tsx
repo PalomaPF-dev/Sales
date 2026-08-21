@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import SearchBox from '../components/SearchBox';
 import { api } from '../api';
-import { BASE_OPTIONS, FILTER_KEYS, narrowByParent } from '../filterOptions';
+import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
 import { Card, NoteFold, num, nums } from '../components/ui';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
@@ -578,12 +578,12 @@ export default function Dashboard() {
     api<Meta>('/meta')
       .then((m) => {
         setMeta(m);
-        // 既定は「当月以降に承認された単価だけ」。それより前の承認は
-        // 値上げ前の古い単価が多く、値上げ額として見ると実態と合わない。
+        // 既定は「今回の取り組みが始まった月（RAISE_START_YM）以降に承認された単価だけ」。
+        // それより前の承認は前回までの古い単価が多く、値上げ額として見ると実態と合わない。
         // 全期間を見たいときは承認日の欄を空にする。
-        if (!params.get('aDateYm') && m.aggMeta?.m0) {
+        if (!params.get('aDateYm')) {
           const next = new URLSearchParams(params);
-          next.set('aDateYm', m.aggMeta.m0);
+          next.set('aDateYm', RAISE_START_YM);
           setParams(next, { replace: true });
         }
         // 既定の絞り込みと同じ回で集計を始める。

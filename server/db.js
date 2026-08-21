@@ -472,7 +472,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-24-viewer';
+const SCHEMA_VERSION = '2026-08-25-inquiry-dest';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -641,6 +641,15 @@ async function dropUserRoleCheck() {
 }
 
 /**
+ * 問い合わせの宛先（app=アプリのこと／sales=営業本部内のこと）。
+ * 既にある表には後から足す。宛先の無い古い分は 'app'（管理者宛）として扱う。
+ */
+async function addInquiryDest() {
+  await tryAlter("ALTER TABLE inquiries ADD COLUMN dest TEXT NOT NULL DEFAULT 'app'");
+  await tryAlter("UPDATE inquiries SET dest = 'app' WHERE dest IS NULL OR dest = ''");
+}
+
+/**
  * スキーマ適用の前に済ませておくこと。
  * 計算列ビューは列構成が変わったら作り直す必要があり、
  * かつビューが参照する列はスキーマ適用時点で存在していなければならない。
@@ -648,6 +657,9 @@ async function dropUserRoleCheck() {
 async function beforeSchema() {
   // 権限に「閲覧専用」を足したため、role を縛っていた制約を外す
   await dropUserRoleCheck();
+
+  // 問い合わせの宛先（アプリのこと／営業本部内のこと）
+  await addInquiryDest();
 
   // SQLiteの CREATE VIEW IF NOT EXISTS は旧定義を置き換えないため落としておく。
   // PostgreSQLは CREATE OR REPLACE VIEW で置き換わるので落とさない。

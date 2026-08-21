@@ -1,0 +1,14 @@
+{
+  "name": "価格交渉管理アプリ",
+  "short_name": "価格交渉管理",
+  "description": "値上げ交渉・単価管理（株式会社パロマ 営業本部）",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#dc000c",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

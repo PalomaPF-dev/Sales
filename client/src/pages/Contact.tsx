@@ -17,6 +17,8 @@ interface Inquiry {
   id: number;
   login_id: string | null;
   name: string;
+  /** 宛先。app=アプリのこと（管理者へ）／sales=営業本部内のこと（営業企画部へ） */
+  dest?: string | null;
   category: string;
   message: string;
   status: 'open' | 'resolved';
@@ -27,15 +29,41 @@ interface Inquiry {
   created_at: string;
 }
 
-/** 分類（サーバーの INQUIRY_CATEGORIES と一致させる） */
-const INQUIRY_CATEGORIES = [
-  'ログインできない',
-  'アプリのエラー・不具合',
-  'アカウント・権限（支店／営業所／担当）',
-  '操作方法について',
-  '機能の要望・改善',
-  'その他',
+/**
+ * 宛先と分類（サーバーの INQUIRY_DESTS / INQUIRY_CATEGORIES_BY_DEST と一致させる）。
+ * アプリの使い方や不具合は管理者、値決めや交渉の進め方は営業企画部が受ける。
+ */
+const DESTS = [
+  {
+    key: 'app',
+    label: 'アプリのこと',
+    to: '管理者',
+    note: 'ログイン・不具合・操作方法・機能の要望など、アプリそのものについて',
+    categories: [
+      'ログインできない',
+      'アプリのエラー・不具合',
+      'アカウント・権限（支店／営業所／担当）',
+      '操作方法について',
+      '機能の要望・改善',
+      'その他（アプリ）',
+    ],
+  },
+  {
+    key: 'sales',
+    label: '営業本部内のこと',
+    to: '営業企画部',
+    note: '価格・単価、交渉の進め方、取込データの中身など、業務そのものについて',
+    categories: [
+      '価格・単価について',
+      '値上げ交渉の進め方',
+      '取込データの内容について',
+      '集計・数字の見方',
+      'その他（営業本部）',
+    ],
+  },
 ];
+const destOf = (v: string | null | undefined) =>
+  DESTS.find((d) => d.key === v) ?? DESTS[0];
 
 const dt = (s: string | null | undefined) => jstDateTime(s);
 
@@ -51,6 +79,7 @@ export default function Contact() {
   const [inbox, setInbox] = useState<Inquiry[]>([]);
   const [replyDraft, setReplyDraft] = useState<Record<number, string>>({});
   const pickedRef = useRef<HTMLDivElement>(null);
+  const [dest, setDest] = useState('app');
   const [category, setCategory] = useState('');
   const [message, setMessage] = useState('');
   const [rows, setRows] = useState<Inquiry[]>([]);
@@ -95,10 +124,28 @@ export default function Contact() {
     setBusy(true);
     setMsg(null);
     try {
-      await api('/inquiries', { method: 'POST', body: JSON.stringify({ category, message }) });
+      await api('/inquiries', { method: 'POST', body: JSON.stringify({ dest, category, message }) });
       setMsg({ kind: 'ok', text: '送信しました。回答はこのページに届きます。' });
       setCategory('');
       setMessage('');
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 問い合わせを消す。戻せないので、押したときに一度だけ確かめる。
+   * 送った本人と、受け持ちの回答担当が消せる。
+   */
+  const remove = async (id: number) => {
+    if (!window.confirm('このお問い合わせを消します。元に戻せません。よろしいですか？')) return;
+    setBusy(true);
+    try {
+      await api(`/inquiries/${id}`, { method: 'DELETE' });
+      setMsg({ kind: 'ok', text: 'お問い合わせを消しました。' });
       load();
     } catch (err) {
       setMsg({ kind: 'error', text: (err as Error).message });
@@ -120,7 +167,8 @@ export default function Contact() {
     <div>
       <h1 className="page-title">お問い合わせ</h1>
       <p className="page-sub">
-        アプリの不明点・不具合・要望などを本社（営業企画部）へ送れます。回答はこのページに届きます。
+        <strong>アプリのこと</strong>は管理者へ、<strong>営業本部内のこと</strong>は営業企画部へ届きます。
+        回答はこのページに届きます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
@@ -136,6 +184,7 @@ export default function Contact() {
                      style={{ border: q.id === picked ? '2px solid var(--accent)' : '1px solid var(--border)',
                               borderRadius: 10, padding: 12 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                    <span className="badge violet">{destOf(q.dest).label}</span>
                     <span className="badge blue">{q.category}</span>
                     {q.status === 'resolved'
                       ? <span className="badge green">対応済み</span>
@@ -168,6 +217,12 @@ export default function Contact() {
                       onClick={() => patchInquiry(q.id, { status: q.status === 'open' ? 'resolved' : 'open' })}>
                       {q.status === 'open' ? '対応済みにする' : '未対応に戻す'}
                     </button>
+                    {/* 済んだやり取りを片づける。戻せないので押したときに確かめる */}
+                    <button className="btn secondary sm" disabled={busy}
+                      title="このお問い合わせを消します（元に戻せません）"
+                      onClick={() => remove(q.id)}>
+                      消す
+                    </button>
                   </div>
                 </div>
               ))}
@@ -195,11 +250,25 @@ export default function Contact() {
           <p className="pt-note" style={{ marginTop: 0 }}>
             送信者: <strong>{me.name}</strong>{me.loginId ? `（${me.loginId}）` : ''}
           </p>
+          {/* 宛先。話の中身で届く先が変わるので、いちばん上で選んでもらう */}
+          <label className="fld" style={{ marginBottom: 12 }}>
+            お問い合わせ先（必須）
+            <div className="seg" style={{ marginTop: 4 }}>
+              {DESTS.map((d) => (
+                <button key={d.key} type="button" title={d.note}
+                        className={dest === d.key ? 'on' : ''}
+                        onClick={() => { setDest(d.key); setCategory(''); }}>
+                  {d.label} → {d.to}
+                </button>
+              ))}
+            </div>
+          </label>
+          <p className="pt-note" style={{ marginTop: -4 }}>{destOf(dest).note}</p>
           <label className="fld" style={{ marginBottom: 12 }}>
             お問い合わせ分類（必須）
             <select value={category} required onChange={(e) => setCategory(e.target.value)}>
               <option value="" disabled>選択してください</option>
-              {INQUIRY_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {destOf(dest).categories.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </label>
           <label className="fld" style={{ marginBottom: 14 }}>
@@ -211,7 +280,7 @@ export default function Contact() {
               onChange={(e) => setMessage(e.target.value)} />
           </label>
           <button className="btn" type="submit" disabled={busy}>
-            {busy ? '送信中...' : '本社（営業企画部）へ送信'}
+            {busy ? '送信中...' : `${destOf(dest).to}へ送信`}
           </button>
         </form>
       </Card>
@@ -224,12 +293,19 @@ export default function Contact() {
             {rows.map((r) => (
               <div key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                  <span className="badge violet">{destOf(r.dest).label}</span>
                   <span className="badge blue">{r.category}</span>
                   {r.status === 'resolved'
                     ? <span className="badge green">対応済み</span>
                     : <span className="badge yellow">対応中</span>}
                   {r.reply && !r.read_at && <span className="badge red">未読の回答</span>}
                   <span style={{ color: 'var(--muted)' }}>{dt(r.created_at)}</span>
+                  {/* 済んだやり取りは自分で片づけられる（戻せないので確かめる） */}
+                  <button className="btn secondary sm" style={{ marginLeft: 'auto' }} disabled={busy}
+                          title="このお問い合わせを履歴から消します（元に戻せません）"
+                          onClick={() => remove(r.id)}>
+                    消す
+                  </button>
                 </div>
                 <p style={{ margin: '8px 0 0', fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{r.message}</p>
                 {r.reply && (

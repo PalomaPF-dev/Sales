@@ -65,7 +65,7 @@ export function testMail(byName) {
   const html = `
     <p>価格交渉管理アプリからのテストメールです。</p>
     <p>このメールが届いていれば、お問い合わせが入ったときの通知も同じ経路で届きます。</p>
-    <p style="color:#64748b;font-size:12px">
+    <p style="color:#707070;font-size:12px">
       送信者: ${esc(byName)}<br>
       差出人: ${esc(mailFrom())}<br>
       アプリ: ${esc(appOrigin())}
@@ -76,17 +76,21 @@ export function testMail(byName) {
 /** 新しい問い合わせの通知メール（本社 営業企画部の回答担当者あて） */
 export function inquiryMail(row) {
   const url = `${appOrigin()}/contact?inquiry=${row.id}`;
-  const subject = `【価格交渉管理】お問い合わせ（${row.category}）${row.name} さん`;
+  // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業企画部）。
+  // 件名だけで自分宛かどうかが分かるようにする
+  const destLabel = row.dest === 'sales' ? '営業本部内のこと' : 'アプリのこと';
+  const subject = `【価格交渉管理／${destLabel}】お問い合わせ（${row.category}）${row.name} さん`;
   const html = `
     <p>価格交渉管理アプリに、新しいお問い合わせが届きました。</p>
     <table cellpadding="6" style="border-collapse:collapse;font-size:14px">
       <tr><th align="left">送信者</th><td>${esc(row.name)}（${esc(row.login_id ?? 'IDなし')}）</td></tr>
+      <tr><th align="left">宛先</th><td>${esc(destLabel)}</td></tr>
       <tr><th align="left">分類</th><td>${esc(row.category)}</td></tr>
       <tr><th align="left" valign="top">内容</th>
           <td style="white-space:pre-wrap">${esc(row.message)}</td></tr>
     </table>
     <p><a href="${url}"
-          style="display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;
+          style="display:inline-block;background:#dc000c;color:#fff;padding:10px 18px;
                  border-radius:8px;text-decoration:none;font-weight:600">
       アプリで回答する
     </a></p>

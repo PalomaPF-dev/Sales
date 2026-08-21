@@ -4,7 +4,7 @@ import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
 import { api } from '../api';
 import { Card, NoteFold, num, nums } from '../components/ui';
-import { BASE_OPTIONS, FILTER_KEYS, narrowByParent } from '../filterOptions';
+import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
 import type { Meta } from '../types';
 
 /** 内訳のまとめ方。値上げ額の内訳と同じ3つ */
@@ -98,6 +98,13 @@ export default function AvgPrices() {
 
   useEffect(() => {
     api<Meta>('/meta').then(setMeta).catch(() => {});
+    // 既定はダッシュボードと同じ「今回の取り組みが始まった月以降」。
+    // 欄を空にすれば全期間になる
+    if (!params.get('aDateYm')) {
+      const next = new URLSearchParams(params);
+      next.set('aDateYm', RAISE_START_YM);
+      setParams(next, { replace: true });
+    }
   }, []);
 
   const filterQs = FILTER_KEYS.map((k) => `${k}=${get(k)}`).join('&');

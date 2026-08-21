@@ -6,6 +6,15 @@ export const FILTER_KEYS = ['q', 'equip', 'category', 'model', 'person', 'custom
   'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
 
 /**
+ * 承認日の既定。今回の値上げの取り組みが始まった月。
+ *
+ * これより前の承認は前回までの古い単価が多く、値上げ額として見ると実態と合わない。
+ * ダッシュボード・平均単価を開いたときの初期値に使う（欄を空にすれば全期間）。
+ * 取り組みの区切りが変わったら、この1か所を直す。
+ */
+export const RAISE_START_YM = '2026-05';
+
+/**
  * 値上げ幅の「基準」（比較のもと）。
  * マスタ登録単価（A基準）とこの単価との差が値上げ幅で、
  * それに当月の実績数を掛けたものが値上げ額になる。
