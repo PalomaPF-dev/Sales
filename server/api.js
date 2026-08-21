@@ -15,10 +15,9 @@ import {
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
 import { buildExportTable, buildWorkbook, buildDashboardWorkbook } from './export.js';
-import { ssoConfig, verifyToken, safeNextPath, SsoError } from './sso.js';
 import {
-  deleteAttachment, fetchAttachment, isPrivateBlobConfigured, putAttachment,
-} from './privateBlob.js';
+  deleteAttachment, fetchAttachment, fileBucket, isFileStoreConfigured, putAttachment,
+} from './fileStore.js';
 import { comparePref } from './prefOrder.js';
 import {
   KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
@@ -169,7 +168,7 @@ api.use(wrap(async (req, res, next) => {
 // ログイン前に到達してよいパス。これ以外は既定で拒否する。
 // 個別のハンドラに requireLogin を書き忘れても素通りしないようにするための関門。
 const PUBLIC_PATHS = new Set([
-  '/login', '/login/setup', '/logout', '/me', '/setup/status', '/setup', '/sso', '/admin-recovery',
+  '/login', '/login/setup', '/logout', '/me', '/setup/status', '/setup', '/admin-recovery',
   // 問い合わせは「ログインできない」の分類だけ未ログインで受ける（ハンドラ側で判定）
   '/inquiries',
 ]);
@@ -566,76 +565,6 @@ api.get('/admin-recovery', wrap(async (req, res) => {
   });
 }));
 
-// ---- 社内ポータルからのSSO ----
-
-/**
- * ポータルが発行した受け渡しトークンを受け取り、本アプリのセッションを作る。
- * 仕様は docs/SSO-PROPOSAL.md を参照。
- *
- * 失敗しても理由を画面に細かく出さない（総当たりの手掛かりになるため）。
- * ログイン画面に短い区分だけ渡し、詳細はサーバーのログに残す。
- */
-api.get('/sso', wrap(async (req, res) => {
-  const config = ssoConfig();
-  const next = safeNextPath(req.query?.next);
-  const fail = (code, detail) => {
-    console.warn(`SSO失敗 (${code}): ${detail}`);
-    return res.redirect(302, `/login?sso=${encodeURIComponent(code)}`);
-  };
-
-  // 鍵が未設定の間はSSOそのものを開かない
-  if (!config.enabled) {
-    return fail('disabled', 'PORTAL_SSO_SECRET が未設定です');
-  }
-
-  let claims;
-  try {
-    claims = verifyToken(req.query?.token, config);
-  } catch (e) {
-    if (e instanceof SsoError) return fail(e.code, e.message);
-    throw e;
-  }
-
-  // 期限切れの記録を掃除してから、使い回しでないことを確かめる
-  await db.run('DELETE FROM sso_used_tokens WHERE expires_at < ?', [now()]).catch(() => {});
-  const used = await db.get('SELECT jti FROM sso_used_tokens WHERE jti = ?', [claims.jti]);
-  if (used) return fail('replayed', `jti ${claims.jti} は使用済みです`);
-
-  let user = await db.get('SELECT * FROM users WHERE login_id = ?', [claims.loginId]);
-
-  if (!user) {
-    if (!config.autoCreate) {
-      return fail('unknown_user', `未登録のログインID: ${claims.loginId}`);
-    }
-    // 自動作成は必ず最小権限から。管理者への変更は本アプリの管理者画面で行う
-    // （トークンに役割を持たせると、ポータル側の設定ミスで管理者を作れてしまう）
-    const created = await db.run(
-      `INSERT INTO users (name, role, branch, office, active, login_id, must_change_password)
-       VALUES (?,?,?,?,1,?,0)`,
-      [claims.name || claims.loginId, 'sales', claims.branch, claims.office, claims.loginId]);
-    user = await db.get('SELECT * FROM users WHERE id = ?', [created.lastInsertRowid]);
-    console.warn(`SSO: 未登録のため営業担当者として作成しました（${claims.loginId} / ${user?.name}）`);
-  }
-
-  if (!user?.active) return fail('inactive', `無効なユーザー: ${claims.loginId}`);
-
-  await db.run(
-    'INSERT INTO sso_used_tokens (jti, user_id, used_at, expires_at) VALUES (?,?,?,?)',
-    [claims.jti, user.id, now(), claims.expiresAt]);
-
-  // パスワードでのログインと同じ扱いにする。ロックが残っていても
-  // ポータルで本人確認が済んでいるため解除する。
-  await db.run(
-    `UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ?
-       WHERE id = ?`, [now(), user.id]);
-
-  const { token, expires } = await createSession(user.id);
-  setSessionCookie(req, res, token, expires);
-
-  // トークンをURLに残さない（履歴・ブックマーク・Referer に載るため）
-  res.redirect(302, next);
-}));
-
 // パスワード変更（本人のみ。仮パスワード状態でも実行できる）
 api.post('/password', wrap(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'ログインしてください' });
@@ -842,7 +771,6 @@ api.patch('/admin/users/:id', wrap(async (req, res) => {
 api.get('/admin/status', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const sso = ssoConfig();
   const hasBasic = Boolean(process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASS);
 
   // お問い合わせの通知メール。鍵の有無と、実際に届く宛先の数を見せる
@@ -867,22 +795,29 @@ api.get('/admin/status', wrap(async (req, res) => {
     db: db.kind,
     items: [
       {
+        // サイト全体の遮断はVercel側（Deployment Protection）で行う。
+        // アプリのBasic認証はVercelでは /api にしか掛からない
+        // （画面のファイルはCDNが直接返し、サーバーを通らないため）。
         key: 'basic',
-        name: 'Basic認証（URLを知っている人からの遮断）',
+        name: 'URLを知っている人からの遮断',
         ok: hasBasic,
         detail: hasBasic
-          ? `有効（利用者名: ${process.env.BASIC_AUTH_USER}）`
-          : '未設定。URLを知っていればログイン画面までは開けます',
-        hint: 'Vercel → Settings → Environment Variables に BASIC_AUTH_USER と BASIC_AUTH_PASS',
+          ? `アプリ側のBasic認証が有効（利用者名: ${process.env.BASIC_AUTH_USER}）。`
+            + 'ただしVercelでは /api にしか掛かりません'
+          : '未設定。個人ごとのログインで守っています（未ログインでは価格データは出ません）',
+        hint: 'サイト全体を1つのパスワードで囲うときは、Vercel → Settings →'
+          + ' Deployment Protection → Password Protection（独自ドメインにも掛かります）',
       },
       {
-        key: 'blob',
-        name: '添付ファイルの保管先（Vercel Blob）',
-        ok: isPrivateBlobConfigured(),
-        detail: isPrivateBlobConfigured()
-          ? `Blobに保存します（登録済み ${num(attach?.total)}件のうち ${num(attach?.on_blob)}件がBlob）`
+        key: 'files',
+        name: '添付ファイルの保管先（Supabase Storage）',
+        ok: isFileStoreConfigured(),
+        detail: isFileStoreConfigured()
+          ? `Supabaseの保管庫「${fileBucket()}」に保存します`
+            + `（登録済み ${num(attach?.total)}件のうち ${num(attach?.on_blob)}件が保管庫）`
           : `未設定のためデータベースに保存します（登録済み ${num(attach?.total)}件）`,
-        hint: 'Vercel → Storage で Blob ストアを接続（プレフィックス PRIVATE_BLOB）',
+        hint: 'Vercel → Settings → Environment Variables に SUPABASE_SERVICE_ROLE_KEY'
+          + '（保管庫の名前を変えるときは SUPABASE_BUCKET）。設定後は再デプロイが必要です',
       },
       {
         key: 'mail',
@@ -895,15 +830,6 @@ api.get('/admin/status', wrap(async (req, res) => {
             : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '価格改定進捗 <noreply@paloma-pf.com>'}）`,
         hint: 'Vercel → Settings → Environment Variables に RESEND_API_KEY'
           + '（任意で MAIL_FROM / APP_ORIGIN / MAIL_NOTIFY_TO）。設定後は再デプロイが必要です',
-      },
-      {
-        key: 'sso',
-        name: '社内ポータルからのSSO',
-        ok: sso.enabled,
-        detail: sso.enabled
-          ? `有効（発行元: ${sso.issuer} / 未登録の人の自動作成: ${sso.autoCreate ? 'する' : 'しない'}）`
-          : '未設定。ログインIDとパスワードでの入室のみです',
-        hint: 'ポータルと同じ鍵を PORTAL_SSO_SECRET に設定',
       },
     ],
   });
@@ -3413,16 +3339,17 @@ api.post('/attachments', upload.single('file'), wrap(async (req, res) => {
     return res.status(404).json({ error: '案件が見つかりません' });
   }
 
-  // 実体は Private Blob へ。トークン未設定のローカル開発では従来どおり base64 で DB に入れる。
+  // 実体はSupabaseの保管庫へ。鍵が未設定のローカル開発では従来どおり base64 で DB に入れる。
+  // blob_url には保管庫の中のパスを入れる（URLではないので保管先を変えても記録は生きる）
   const filename = decodeUploadName(req.file.originalname);
   let blobUrl = null;
-  if (isPrivateBlobConfigured()) {
+  if (isFileStoreConfigured()) {
     try {
       blobUrl = await putAttachment({
         dealId, filename, mimeType: req.file.mimetype, body: req.file.buffer,
       });
     } catch (e) {
-      console.error('[attachments] Blobへの保存に失敗:', e?.message || e);
+      console.error('[attachments] 保管庫への保存に失敗:', e?.message || e);
       return res.status(502).json({ error: 'ファイルの保存に失敗しました。時間をおいて再度お試しください' });
     }
   }
@@ -3452,14 +3379,14 @@ api.get('/attachments/:id/download', wrap(async (req, res) => {
   if (a.deal_id && !await findDealInScope(a.deal_id, req.user, 'deals')) {
     return res.status(404).json({ error: 'ファイルが見つかりません' });
   }
-  // blob_url があれば Blob から取得して中継する。URL自体はブラウザへ返さない。
-  // 無い場合は Blob 移行前の既存行なので、従来どおり DB の base64 を返す。
+  // blob_url があれば保管庫から取得して中継する。場所自体はブラウザへ返さない。
+  // 無い場合はDBに入れた行（鍵の未設定時に保存したもの）なので base64 を返す。
   let body = null;
   if (a.blob_url) {
     try {
       body = await fetchAttachment(a.blob_url);
     } catch (e) {
-      console.error('[attachments] Blobから取得できませんでした:', e?.message || e);
+      console.error('[attachments] 保管庫から取得できませんでした:', e?.message || e);
     }
   } else if (a.content) {
     body = Buffer.from(a.content, 'base64');
@@ -3481,7 +3408,7 @@ api.delete('/attachments/:id', wrap(async (req, res) => {
     return res.status(403).json({ error: 'アップロードした本人または本社のみ削除できます' });
   }
   await db.run('DELETE FROM attachments WHERE id = ?', [a.id]);
-  // DB から消えた後に実体も消す。失敗しても業務は止めない（privateBlob 側でログのみ）
+  // DB から消えた後に実体も消す。失敗しても業務は止めない（fileStore 側でログのみ）
   await deleteAttachment(a.blob_url);
   res.json({ ok: true });
 }));
@@ -4321,7 +4248,7 @@ api.delete('/import/batches/:id', wrap(async (req, res) => {
   } catch (e) {
     if (!/does not exist|no such column|no such table/i.test(e?.message || '')) throw e;
   }
-  // 実体（Blob）も一緒に片付ける。行を消す前に URL を控えておく。
+  // 実体（保管庫のファイル）も一緒に片付ける。行を消す前に場所を控えておく。
   const orphanBlobs = await db.all(
     `SELECT blob_url FROM attachments
       WHERE blob_url IS NOT NULL AND deal_id IN (SELECT id FROM deals WHERE batch_id = ?)`, [id]);

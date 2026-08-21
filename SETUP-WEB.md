@@ -169,6 +169,7 @@ Vercelはアクセスが重なると関数のインスタンスが並行して�
 
 **注意**: Vercelの標準の保護（Vercel Authentication）は `*.vercel.app` にのみ適用され、
 独自ドメインには適用されません。独自ドメインを設定すると社外からも到達可能になるため、
-手順2の `BASIC_AUTH_*` を設定することをお勧めします。
+Vercelの **Settings → Deployment Protection → Password Protection**（独自ドメインにも掛かります）
+を設定することをお勧めします。アプリ側の `BASIC_AUTH_*` はVercelでは `/api` にしか掛かりません。
 
 アプリ自体は個人ごとのログインで保護されているため、未ログインでは価格データは表示されません。

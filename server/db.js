@@ -238,7 +238,7 @@ function toPgPlaceholders(sql) {
 // id列を持たないテーブル。INSERT時に RETURNING id を付けるとエラーになる。
 // 主キーがidでないテーブルを足すときは、ここにも必ず追加すること。
 const TABLES_WITHOUT_ID = new Set([
-  'settings', 'price_types', 'corp_negotiations', 'sso_used_tokens',
+  'settings', 'price_types', 'corp_negotiations',
   'corp_map', 'agg_staging', 'act_staging', 'corp_plans',
   'master_price_history',
 ]);
@@ -804,8 +804,8 @@ async function beforeSchema() {
     'ALTER TABLE deals ADD COLUMN r2_done INTEGER NOT NULL DEFAULT 0',
     // 交渉履歴を法人単位にする
     'ALTER TABLE negotiation_logs ADD COLUMN corp_code TEXT',
-    // 添付の実体を Vercel Blob（Privateストア）へ移す。
-    // blob_url があればそちらが正、無ければ従来どおり content（base64）を読む。
+    // 添付の実体を外の保管庫（Supabase Storage）へ移す。blob_url には
+    // 保管庫の中のパスが入る。無ければ従来どおり content（base64）を読む。
     'ALTER TABLE attachments ADD COLUMN blob_url TEXT',
     // 価格調査（実単価）の受け皿。月の並びは settings の actual_meta に持つ
     // 価格調査（当月実績）の作業表。列構成が変わったので作り直す
@@ -878,7 +878,7 @@ async function beforeSchema() {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }
 
-  // 実体を Blob へ移した行では content が空になるため NOT NULL を外す。
+  // 実体を保管庫へ移した行では content が空になるため NOT NULL を外す。
   // SQLite は列制約の変更ができないので Postgres のときだけ実施する
   // （ローカル開発は従来どおり content に入れるため実害はない）。
   if (isPostgres) {
