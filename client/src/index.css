@@ -702,3 +702,7 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 /* 案件一覧は表を広く使いたいので、画面の下の余白をつめる */
 .deals-page { margin-bottom: -40px; }
 .view-mobile .deals-page { margin-bottom: 0; }
+
+/* 承認日の条件に合わず、値上げ額の合計に入っていないマス */
+.tbl.deals td.uncounted { color: #94a3b8; }
+.tbl.deals td.uncounted .sub { color: #cbd5e1; }
