@@ -835,30 +835,41 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
   「いま誰として見ているか」を画面の上にはっきり出す。
 */
 .apphead {
-  background: #fff; border: 1px solid var(--border); border-radius: 12px;
-  padding: 10px 16px; margin-bottom: 16px; box-shadow: var(--shadow);
+  /*
+    下へスクロールしても出したままにする。立場によって数字が変わるので、
+    表を見ている間も「いま誰として見ているか」が消えないようにする。
+    上端の赤いブランドライン（3px）の下に留める。
+  */
+  position: sticky; top: 3px; z-index: 30;
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  padding: 7px 14px; margin-bottom: 14px;
+  box-shadow: 0 1px 3px rgba(51, 51, 51, 0.06), 0 4px 12px rgba(51, 51, 51, 0.05);
 }
-.apphead .who { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 26px; }
-.apphead .item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.apphead .who { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 22px; }
+.apphead .item { display: flex; flex-direction: column; gap: 0; min-width: 0; }
 .apphead .item small {
-  font-size: 10.5px; color: var(--label); letter-spacing: 0.04em; line-height: 1.4;
+  font-size: 9.5px; color: var(--label); letter-spacing: 0.03em; line-height: 1.4;
 }
 .apphead .item b {
-  font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.3;
+  font-size: 13.5px; font-weight: 700; color: var(--ink); line-height: 1.35;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.apphead .item.name b { font-size: 18px; }
+.apphead .item.name b { font-size: 15px; }
 .apphead .rbadge {
   align-self: center; margin-left: auto; flex-shrink: 0;
-  border-radius: 6px; padding: 3px 9px; font-size: 11.5px; font-weight: 700;
+  border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 700;
   background: #eeeeee; color: var(--ink-2);
 }
 .apphead .rbadge.admin { background: #fdecea; color: var(--red); }
-.view-mobile .apphead { padding: 9px 12px; }
-.view-mobile .apphead .who { gap: 6px 16px; }
-.view-mobile .apphead .item b { font-size: 14px; }
-.view-mobile .apphead .item.name b { font-size: 15px; }
+/* スマホは上の帯（.mtop 3px+52px）の下に留める */
+.view-mobile .apphead { top: 55px; padding: 7px 11px; }
+.view-mobile .apphead .who { gap: 3px 14px; }
+.view-mobile .apphead .item b { font-size: 12.5px; }
+.view-mobile .apphead .item.name b { font-size: 13.5px; }
 .view-mobile .apphead .rbadge { margin-left: 0; }
+/* 認証を切っているときは上の帯がずれるぶん、留める位置も下げる */
+.auth-off-banner ~ .main .apphead { top: 37px; }
+.view-mobile .auth-off-banner ~ .main .apphead { top: 89px; }
 
 /* 利用条件・免責。読み物なので幅を抑えて行間を広く取る */
 .terms { max-width: 860px; }
