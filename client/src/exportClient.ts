@@ -61,5 +61,7 @@ export async function exportLargeExcel(
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // 取り消しは少し待ってから。10万件だとファイルが100MBを超えることがあり、
+  // 押した直後に取り消すとブラウザが読み終える前に元を失って落ちることがある
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
