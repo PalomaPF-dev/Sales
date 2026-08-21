@@ -485,23 +485,12 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; co
 
 /* ---- 表の上に出す横スクロールバー ---- */
 
-/*
-  列が多い表では、下端のスクロールバーまで目線と手を動かすのが手間になる。
-  表の上にも同じ幅のバーを置き、どちらを動かしても連動させる（HScroll）。
-*/
-.hscroll-top {
-  overflow-x: auto; overflow-y: hidden;
-  /* スクロールバーが描かれる高さを確保する（中身は幅だけの空要素のため） */
-  height: 12px;
-  margin-bottom: 6px;
-  /* 常にバーを見せる（自動非表示だと在ることに気づけない） */
-  scrollbar-width: thin;
-}
-.hscroll-top.hidden { display: none; }
-.hscroll-top::-webkit-scrollbar { height: 10px; }
-.hscroll-top::-webkit-scrollbar-track { background: var(--grid); border-radius: 999px; }
-.hscroll-top::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-.hscroll-top::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+/* 横スクロールのバーは表の下だけに出す（上下にあると分かりにくいため） */
+.tbl-scroll { scrollbar-width: thin; }
+.tbl-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
+.tbl-scroll::-webkit-scrollbar-track { background: var(--grid); border-radius: 999px; }
+.tbl-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+.tbl-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* ---- 合意単価が目標に届かなかった行 ---- */
 

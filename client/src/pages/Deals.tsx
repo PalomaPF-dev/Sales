@@ -567,10 +567,13 @@ export default function Deals() {
   const mAt = Math.min(mOff ?? Math.min(histMonths.length, mMax), mMax);
   const visCols = mCols.slice(mAt, mAt + M_WIN);
 
-  /** 計画（当月〜3か月後の申請単価）の1マス。承認日・稟議Noつき */
+  /**
+   * 計画（当月〜3か月後の申請単価）の1マス。承認日・稟議Noつき。
+   * 翌月（9月計画）の承認日は出さない（当月と同じ日が並ぶだけで読みにくいため）。
+   */
   const planCell = (d: Deal, n: 0 | 1 | 2 | 3) => aCell(
     [d.a_price_m0, d.a_price_m1, d.a_price_m2, d.a_price_m3][n],
-    [d.a_date_m0, d.a_date_m1, d.a_date_m2, d.a_date_m3][n],
+    n === 1 ? null : [d.a_date_m0, d.a_date_m1, d.a_date_m2, d.a_date_m3][n],
     [d.a_ringi_m0, d.a_ringi_m1, d.a_ringi_m2, d.a_ringi_m3][n],
   );
 
@@ -606,6 +609,16 @@ export default function Deals() {
           </>
         )}
       </p>
+      {/* 開発者だけの操作。表の下に置くと表が狭くなるため、説明と一緒にまとめる
+          （ほかの権限の案内は上の説明に書いてあるので繰り返さない） */}
+      {subOpen && isDev && (
+        <p className="page-sub" style={{ marginTop: -10 }}>
+          開発者のため、「入力」で取込項目
+          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価）も直せます。
+          変更は入力欄を離れた時点で保存されます。
+          コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
+        </p>
+      )}
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
       <div className="filters">
@@ -801,31 +814,27 @@ export default function Deals() {
       {/* 値上げ交渉の一括入力。商談結果の左のチェックで品目を選び、
           入力と同じ項目（商談結果・商談メモ・最終確定日・最終確定単価・適用年月）を
           まとめて入れる。書き入れた項目だけが対象で、空欄の項目は変更しない */}
-      {data && canEdit && (
+      {data && canEdit && sel.size > 0 && (
         <div className="toolbar" style={{ flexWrap: 'wrap', rowGap: 8 }}>
-          <span className="count">
-            選択 <b>{sel.size.toLocaleString()}</b>件
-            {sel.size === 0 && <span style={{ color: 'var(--muted)' }}>（商談結果の左のチェックで品目を選ぶと、入力の項目をまとめて入れられます）</span>}
-          </span>
-          <select value={selNego} onChange={(e) => setSelNego(e.target.value)} disabled={!sel.size}
-                  title="商談結果">
+          <span className="count">選択 <b>{sel.size.toLocaleString()}</b>件</span>
+          <select value={selNego} onChange={(e) => setSelNego(e.target.value)} title="商談結果">
             <option value="">商談結果</option>
             <option value="〇">〇 合意</option>
             <option value="□">□ 広域待ち</option>
             <option value="△">△ 否決</option>
             <option value="×">× 本社へ相談</option>
           </select>
-          <input type="text" value={selNote} disabled={!sel.size}
+          <input type="text" value={selNote}
             placeholder="商談メモ（商談結果の詳細）"
             style={{ flex: '1 1 200px', minWidth: 160 }}
             onChange={(e) => setSelNote(e.target.value)} />
-          <input type="date" value={selFinalDate} disabled={!sel.size}
+          <input type="date" value={selFinalDate}
             title="最終確定日" style={{ width: 140 }}
             onChange={(e) => setSelFinalDate(e.target.value)} />
-          <input type="number" value={selFinalPrice} disabled={!sel.size}
+          <input type="number" value={selFinalPrice}
             placeholder="最終確定単価" title="最終確定単価" style={{ width: 120 }}
             onChange={(e) => setSelFinalPrice(e.target.value)} />
-          <input type="month" value={selAppliedYm} disabled={!sel.size}
+          <input type="month" value={selAppliedYm}
             title="適用年月" style={{ width: 140 }}
             onChange={(e) => setSelAppliedYm(e.target.value)} />
           <button className="btn sm"
@@ -1199,26 +1208,6 @@ export default function Deals() {
         <button className="btn secondary sm" disabled={page >= pages} onClick={() => setParam('page', String(page + 1))}>次へ</button>
       </div>
 
-      {isDev ? (
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          開発者のため、「入力」で取込項目
-          （法人名・得意先名・器種名・器具区分・支店・営業所・担当者・出荷単価）も直せます。
-          変更は入力欄を離れた時点で保存されます。
-          コード類・日付など残りの項目は、器種名を押して案件を開き「取込データの修正」から直せます。
-        </p>
-      ) : canEdit ? (
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          「入力」から商談結果・商談メモ・最終確定日・最終確定単価・適用年月を入れられます（保存で反映されます）。
-          商談結果の左のチェックで品目を選ぶと、入力の項目をまとめて一括入力できます（空欄の項目は変更されません）。
-          {isHq && ' 本社・管理者は目標単価も「入力」から設定できます。'}
-        </p>
-      ) : (
-        <p className="pt-note" style={{ marginTop: 10 }}>
-          閲覧専用のため、入力の欄は表示していません。
-          上の絞り込みや見出しを押しての並び替えは自由にお使いいただけます。
-          絞り込んだ内容は「Excel出力」でそのまま持ち出せます。
-        </p>
-      )}
     </div>
   );
 }
