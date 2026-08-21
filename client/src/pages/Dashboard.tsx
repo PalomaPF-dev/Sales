@@ -865,6 +865,18 @@ export default function Dashboard() {
       </div>
 
       {/*
+        集計し直している間は、下の数字が「前の条件のまま」であることが分かるように
+        全体を薄くして目印を出す。10万件の集計は数秒かかるため、これが無いと
+        絞り込みを変えても数字が変わらないように見えてしまう。
+      */}
+      {busy && (
+        <div className="alert" style={{ marginTop: 10 }}>
+          集計し直しています…（下の数字はまだ前の条件のものです）
+        </div>
+      )}
+      <div style={busy ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
+
+      {/*
         出荷実績（土台）→ マスタ登録の件数（品目ベースの件数が母数）→
         月ごとの値上げ額（月あたり）の並び。
         承認日の絞り込みを変えると、ここもその条件で数え直される。
@@ -1144,6 +1156,7 @@ export default function Dashboard() {
                 m0={m0} m1={m1} m2={m2} m3={m3}
                 link={(name, kind) => dealsLink(kind, { [x.key]: name ?? '' })} />
       ))}
+      </div>
 
     </div>
   );
