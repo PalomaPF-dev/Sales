@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
 import { basicAuth, securityHeaders } from './auth.js';
 import { db, initDb, pgHint, pgTarget } from './db.js';
+import { isFileStoreConfigured } from './fileStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +28,9 @@ export function createApp({ serveStatic = true } = {}) {
         db: db.kind,
         deals: Number(row.deals),
         authProtected: Boolean(process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASS),
+        // 添付ファイルの保管先。設定が本番に反映されたかを、
+        // ログインせずに確かめられるようにする（鍵そのものは出さない）
+        files: isFileStoreConfigured() ? 'supabase' : 'db',
         uptime: Math.round(process.uptime()),
       });
     } catch (e) {
