@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, jstDateTime } from '../api';
 import { ROLE_NAMES } from '../types';
 import type { Meta } from '../types';
@@ -59,6 +59,13 @@ interface ImportResult {
 
 const EMPTY = { name: '', role: 'sales', branch: '東京中央', office: '東京中央営業所', title: '', email: '', loginId: '' };
 
+/** 一覧の絞り込み。空文字は「すべて」 */
+const EMPTY_FILTER = { q: '', branch: '', office: '', role: '', active: '', pw: '' };
+
+/** 並び替えできる項目。表の見出しと対応する */
+type SortCol = 'login' | 'name' | 'role' | 'branch' | 'email' | 'visible' | 'person'
+  | 'pw' | 'sessions' | 'last' | 'active';
+
 export default function Users() {
   const me = useUser();
   const [rows, setRows] = useState<AdminUser[]>([]);
@@ -77,6 +84,10 @@ export default function Users() {
   // 支店（管轄）・営業所（部署）の候補。案件データにある実際の表記から選べるようにして、
   // 表記ズレで本人に案件が表示されなくなるのを防ぐ
   const [meta, setMeta] = useState<Meta | null>(null);
+  // 一覧の絞り込み。人数が増えると目当ての人を探せなくなるため
+  const [filter, setFilter] = useState({ ...EMPTY_FILTER });
+  // 並び替え。見出しを押すと切り替わる（もう一度押すと逆順）
+  const [sort, setSort] = useState<{ col: SortCol; desc: boolean }>({ col: 'login', desc: false });
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
@@ -89,6 +100,77 @@ export default function Users() {
   useEffect(() => {
     api<{ items: StatusItem[] }>('/admin/status').then((r) => setStatus(r.items)).catch(() => {});
   }, []);
+
+  /** 絞り込みの選択肢は、いま登録されている内容から作る（実際にある表記だけ出す） */
+  const branchOptions = useMemo(
+    () => [...new Set(rows.map((u) => u.branch).filter(Boolean))].sort() as string[], [rows]);
+  const officeOptions = useMemo(() => [...new Set(rows
+    .filter((u) => !filter.branch || u.branch === filter.branch)
+    .map((u) => u.office).filter(Boolean))].sort() as string[], [rows, filter.branch]);
+
+  /**
+   * 絞り込んで並べ替えた一覧。表・全選択・件数はすべてこれを見る
+   * （絞り込んだ状態で「全選択」を押したら、出ている人だけが選ばれる）。
+   */
+  const shown = useMemo(() => {
+    const q = filter.q.trim().toLowerCase();
+    const hit = (u: AdminUser) => {
+      if (q && ![u.login_id, u.name, u.email, u.branch, u.office, u.title]
+        .some((v) => String(v ?? '').toLowerCase().includes(q))) return false;
+      if (filter.branch && u.branch !== filter.branch) return false;
+      if (filter.office && u.office !== filter.office) return false;
+      if (filter.role && u.role !== filter.role) return false;
+      if (filter.active === 'on' && !u.active) return false;
+      if (filter.active === 'off' && u.active) return false;
+      if (filter.pw === 'set' && !u.has_password) return false;
+      if (filter.pw === 'none' && u.has_password) return false;
+      return true;
+    };
+    const val = (u: AdminUser): string | number => {
+      switch (sort.col) {
+        case 'login': return u.login_id ?? '';
+        case 'name': return u.name ?? '';
+        case 'role': return ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role;
+        case 'branch': return [u.branch, u.office, u.title].filter(Boolean).join(' ');
+        case 'email': return u.email ?? '';
+        case 'visible': return Number(u.visible_deals ?? 0);
+        case 'person': return Number(u.person_deals ?? 0);
+        // パスワードは 未設定 → 仮 → 設定済 の順に重みを付ける
+        case 'pw': return u.has_password ? (u.must_change_password ? 1 : 2) : 0;
+        case 'sessions': return Number(u.sessions ?? 0);
+        case 'last': return u.last_login_at ?? '';
+        case 'active': return u.active ? 1 : 0;
+      }
+    };
+    return rows.filter(hit).sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      const d = typeof va === 'string' || typeof vb === 'string'
+        ? String(va).localeCompare(String(vb), 'ja')
+        : va - vb;
+      // 同じ値のときはログインIDで並びを固定する（押すたびに順が変わらないように）
+      const tie = String(a.login_id ?? '').localeCompare(String(b.login_id ?? ''), 'ja');
+      return (sort.desc ? -d : d) || tie;
+    });
+  }, [rows, filter, sort]);
+
+  const hasFilter = JSON.stringify(filter) !== JSON.stringify(EMPTY_FILTER);
+  const setF = (patch: Partial<typeof EMPTY_FILTER>) => setFilter((v) => ({ ...v, ...patch }));
+  /** 見出しを押したときの並び替え。もう一度押すと逆順になる */
+  const toggleSort = (col: SortCol) =>
+    setSort((v) => ({ col, desc: v.col === col ? !v.desc : false }));
+
+  /** 並び替えできる見出し。いまの向きを矢印で示す（案件一覧・平均単価と同じ作り） */
+  const Th = ({ col, children, title }: {
+    col: SortCol; children: React.ReactNode; title?: string;
+  }) => (
+    <th className={`sortable${sort.col === col ? ' sorted' : ''}`}
+        title={title ? `${title}（押すと並び替えます）` : '押すと並び替えます'}
+        onClick={() => toggleSort(col)}>
+      {children}
+      <span className="sort-mark">{sort.col === col ? (sort.desc ? '▼' : '▲') : ''}</span>
+    </th>
+  );
 
   /** メール通知のテスト送信。自分のメール宛に1通送り、結果をそのまま出す */
   const sendMailTest = async () => {
@@ -469,8 +551,66 @@ export default function Users() {
         </p>
       </Card>
 
+      {/*
+        一覧の絞り込み。人数が増えると目当ての人を探せなくなるため、
+        よく使う条件（支店・営業所・権限・状態・パスワード）と文字検索を置く。
+        絞り込んだ結果が、そのまま表・全選択・件数に効く。
+      */}
+      <div className="filters">
+        <label className="fld" style={{ minWidth: 220, flex: '1 1 220px' }}>
+          検索（社員番号・氏名・メール・所属）
+          <input type="text" value={filter.q} placeholder="例: 013749 / 瀧本 / 京都"
+                 onChange={(e) => setF({ q: e.target.value })} />
+        </label>
+        <label className="fld">
+          支店（管轄）
+          <select value={filter.branch} onChange={(e) => setF({ branch: e.target.value, office: '' })}>
+            <option value="">すべて</option>
+            {branchOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          営業所（部署）
+          <select value={filter.office} onChange={(e) => setF({ office: e.target.value })}>
+            <option value="">すべて</option>
+            {officeOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          権限
+          <select value={filter.role} onChange={(e) => setF({ role: e.target.value })}>
+            <option value="">すべて</option>
+            {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          状態
+          <select value={filter.active} onChange={(e) => setF({ active: e.target.value })}>
+            <option value="">すべて</option>
+            <option value="on">有効</option>
+            <option value="off">停止</option>
+          </select>
+        </label>
+        <label className="fld" title="まだ入れていない人を探すときに使います">
+          パスワード
+          <select value={filter.pw} onChange={(e) => setF({ pw: e.target.value })}>
+            <option value="">すべて</option>
+            <option value="none">未設定（本人待ち）</option>
+            <option value="set">設定済</option>
+          </select>
+        </label>
+        <div className="filter-actions">
+          <button className="btn secondary sm" disabled={!hasFilter}
+                  onClick={() => setFilter({ ...EMPTY_FILTER })}>解除</button>
+        </div>
+      </div>
+
       {/* 一括削除。行頭のチェックで選び、まとめて消す（消せない人は理由つきで残る） */}
       <div className="toolbar">
+        <span className="count">
+          <b>{shown.length.toLocaleString()}</b>名
+          {hasFilter && <span style={{ color: 'var(--muted)' }}>（全{rows.length.toLocaleString()}名中）</span>}
+        </span>
         <span className="count">選択 <b>{sel.size.toLocaleString()}</b>名</span>
         <button className="btn danger sm" disabled={busy || !sel.size} onClick={removeSelected}>
           選択したユーザーを削除
@@ -486,10 +626,10 @@ export default function Users() {
             <tr>
               <th title="表示中の全員を選ぶ／外す（自分自身は除く）">
                 <input type="checkbox"
-                  checked={rows.length > 0 && rows.filter((u) => u.id !== me.id).every((u) => sel.has(u.id))}
+                  checked={shown.length > 0 && shown.filter((u) => u.id !== me.id).every((u) => sel.has(u.id))}
                   onChange={(e) => {
                     const on = e.target.checked;
-                    setSel(on ? new Set(rows.filter((u) => u.id !== me.id).map((u) => u.id)) : new Set());
+                    setSel(on ? new Set(shown.filter((u) => u.id !== me.id).map((u) => u.id)) : new Set());
                   }} />
               </th>
               {/*
@@ -497,22 +637,33 @@ export default function Users() {
                 同じ人の属性はまとめて2段にし、列そのものを減らす。
                 （氏名＋権限／支店＋営業所・役職）
               */}
-              <th>ログインID<br /><small>（社員番号）</small></th>
-              <th>氏名<br /><small>権限</small></th>
-              <th>所属<br /><small>支店（管轄）／営業所・役職</small></th>
-              <th title="本社（営業部・製品企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">メール<br /><small>通知の宛先</small></th>
-              <th title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数">
+              <Th col="login">ログインID<br /><small>（社員番号）</small></Th>
+              <Th col="name">氏名<br /><small>権限</small></Th>
+              <Th col="branch">所属<br /><small>支店（管轄）／営業所・役職</small></Th>
+              <Th col="email" title="本社（営業部・製品企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">
+                メール<br /><small>通知の宛先</small>
+              </Th>
+              <Th col="visible" title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数。押すと閲覧の件数で並び替えます">
                 案件との紐付け
-              </th>
-              <th>パスワード</th>
-              <th title="いまログインしたままの端末の数。共通IDが何人に渡っているかの目安になります">
+              </Th>
+              <Th col="pw">パスワード</Th>
+              <Th col="sessions" title="いまログインしたままの端末の数。共通IDが何人に渡っているかの目安になります">
                 利用中<br /><small>端末</small>
-              </th>
-              <th>最終ログイン</th><th>状態</th><th></th>
+              </Th>
+              <Th col="last">最終ログイン</Th>
+              <Th col="active">状態</Th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((u) => (
+            {shown.length === 0 && (
+              <tr>
+                <td colSpan={11} style={{ color: 'var(--muted)', padding: '18px 12px' }}>
+                  条件に合う人がいません。絞り込みを見直すか「解除」を押してください。
+                </td>
+              </tr>
+            )}
+            {shown.map((u) => (
               editing?.id === u.id ? (
                 <tr key={u.id} className="editing">
                   <td></td>
