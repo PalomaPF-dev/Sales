@@ -6,7 +6,7 @@ import { useUser } from '../user';
 
 /**
  * お問い合わせ（ポータルと同じ仕様）。
- * ログイン中の利用者が本社（営業企画部）へ問い合わせを送り、回答をここで受け取る。
+ * ログイン中の利用者が本社（営業部・製品企画部）へ問い合わせを送り、回答をここで受け取る。
  * 回答が付くと未読になり、開いて「確認しました」で既読になる。
  *
  * 回答担当者（本社・管理者）には、このページに「届いたお問い合わせ」が出る。
@@ -17,7 +17,7 @@ interface Inquiry {
   id: number;
   login_id: string | null;
   name: string;
-  /** 宛先。app=アプリのこと（管理者へ）／sales=営業本部内のこと（営業企画部へ） */
+  /** 宛先。app=アプリのこと（管理者へ）／sales=営業本部内のこと（営業部・製品企画部へ） */
   dest?: string | null;
   category: string;
   message: string;
@@ -35,7 +35,7 @@ interface Inquiry {
 
 /**
  * 宛先と分類（サーバーの INQUIRY_DESTS / INQUIRY_CATEGORIES_BY_DEST と一致させる）。
- * アプリの使い方や不具合は管理者、値決めや交渉の進め方は営業企画部が受ける。
+ * アプリの使い方や不具合は管理者、値決めや交渉の進め方は営業部・製品企画部が受ける。
  */
 const DESTS = [
   {
@@ -55,7 +55,7 @@ const DESTS = [
   {
     key: 'sales',
     label: '営業本部内のこと',
-    to: '営業企画部',
+    to: '営業部・製品企画部',
     note: '価格・単価、交渉の進め方、取込データの中身など、業務そのものについて',
     categories: [
       '価格・単価について',
@@ -71,7 +71,7 @@ const destOf = (v: string | null | undefined) =>
 
 const dt = (s: string | null | undefined) => jstDateTime(s);
 
-/** 回答担当。本社（営業企画部）と管理者。サーバーの INQUIRY_ROLES と揃える */
+/** 回答担当。本社（営業部・製品企画部）と管理者。サーバーの INQUIRY_ROLES と揃える */
 const INQUIRY_STAFF = ['planning', 'admin', 'developer'];
 
 export default function Contact() {
@@ -171,12 +171,12 @@ export default function Contact() {
     <div>
       <h1 className="page-title">お問い合わせ</h1>
       <p className="page-sub">
-        <strong>アプリのこと</strong>は管理者へ、<strong>営業本部内のこと</strong>は営業企画部へ届きます。
+        <strong>アプリのこと</strong>は管理者へ、<strong>営業本部内のこと</strong>は営業部・製品企画部へ届きます。
         回答はこのページに届きます。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
 
-      {/* 回答担当者（本社 営業企画部・管理者）だけに出る。届いた問い合わせへの回答 */}
+      {/* 回答担当者（本社 営業部・製品企画部・管理者）だけに出る。届いた問い合わせへの回答 */}
       {staff && (
         <Card title={`届いたお問い合わせ（未対応 ${inbox.filter((q) => q.status === 'open').length}件）`}>
           {inbox.length === 0 ? (

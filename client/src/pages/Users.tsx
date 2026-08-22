@@ -12,7 +12,7 @@ interface AdminUser {
   branch: string | null;
   office: string | null;
   title: string | null;
-  /** 通知の宛先。本社（営業企画部）は問い合わせの通知をここで受ける */
+  /** 通知の宛先。本社（営業部・製品企画部）は問い合わせの通知をここで受ける */
   email: string | null;
   active: number;
   login_id: string | null;
@@ -20,6 +20,8 @@ interface AdminUser {
   must_change_password?: number;
   locked_until?: string | null;
   has_password: number;
+  /** いまログインしたままの端末の数。共通IDが何人に渡っているかの目安 */
+  sessions?: number;
   /** その人に見える案件数。0なら支店（管轄）の設定が案件データと合っていない */
   visible_deals?: number;
   /** 氏名が案件データの担当者名と一致した件数（担当者としての紐付き） */
@@ -237,6 +239,23 @@ export default function Users() {
     }
   };
 
+  /**
+   * その人のログインを全部打ち切る。
+   * 共通IDを個人ごとのIDへ切り替えるときや、端末を失くしたときに使う。
+   * パスワードは変えないので、本人はこれまでのパスワードで入り直せる。
+   */
+  const logoutAll = async (u: AdminUser) => {
+    if (!confirm(`${u.name} のログインを全端末で打ち切ります（${u.sessions ?? 0}台）。`
+      + 'パスワードは変わらないので、本人はこれまでのパスワードで入り直せます。よろしいですか？')) return;
+    try {
+      await api(`/admin/users/${u.id}/logout-all`, { method: 'POST' });
+      setMsg({ kind: 'ok', text: `${u.name} のログインを全端末で打ち切りました` });
+      load();
+    } catch (err) {
+      setMsg({ kind: 'error', text: (err as Error).message });
+    }
+  };
+
   const resetPassword = async (u: AdminUser) => {
     if (!confirm(`${u.name} のパスワードを未設定に戻します。現在のログインは切断され、`
       + '本人は次回ログイン時に「パスワード設定」からもう一度パスワードを決めます。よろしいですか？')) return;
@@ -413,7 +432,7 @@ export default function Users() {
             <input type="text" value={form.title} placeholder="主任 / 課長 など"
               onChange={(e) => setForm({ ...form, title: e.target.value })} />
           </label>
-          <label className="fld" title="本社（営業企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">
+          <label className="fld" title="本社（営業部・製品企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">
             メール（通知の宛先）
             <input type="email" value={form.email} placeholder="taro.yamada@paloma.co.jp"
               onChange={(e) => setForm({ ...form, email: e.target.value })} />
@@ -431,14 +450,22 @@ export default function Users() {
           </label>
           <button className="btn" type="submit" disabled={busy}>追加する</button>
         </form>
-        <p className="pt-note" style={{ marginBottom: 0 }}>
-          <strong>閲覧専用</strong>は、見るだけの方へ配る共通ID向けの権限です。
-          全社の案件を、実績原価（社外秘）も含めてすべて見られます（支店の指定は要りません）。
-          検索・絞り込み・並び替え・Excel出力もそのまま使えます。
-          いっぽうで入力・変更・取込はいっさいできません
+        <p className="pt-note">
+          <strong>閲覧専用</strong>は、見るだけの方に渡す権限です。
+          全社の案件を見られますが（支店の指定は要りません）、
+          <strong>実績原価（社外秘）は出ません</strong>。
+          検索・絞り込み・並び替え・Excel出力はそのまま使えます。
+          入力・変更・取込はいっさいできません
           （画面に欄が出ないうえ、サーバー側でも受け付けません）。
-          パスワードは、はじめに管理者がログイン画面の「パスワード設定」から決めて配ってください
-          （共通IDのため、利用者側からは変更できないようにしています。変え直すときは「PW再設定」）。
+        </p>
+        <p className="pt-note" style={{ marginBottom: 0 }}>
+          <strong>1つのIDを複数人で共有しないでください。</strong>
+          誰が見たのか分からず、異動・退職があってもその人だけを外せません。
+          見るだけの方にも<strong>1人1つのID</strong>を作り、権限を「閲覧専用」にしてください。
+          人数が多いときは、<strong>ユーザーの一括登録</strong>で名簿の「権限」列に
+          「閲覧専用」と書いて取り込めます。
+          共有しているIDをやめるときは、右の一覧で「全端末ログアウト」を押してから
+          「停止」にすると、開いたままの画面もその場で使えなくなります。
         </p>
       </Card>
 
@@ -468,11 +495,15 @@ export default function Users() {
               {/* 名簿（取込ファイル）と同じ並び。内部IDはログインIDがあるため出さない */}
               <th>ログインID<br /><small>（社員番号）</small></th>
               <th>支店（管轄）</th><th>営業所（部署）</th><th>役職</th><th>氏名</th><th>権限</th>
-              <th title="本社（営業企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">メール<br /><small>通知の宛先</small></th>
+              <th title="本社（営業部・製品企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">メール<br /><small>通知の宛先</small></th>
               <th title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数">
                 案件との紐付け
               </th>
-              <th>パスワード</th><th>最終ログイン</th><th>状態</th><th></th>
+              <th>パスワード</th>
+              <th title="いまログインしたままの端末の数。共通IDが何人に渡っているかの目安になります">
+                利用中<br /><small>端末</small>
+              </th>
+              <th>最終ログイン</th><th>状態</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -567,6 +598,12 @@ export default function Users() {
                       <span className="badge red" style={{ marginLeft: 4 }}>ロック中</span>
                     )}
                   </td>
+                  <td style={{ textAlign: 'right' }}>
+                    {u.sessions
+                      ? <span className={u.sessions >= 3 ? 'badge yellow' : 'badge gray'}
+                              title={`${u.sessions}台からログインしたままです`}>{u.sessions}台</span>
+                      : <span style={{ color: 'var(--muted)' }}>—</span>}
+                  </td>
                   <td>{u.last_login_at ? jstDateTime(u.last_login_at) : '—'}</td>
                   <td>{u.active ? <span className="badge green">有効</span> : <span className="badge gray">停止</span>}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
@@ -574,6 +611,11 @@ export default function Users() {
                     <button className="btn secondary sm" style={{ marginLeft: 6 }}
                       title="パスワードを未設定に戻します。本人がログイン画面の「パスワード設定」から決め直します"
                       onClick={() => resetPassword(u)}>PW再設定</button>
+                    {Boolean(u.sessions) && (
+                      <button className="btn secondary sm" style={{ marginLeft: 6 }}
+                        title="いま開いている端末のログインをすべて打ち切ります（パスワードは変わりません）"
+                        onClick={() => logoutAll(u)}>全端末ログアウト</button>
+                    )}
                     {u.id !== me.id && (
                       <>
                         <button className="btn secondary sm" style={{ marginLeft: 6 }}

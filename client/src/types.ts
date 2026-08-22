@@ -1,7 +1,7 @@
 export interface User {
   id: number;
   name: string;
-  /** 権限。planning は旧・営業企画部の内部名で、いまは「本社」を指す */
+  /** 権限。planning は本社の受け持ち（営業部・製品企画部）を指す内部名 */
   role: 'sales' | 'branch_manager' | 'wide_area' | 'planning' | 'admin' | 'developer';
   branch: string | null;
   office: string | null;
