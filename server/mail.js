@@ -135,10 +135,10 @@ export function testMail(byName, by = {}) {
   return { subject, html };
 }
 
-/** 新しい問い合わせの通知メール（本社 営業企画部・管理者あて） */
+/** 新しい問い合わせの通知メール（本社 営業部・製品企画部・管理者あて） */
 export function inquiryMail(row) {
   const url = `${appOrigin()}/contact?inquiry=${row.id}`;
-  // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業企画部）。
+  // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業部・製品企画部）。
   // 件名だけで自分宛かどうかと、誰からかが分かるようにする
   const destLabel = row.dest === 'sales' ? '営業本部内のこと' : 'アプリのこと';
   const who = [String(row.branch ?? '').trim(), String(row.name ?? '').trim()]

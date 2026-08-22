@@ -216,9 +216,11 @@ const isViewerRole = (role) => role === 'viewer';
 
 /**
  * 実績原価まで含めて、すべての情報を見られる権限。
- * 閲覧専用は「見るだけで全部見える」ため、管理者と同じ範囲を返す。
+ *
+ * 閲覧専用は以前ここに含めていたが、共通IDとして配ると
+ * 社外秘の原価が配布した人数ぶん広がってしまう。原価は管理者・開発者だけにする。
  */
-const canSeeAllInfo = (role) => isAdminRole(role) || isViewerRole(role);
+const canSeeAllInfo = (role) => isAdminRole(role);
 
 /** 閲覧専用でも通す書き込み。ログアウトと、お問い合わせの送信・既読だけ */
 function viewerMayWrite(path) {
@@ -248,7 +250,7 @@ function requireRole(req, res, roles) {
 /**
  * 問い合わせの宛先。話の中身で分ける。
  *   app   … アプリの仕様・不具合のこと → 管理者が受ける
- *   sales … 営業本部内のこと（価格・交渉の進め方など）→ 営業企画部（本社）が受ける
+ *   sales … 営業本部内のこと（価格・交渉の進め方など）→ 営業部・製品企画部（本社）が受ける
  *
  * notify … 届いたときにメールを送る相手の権限
  * staff  … 一覧で見て回答できる権限。管理者はどちらも見られる（運用の面倒を見るため）
@@ -260,7 +262,7 @@ const INQUIRY_DESTS = {
     staff: ['admin', 'developer'],
   },
   sales: {
-    label: '営業本部内のこと（営業企画部へ）',
+    label: '営業本部内のこと（営業部・製品企画部へ）',
     notify: ['planning'],
     staff: ['planning', 'admin', 'developer'],
   },
@@ -277,7 +279,7 @@ const destsFor = (role) => Object.keys(INQUIRY_DESTS)
 function requireInquiryStaff(req, res) {
   if (!requireLogin(req, res)) return false;
   if (!isInquiryStaff(req.user.role)) {
-    res.status(403).json({ error: 'この操作は本社（営業企画部）と管理者のみ実行できます' });
+    res.status(403).json({ error: 'この操作は本社（営業部・製品企画部）と管理者のみ実行できます' });
     return false;
   }
   return true;
@@ -289,7 +291,7 @@ function requireInquiryStaff(req, res) {
  */
 async function notifyInquiry(row) {
   try {
-    // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業企画部）ごとに送り先を変える
+    // 宛先（アプリのこと＝管理者／営業本部内のこと＝営業部・製品企画部）ごとに送り先を変える
     const roles = INQUIRY_DESTS[destOf(row.dest)].notify;
     const staff = await db.all(
       `SELECT email FROM users
@@ -593,12 +595,14 @@ api.post('/password', wrap(async (req, res) => {
 
 const ROLES = ['sales', 'branch_manager', 'wide_area', 'planning', 'admin', 'developer', 'viewer'];
 // 名簿では日本語で書かれることが多いため、権限名の表記ゆれを吸収する。
-// planning は旧・営業企画部の内部名で、いまは「本社」を指す
+// planning は本社の受け持ち（営業部・製品企画部）を指す内部名
 const ROLE_ALIASES = {
   '営業担当者': 'sales', '営業': 'sales', '担当者': 'sales', 'sales': 'sales',
   '支店長': 'branch_manager', 'branch_manager': 'branch_manager',
   '広域担当': 'wide_area', '広域': 'wide_area', 'wide_area': 'wide_area',
-  '本社': 'planning', '営業企画部': 'planning', '企画': 'planning', 'planning': 'planning',
+  // 「営業部」は営業担当者と紛らわしいので入れない（名簿では「本社」と書いてもらう）
+  '本社': 'planning', '製品企画部': 'planning', '営業企画部': 'planning',
+  '企画': 'planning', 'planning': 'planning',
   '管理者': 'admin', 'admin': 'admin',
   '開発者': 'developer', 'developer': 'developer',
   '閲覧専用': 'viewer', '閲覧': 'viewer', '閲覧のみ': 'viewer', 'viewer': 'viewer',
@@ -646,8 +650,11 @@ api.get('/admin/users', wrap(async (req, res) => {
     db.all(`
       SELECT u.id, u.name, u.role, u.branch, u.office, u.title, u.email, u.active, u.login_id,
              u.last_login_at, u.must_change_password, u.locked_until,
-             CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password
-        FROM users u ORDER BY u.id`),
+             CASE WHEN u.password_hash IS NULL THEN 0 ELSE 1 END AS has_password,
+             -- いまログインしたままの端末の数。共通IDが何人に渡っているかの目安になる
+             (SELECT COUNT(*) FROM sessions s
+               WHERE s.user_id = u.id AND s.expires_at > ?) AS sessions
+        FROM users u ORDER BY u.id`, [now()]),
     db.get('SELECT COUNT(*) AS c FROM deals'),
     db.all(`SELECT branch, COUNT(*) AS c FROM deals
              WHERE branch IS NOT NULL AND branch <> '' GROUP BY branch`),
@@ -711,6 +718,22 @@ api.post('/admin/users/:id/reset-password', wrap(async (req, res) => {
     [user.id]
   );
   await destroyUserSessions(user.id); // 既存のログインを打ち切る
+  res.json({ ok: true, id: user.id, loginId: user.login_id });
+}));
+
+/**
+ * その人のログインを全部打ち切る（全端末からログアウト）。
+ *
+ * 共通IDを個人ごとのIDへ切り替えるとき、パスワードを変えただけでは
+ * すでに開いている端末はそのまま使えてしまう。ここで一度に断ち切る。
+ * 端末を失くしたときにも使う。パスワードは変えないので、
+ * 本人はこれまでのパスワードで入り直せる。
+ */
+api.post('/admin/users/:id/logout-all', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.id]);
+  if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+  await destroyUserSessions(user.id);
   res.json({ ok: true, id: user.id, loginId: user.login_id });
 }));
 
@@ -826,7 +849,7 @@ api.get('/admin/status', wrap(async (req, res) => {
         detail: !hasMailKey
           ? 'RESEND_API_KEY が未設定のため、通知メールは送られません（お問い合わせの受付とアプリ内での回答は通常どおり動きます）'
           : mailTo === 0
-            ? '鍵は設定済みですが、宛先が0件です。本社（営業企画部）・管理者にメールを登録してください'
+            ? '鍵は設定済みですが、宛先が0件です。本社（営業部・製品企画部）・管理者にメールを登録してください'
             : `有効（宛先 ${mailTo}件 / 差出人: ${process.env.MAIL_FROM || '価格改定進捗 <noreply@paloma-pf.com>'}）`,
         hint: 'Vercel → Settings → Environment Variables に RESEND_API_KEY'
           + '（任意で MAIL_FROM / APP_ORIGIN / MAIL_NOTIFY_TO）。設定後は再デプロイが必要です',
@@ -1218,7 +1241,7 @@ api.post('/admin/users/bulk-delete', wrap(async (req, res) => {
 
 /**
  * 問い合わせ分類（画面の選択肢と一致させる）。宛先ごとに分ける。
- * アプリの使い方や不具合は管理者、値決めや交渉の進め方は営業企画部が受ける。
+ * アプリの使い方や不具合は管理者、値決めや交渉の進め方は営業部・製品企画部が受ける。
  */
 const INQUIRY_CATEGORIES_BY_DEST = {
   app: [
@@ -1312,7 +1335,7 @@ api.post('/inquiries', wrap(async (req, res) => {
 
 api.get('/inquiries', wrap(async (req, res) => {
   if (!requireInquiryStaff(req, res)) return;
-  // 自分が受け持つ宛先だけ（営業企画部には営業本部内のことだけが届く）。
+  // 自分が受け持つ宛先だけ（営業部・製品企画部には営業本部内のことだけが届く）。
   // 宛先の無い古い分は、これまでどおり管理者が見る「アプリのこと」として扱う
   const dests = destsFor(req.user.role);
   const cond = dests.map(() => '?').join(',');
@@ -1599,7 +1622,7 @@ api.get('/admin/users/template', wrap(async (req, res) => {
     ['100001', '東京中央', '東京中央営業所', '主任', '山田 太郎', '営業担当者', '', '〇'],
     ['100002', '東京中央', '', '支店長', '鈴木 一郎', '支店長', '', '〇'],
     ['100003', '本社', '広域営業部', '課長', '田中 次郎', '広域担当', '', '〇'],
-    ['100004', '本社', '営業企画部', '部長', '佐藤 三郎', '本社', 'kikaku@example.co.jp', '〇'],
+    ['100004', '本社', '製品企画部', '部長', '佐藤 三郎', '本社', 'kikaku@example.co.jp', '〇'],
     ['100005', '本社', '', 'システム管理', '高橋 四郎', '管理者', 'admin@example.co.jp', '〇'],
   ]);
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
