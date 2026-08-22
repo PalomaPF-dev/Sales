@@ -481,7 +481,7 @@ export default function Users() {
       </div>
 
       <div className="card tbl-scroll">
-        <table className="tbl">
+        <table className="tbl nowrap">
           <thead>
             <tr>
               <th title="表示中の全員を選ぶ／外す（自分自身は除く）">
@@ -492,9 +492,14 @@ export default function Users() {
                     setSel(on ? new Set(rows.filter((u) => u.id !== me.id).map((u) => u.id)) : new Set());
                   }} />
               </th>
-              {/* 名簿（取込ファイル）と同じ並び。内部IDはログインIDがあるため出さない */}
+              {/*
+                列が多いと1つ1つが細くなり、氏名や権限が1文字ずつ縦に折り返してしまう。
+                同じ人の属性はまとめて2段にし、列そのものを減らす。
+                （氏名＋権限／支店＋営業所・役職）
+              */}
               <th>ログインID<br /><small>（社員番号）</small></th>
-              <th>支店（管轄）</th><th>営業所（部署）</th><th>役職</th><th>氏名</th><th>権限</th>
+              <th>氏名<br /><small>権限</small></th>
+              <th>所属<br /><small>支店（管轄）／営業所・役職</small></th>
               <th title="本社（営業部・製品企画部）と管理者は、ここに入れたメールへお問い合わせの通知が届きます">メール<br /><small>通知の宛先</small></th>
               <th title="案件データとの紐付け。閲覧＝その人に見える案件数（支店の一致）／担当＝氏名が案件の担当者名と一致した件数">
                 案件との紐付け
@@ -516,33 +521,32 @@ export default function Users() {
                       onChange={(e) => setEditing({ ...editing, loginId: e.target.value })} />
                   </td>
                   <td>
-                    <input type="text" value={editing.branch} placeholder="支店（管轄）" style={{ width: 100 }}
+                    <input type="text" value={editing.name} placeholder="氏名" style={{ width: 130 }}
+                      onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+                    <span className="sub2">
+                      <select value={editing.role}
+                              onChange={(e) => setEditing({ ...editing, role: e.target.value })}>
+                        {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </span>
+                  </td>
+                  <td>
+                    <input type="text" value={editing.branch} placeholder="支店（管轄）" style={{ width: 120 }}
                       list="branch-list"
                       onChange={(e) => setEditing({ ...editing, branch: e.target.value })} />
-                  </td>
-                  <td>
-                    <input type="text" value={editing.office} placeholder="営業所（部署）" style={{ width: 120 }}
-                      list="office-list"
-                      onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
-                  </td>
-                  <td>
-                    <input type="text" value={editing.title} placeholder="役職" style={{ width: 90 }}
-                      onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
-                  </td>
-                  <td>
-                    <input type="text" value={editing.name} style={{ width: 120 }}
-                      onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
-                  </td>
-                  <td>
-                    <select value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })}>
-                      {Object.entries(ROLE_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                    </select>
+                    <span className="sub2">
+                      <input type="text" value={editing.office} placeholder="営業所（部署）" style={{ width: 120 }}
+                        list="office-list"
+                        onChange={(e) => setEditing({ ...editing, office: e.target.value })} />
+                      <input type="text" value={editing.title} placeholder="役職" style={{ width: 80, marginLeft: 4 }}
+                        onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
+                    </span>
                   </td>
                   <td>
                     <input type="email" value={editing.email} placeholder="通知の宛先" style={{ width: 170 }}
                       onChange={(e) => setEditing({ ...editing, email: e.target.value })} />
                   </td>
-                  <td colSpan={4} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
+                  <td colSpan={5} style={{ color: 'var(--muted)', fontSize: 12 }}>編集中</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn sm" onClick={saveEdit} disabled={busy}>保存</button>
                     <button className="btn secondary sm" style={{ marginLeft: 6 }}
@@ -557,37 +561,41 @@ export default function Users() {
                     )}
                   </td>
                   <td><code>{u.login_id || '—'}</code></td>
-                  <td>{u.branch || '—'}</td>
-                  <td>{u.office || '—'}</td>
-                  <td>{u.title || '—'}</td>
-                  <td>{u.name}{u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}</td>
-                  <td>{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</td>
+                  <td>
+                    <strong>{u.name}</strong>
+                    {u.id === me.id && <span className="badge blue" style={{ marginLeft: 6 }}>自分</span>}
+                    <span className="sub2">{ROLE_NAMES[u.role as keyof typeof ROLE_NAMES] ?? u.role}</span>
+                  </td>
+                  <td>
+                    {u.branch || '—'}
+                    <span className="sub2">
+                      {[u.office, u.title].filter(Boolean).join('　/　') || '—'}
+                    </span>
+                  </td>
                   <td style={{ fontSize: 12 }} title={u.email ?? ''}>{u.email || '—'}</td>
                   {/* 案件データとの紐付け。支店の一致（閲覧範囲）と担当者名の一致をここで確かめる */}
-                  <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                    閲覧 {Number(u.visible_deals ?? 0).toLocaleString()}件
-                    <br />担当 {Number(u.person_deals ?? 0).toLocaleString()}件
-                    {u.active === 1 && u.role === 'sales' && (
-                      <div>
+                  <td style={{ fontSize: 12 }}>
+                    閲覧 {Number(u.visible_deals ?? 0).toLocaleString()}
+                    <span style={{ color: 'var(--line)', margin: '0 6px' }}>|</span>
+                    担当 {Number(u.person_deals ?? 0).toLocaleString()}
+                    <span className="sub2">
+                      {u.active === 1 && u.role === 'sales' && (
                         <span className="badge blue" title="営業担当者は自分の支店（管轄）の案件のみ閲覧できます">
-                          支店のみ閲覧
+                          支店のみ
                         </span>
-                      </div>
-                    )}
-                    {u.active === 1 && u.role === 'viewer' && (
-                      <div>
+                      )}
+                      {u.active === 1 && u.role === 'viewer' && (
                         <span className="badge gray" title="閲覧専用。全社を見られますが、入力・変更はできません">
                           全社・閲覧のみ
                         </span>
-                      </div>
-                    )}
-                    {u.active === 1 && u.role === 'sales' && Number(u.person_deals ?? 0) === 0 && (
-                      <div>
-                        <span className="badge yellow" title="氏名が案件データの担当者名と一致していません。案件一覧の担当者の絞り込みに出ない可能性があります">
+                      )}
+                      {u.active === 1 && u.role === 'sales' && Number(u.person_deals ?? 0) === 0 && (
+                        <span className="badge yellow" style={{ marginLeft: 4 }}
+                              title="氏名が案件データの担当者名と一致していません。案件一覧の担当者の絞り込みに出ない可能性があります">
                           担当者名の一致なし
                         </span>
-                      </div>
-                    )}
+                      )}
+                    </span>
                   </td>
                   <td>
                     {!u.has_password
@@ -614,7 +622,7 @@ export default function Users() {
                     {Boolean(u.sessions) && (
                       <button className="btn secondary sm" style={{ marginLeft: 6 }}
                         title="いま開いている端末のログインをすべて打ち切ります（パスワードは変わりません）"
-                        onClick={() => logoutAll(u)}>全端末ログアウト</button>
+                        onClick={() => logoutAll(u)}>ログアウト</button>
                     )}
                     {u.id !== me.id && (
                       <>
