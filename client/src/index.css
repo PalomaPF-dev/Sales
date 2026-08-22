@@ -216,6 +216,13 @@ a { color: var(--accent); text-decoration: none; }
 .tbl tr.clickable { cursor: pointer; }
 .tbl tbody tr:hover { background: #f7f7f5; }
 .tbl-scroll { overflow-x: auto; }
+/*
+  列の多い表（ユーザー一覧など）。幅に押し込めると1文字ずつ縦に折り返してしまうため、
+  折り返さずに横スクロールで読ませる。
+*/
+.tbl.nowrap th, .tbl.nowrap td { white-space: nowrap; }
+/* 2段のセル（氏名＋権限、支店＋営業所など）。2行目は控えめに */
+.tbl td .sub2 { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 /* 表だけのカードは内側の余白を持たせず、角丸に表を収める */
 .card.tbl-scroll { padding: 0; }
 
