@@ -48,7 +48,7 @@ export interface Deal {
   // マスタ登録（集約表）で入る項目
   agg_key?: string | null;
   qty?: number | null;              // 出荷数量
-  cost_price?: number | null;       // 実績原価（管理者・開発者と閲覧専用にだけ返る）
+  cost_price?: number | null;       // 実績原価（本社・管理者・開発者にだけ返る）
   a_price_m0?: number | null;       // A基準: 当月の申請単価
   a_price_m1?: number | null;       // A基準: 翌月の申請単価
   a_price_m2?: number | null;       // A基準: 翌々月の申請単価

@@ -27,7 +27,7 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
 /**
  * 列の定義を組み立てる。
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
- * 実績原価は管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
+ * 実績原価は本社・管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
 function buildColumns({ months, withCost, aggMeta, actualMeta, base }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);

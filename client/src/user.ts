@@ -24,8 +24,8 @@ export function useCanEdit(): boolean {
 
 /**
  * 実績原価まで含めて、すべての情報を見られる権限。
- * 閲覧専用は「見るだけで全部見える」ため、管理者と同じ範囲を出す。
+ * 原価は社外秘のため、本社（営業部・製品企画部）と管理者・開発者だけ。
  * サーバーの canSeeAllInfo と揃える。
  */
 export const canSeeAllInfo = (role: string) =>
-  role === 'admin' || role === 'developer' || isViewerRole(role);
+  role === 'admin' || role === 'developer' || role === 'planning';

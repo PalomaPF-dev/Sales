@@ -217,10 +217,11 @@ const isViewerRole = (role) => role === 'viewer';
 /**
  * 実績原価まで含めて、すべての情報を見られる権限。
  *
- * 閲覧専用は以前ここに含めていたが、共通IDとして配ると
- * 社外秘の原価が配布した人数ぶん広がってしまう。原価は管理者・開発者だけにする。
+ * 原価は社外秘のため、本社（営業部・製品企画部）と管理者・開発者だけに出す。
+ * 支店・営業所の担当者と閲覧専用には出さない
+ * （閲覧専用は以前ここに含めていたが、配る人数ぶん原価が広がってしまう）。
  */
-const canSeeAllInfo = (role) => isAdminRole(role);
+const canSeeAllInfo = (role) => isAdminRole(role) || role === 'planning';
 
 /** 閲覧専用でも通す書き込み。ログアウトと、お問い合わせの送信・既読だけ */
 function viewerMayWrite(path) {
@@ -2247,7 +2248,7 @@ api.put('/corp-plans', wrap(async (req, res) => {
  * グループごとに Σ数量・ΣA売上・ΣB売上（入力分）・B未入力分のA売上を返し、
  * 画面側で「販売数量の増減」「B未入力の想定（Aの何%）」を掛けて試算する。
  * 過去実績（出荷単価×数量）も返すので、値上げ前との比較もできる。
- * 実績原価は管理者・開発者のときだけ返す（粗利の試算用）。
+ * 実績原価は本社・管理者・開発者のときだけ返す（粗利の試算用）。
  */
 api.get('/simulation', wrap(async (req, res) => {
   if (!requireRole(req, res, ['planning'])) return;
@@ -2313,7 +2314,7 @@ api.get('/simulation', wrap(async (req, res) => {
 
 // ---- 案件（deals） ----
 
-/** 実績原価は管理者・開発者と閲覧専用だけに返す（社外秘に準ずる扱い） */
+/** 実績原価は本社・管理者・開発者だけに返す（社外秘に準ずる扱い） */
 function hideCost(rows, user) {
   if (!canSeeAllInfo(user.role)) for (const r of rows) delete r.cost_price;
   return rows;
@@ -2791,7 +2792,7 @@ api.get('/deals/export', wrap(async (req, res) => {
       ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
   ]);
-  // 実績原価は管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
+  // 実績原価は本社・管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = canSeeAllInfo(req.user.role);
   const buffer = buildWorkbook(rows, priceTypes,
     { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query) });

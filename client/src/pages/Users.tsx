@@ -362,7 +362,7 @@ export default function Users() {
           ログインIDと氏名以外は省略できます（権限を省くと営業担当者）。
           権限は <strong>営業担当者</strong>（自分の支店のみ閲覧・値上げ交渉の入力のみ）／
           <strong>支店長</strong>・<strong>広域担当</strong>（全支店を閲覧）／
-          <strong>本社</strong>（全て閲覧＋目標値の設定）／<strong>管理者</strong>／
+          <strong>本社</strong>（全て閲覧＋目標値の設定。実績原価も見られます）／<strong>管理者</strong>／
           <strong>閲覧専用</strong>（全社を見るだけ。入力・取込はできません）のいずれかで記入します。
         </p>
         <p className="pt-note">
