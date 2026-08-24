@@ -3475,11 +3475,6 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
-        // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
-        // 上書きするか。毎日の取込はマスタ登録単価を入れ直すためのもので、
-        // 交渉の記録は営業担当者がアプリで入れるため、既定では上書きしない。
-        // ファイル側の交渉列を正として入れ直したいときだけ true にする
-        overwriteNego: req.body?.overwriteNego === true,
         // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
         histMonths: Array.isArray(meta.histMonths)
           ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
@@ -3720,16 +3715,10 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     ? 'CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END'
     : `COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
                  deals.r2_target_price)`;
-  // 商談結果・最終確定日・最終確定単価（値上げ交渉の記録）。
-  // これは営業担当者がアプリで入れる項目なので、毎日の取込では触らない
-  // （既にある案件は画面の値がそのまま残る）。
-  // ファイル側の交渉列を正として入れ直す取込のときだけ、値のある列を上書きする。
-  // 商談メモはもともとファイルに無いため、どちらの場合も変わらない。
-  const overwriteNego = startedMeta?.overwriteNego === true;
-  const negoSql = !overwriteNego ? '' : `
-      nego_result = COALESCE(s.nego_result, deals.nego_result),
-      final_date = COALESCE(s.final_date, deals.final_date),
-      final_price = COALESCE(s.final_price, deals.final_price),`;
+  // 商談結果・商談メモ・最終確定日・最終確定単価（値上げ交渉の記録）は
+  // 営業担当者がアプリで入れる項目なので、取込では触らない
+  // （既にある案件は画面の値がそのまま残る。新しく追加される案件にだけ
+  //   ファイルの値が入る）。
   // 当月実績の単価・数量（master_*）は売上高の取込が正なので、ここでは触らない。
   await db.run(`
     UPDATE deals SET
@@ -3757,8 +3746,6 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
       -- 目標単価（第2弾新値上げ単価）。列のあるファイルならファイルの内容を正とする
       r2_target_price = ${targetSql},
-      -- 商談結果・最終確定日・最終確定単価（ファイルで入れ直す取込のときだけ）
-      ${negoSql}
       -- ベース（価格調査）に載っている印。売上高（月次）の取込で
       -- 「今月の売上高に無い行」を落とすときに、この印のある行は残す
       agg_batch = ?,
