@@ -500,12 +500,21 @@ export async function sendAggImport(
    * これらは営業担当者がアプリで入れる項目のため、既定では上書きしない
    * （毎日の取込はマスタ登録単価を入れ直すためのもの）。
    */
-  opts: { onProgress?: (done: number, total: number) => void; overwriteNego?: boolean }
+  opts: {
+    onProgress?: (done: number, total: number) => void;
+    overwriteNego?: boolean;
+    /**
+     * 値上げ額の履歴に残す取込日（YYYY-MM-DD）。空なら今日。
+     * 前回のファイルを取り込み直して前日比を埋めたいときだけ指定する。
+     */
+    takenOn?: string;
+  }
 ): Promise<AggResult> {
   await api('/agg-import/start', {
     method: 'POST',
     body: JSON.stringify({
       filename, meta: parsed.meta, overwriteNego: opts.overwriteNego === true,
+      takenOn: opts.takenOn || '',
     }),
   });
   let matched = 0;

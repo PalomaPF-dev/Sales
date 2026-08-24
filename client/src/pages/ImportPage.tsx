@@ -9,6 +9,9 @@ import RaiseTrendCard from '../components/RaiseTrend';
 import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
 
+/** 今日（日本時間）。記録する日付の初期値と上限に使う */
+const today = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
 /** 取込データの点検結果（数字だけになっている名前欄） */
 interface Finding { column: string; label: string; param: string; value: string; deals: number }
 
@@ -31,6 +34,9 @@ export default function ImportPage() {
   const [meta, setMeta] = useState<Meta | null>(null);
   // 取込のたびに残している値上げ額の履歴（取込履歴として出す）
   const [history, setHistory] = useState<RaiseDay[]>([]);
+  // 「いまの内容で記録する」の日付と実行中かどうか
+  const [recordOn, setRecordOn] = useState(today());
+  const [recording, setRecording] = useState(false);
   const canCheck = me.role === 'admin' || me.role === 'developer';
   const navigate = useNavigate();
 
@@ -95,6 +101,50 @@ export default function ImportPage() {
           いつ・どれだけ動いたかをここでたどれる */}
       {history.length > 0 && (
         <RaiseTrendCard days={history} title="取込履歴（値上げ額の推移）" />
+      )}
+
+      {/* 記録の仕組みより前に取り込んだ分は履歴が無い。案件には最後に取り込んだ
+          ファイルの内容が入っているので、取り込み直さなくても記録だけ残せる */}
+      {canCheck && (
+        <Card title="いまの内容で値上げ額の履歴を残す">
+          <p className="pt-note" style={{ marginTop: 0 }}>
+            値上げ額の履歴は<strong>取込のたびに自動で残ります</strong>。
+            この仕組みより前に取り込んだ分は記録がありませんが、案件には
+            <strong>最後に取り込んだファイルの内容がそのまま入っている</strong>ので、
+            取り込み直さなくてもその日付で記録だけ残せます。
+            <br />
+            さらに前の日と比べたいときは、<strong>①価格調査でその日のファイルを
+            取り込む際に「取込日」を指定</strong>してください
+            （そのあと必ず最新のファイルを取り込み直してください）。
+          </p>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <label className="fld" style={{ maxWidth: 220 }}>
+              <span style={{ fontSize: 12.5 }}>記録する日付</span>
+              <input type="date" value={recordOn} max={today()} disabled={recording}
+                     onChange={(e) => setRecordOn(e.target.value)} />
+            </label>
+            <button className="btn" disabled={recording}
+                    onClick={async () => {
+                      setRecording(true);
+                      setMsg(null);
+                      try {
+                        const r = await api<{ takenOn: string }>('/raise-history/record',
+                          { method: 'POST', body: JSON.stringify({ takenOn: recordOn }) });
+                        setMsg({ kind: 'ok', text: `${r.takenOn} の値上げ額を記録しました。` });
+                        load();
+                      } catch (e) {
+                        setMsg({ kind: 'error', text: (e as Error).message });
+                      } finally {
+                        setRecording(false);
+                      }
+                    }}>
+              {recording ? '記録中...' : 'いまの内容で記録する'}
+            </button>
+            <span className="pt-note" style={{ margin: 0, fontSize: 12 }}>
+              同じ日付の記録があるときは置き換えます。案件のデータは変わりません。
+            </span>
+          </div>
+        </Card>
       )}
 
       {canCheck && blankCorp > 0 && (

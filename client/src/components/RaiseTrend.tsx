@@ -84,8 +84,10 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
                     <strong>{dayLabel(d.takenOn)}</strong>
                   </td>
                   <td>
-                    <span className={`badge ${d.source === 'survey' ? 'gray' : 'blue'}`}>
-                      {d.source === 'survey' ? '売上高' : '価格調査'}
+                    <span className={`badge ${d.source === 'survey' ? 'gray'
+                      : d.source === 'manual' ? 'violet' : 'blue'}`}>
+                      {d.source === 'survey' ? '売上高'
+                        : d.source === 'manual' ? '記録のみ' : '価格調査'}
                     </span>
                   </td>
                   <td style={nums}>{d.deals.toLocaleString()}</td>
