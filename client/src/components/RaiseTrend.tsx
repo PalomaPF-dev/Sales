@@ -65,6 +65,9 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
         稼働日での日量換算をしたあとの1か月あたりの額です
         （画面の絞り込みでは変わりません）。
         マスにカーソルを当てると、承認日より前の分と合計も出ます。
+        毎日の取込で変わるのは<strong>マスタ登録単価（当月・翌月・翌々月・3か月後）</strong>だけです
+        （過去最新単価や数量は売上高の取込で入ります）。
+        <strong>件数</strong>の下の数字は、前回の取込から増えた案件の数です。
       </NoteFold>
       <div className="tbl-scroll" style={{ maxHeight: 420 }}>
         <table className="tbl">
@@ -100,7 +103,17 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
                         : d.source === 'manual' ? '記録のみ' : '価格調査'}
                     </span>
                   </td>
-                  <td style={nums}>{d.deals.toLocaleString()}</td>
+                  {/* 案件の件数と、前回の取込からの増減（新しく増えた案件） */}
+                  <td style={nums}>
+                    {d.deals.toLocaleString()}
+                    {before && d.deals !== before.deals && (
+                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2,
+                                    color: d.deals > before.deals ? '#15803d' : '#c2410c' }}>
+                        {d.deals > before.deals ? '＋' : '−'}
+                        {Math.abs(d.deals - before.deals).toLocaleString()}
+                      </div>
+                    )}
+                  </td>
                   {yms.map((ym) => {
                     const cur = at(d, ym);
                     if (!cur) return <td key={ym} style={nums}>—</td>;
