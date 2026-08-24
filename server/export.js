@@ -235,49 +235,76 @@ export function buildDashboardWorkbook(data, opts = {}) {
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（実績と計画を月の流れで並べる）
-  const summary = [[
+  //
+  // 画面と同じく2通り出す。
+  //   まとめ           … 計画の月を稼働日で日量換算したもの
+  //   まとめ（換算なし）… 実績の月の実績数のまま（月どうしを同じ土俵で見る）
+  // 金額は換算後で持っているので、換算なしの側は倍率で割り戻す。
+  const summaryHead = (byDays) => [
     '月', '区分', '件数', '上がった件数', '単価同じ件数',
-    '比較のもと（月あたり）', '金額（月あたり）', '値上げ額（月あたり）', '値上げ率',
-  ]];
+    '比較のもと（月あたり）', '金額（月あたり）', '値上げ額（月あたり）',
+    ...(split ? [`うち承認日 ${split.ym} 以降`, `うち承認日 ${split.ym} より前`] : []),
+    '値上げ率',
+    ...(byDays ? ['稼働日'] : []),
+  ];
+  const split = data.raiseSplit;
   const act = data.actuals?.[0];
   const actYm = String(act?.ym ?? '当月');
   // 売上改善額（プラス・マイナスの合計）。金額（合計）から引くと値上げ前当初になる
   const gain = act ? n(act.gainPlus) + n(act.gainMinus) : null;
-  const summaryRows = [
-    // 値上げ前当初。当月の金額（合計）から売上改善額を引いた額
-    ...(gain != null ? [{
-      ym: `${actYm} 値上げ前当初`, kind: '当初',
-      deals: n(t.deals), b: '', amt: base - gain, up: '', same: '',
-    }] : []),
-    // 実績。取り込んだ当月の金額そのもの。当初との差が売上改善額
-    { ym: actYm, kind: '実績', deals: n(t.deals),
-      b: gain == null ? '' : base - gain, amt: base,
-      up: gain == null ? '' : n(act.up), same: gain == null ? '' : n(act.same) },
-    // 参考。値決めどおりに出た分（実績との差が見積ぶんなど）
-    ...(mpAmt > 0 ? [{
-      ym: `${actYm}（マスタ）`, kind: '参考',
-      deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
-    }] : []),
-    // 計画。比較のもとは値上げ前当初（当初からA基準までの上がり幅が値上げ額）。
-    // 金額は稼働日で日量換算してあるので、比較のもとも同じ倍率に揃える
-    ...[[0, m0, n(t.a0_amt)], [1, m1, n(t.a1_amt)],
-      [2, m2, n(t.a2_amt)], [3, m3, n(t.a3_amt)]].map(([i, ym, amt]) => ({
-      ym: `${ym}${daysOf(i)}`, kind: '計画', deals: n(t.deals),
-      b: (gain == null ? base : base - gain) * rateOf(i),
-      amt, up: '', same: '',
-    })),
-  ];
-  for (const r of summaryRows) {
-    const hasBase = r.b !== '' && r.b != null;
-    const gain = hasBase ? r.amt - r.b : '';
-    summary.push([
-      r.ym, r.kind, r.deals, r.up, r.same,
-      hasBase ? round(r.b / months) : '', round(r.amt / months),
-      hasBase ? round(gain / months) : '',
-      hasBase && r.b > 0 ? round((gain / r.b) * 100, 1) / 100 : '',
-    ]);
+  const summaryRows = (byDays) => {
+    // 換算なしの側は倍率で割り戻す（換算は掛け算だけなので元の数字に戻る）
+    const adj = (i) => (byDays ? 1 : 1 / (rateOf(i) || 1));
+    return [
+      // 値上げ前当初。当月の金額（合計）から売上改善額を引いた額
+      ...(gain != null ? [{
+        ym: `${actYm} 値上げ前当初`, kind: '当初',
+        deals: n(t.deals), b: '', amt: base - gain, up: '', same: '', plan: -1,
+      }] : []),
+      // 実績。取り込んだ当月の金額そのもの。当初との差が売上改善額
+      { ym: actYm, kind: '実績', deals: n(t.deals),
+        b: gain == null ? '' : base - gain, amt: base, plan: -1,
+        up: gain == null ? '' : n(act.up), same: gain == null ? '' : n(act.same) },
+      // 参考。値決めどおりに出た分（実績との差が見積ぶんなど）
+      ...(mpAmt > 0 ? [{
+        ym: `${actYm}（マスタ）`, kind: '参考', plan: -1,
+        deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
+      }] : []),
+      // 計画。比較のもとは実績（当月の金額）＝画面のまとめと同じ。
+      // 値上げ前当初と比べると売上改善額まで混ざり、承認日の内訳と合わなくなる。
+      // 換算した側は比較のもとにも同じ倍率を掛けて土俵を揃える
+      ...[[0, m0, n(t.a0_amt)], [1, m1, n(t.a1_amt)],
+        [2, m2, n(t.a2_amt)], [3, m3, n(t.a3_amt)]].map(([i, ym, amt]) => ({
+        ym: `${ym}${byDays ? daysOf(i) : ''}`, kind: '計画', deals: n(t.deals),
+        b: base * (byDays ? rateOf(i) : 1),
+        amt: amt * adj(i), up: '', same: '', plan: i,
+      })),
+    ];
+  };
+  for (const byDays of [true, false]) {
+    // 換算のある月が1つも無ければ、2枚目は1枚目と同じ数字になるので出さない
+    if (!byDays && !wdMonths.some((x) => Number(x?.days) > 0)) break;
+    const aoa = [summaryHead(byDays)];
+    const adj = (i) => (byDays ? 1 : 1 / (rateOf(i) || 1));
+    for (const r of summaryRows(byDays)) {
+      const hasBase = r.b !== '' && r.b != null;
+      const up = hasBase ? r.amt - r.b : '';
+      const sp = r.plan >= 0 ? split?.months?.[r.plan] : null;
+      aoa.push([
+        r.ym, r.kind, r.deals, r.up, r.same,
+        hasBase ? round(r.b / months) : '', round(r.amt / months),
+        hasBase ? round(up / months) : '',
+        ...(split ? [
+          sp ? round(n(sp.after) * adj(r.plan) / months) : '',
+          sp ? round(n(sp.before) * adj(r.plan) / months) : '',
+        ] : []),
+        hasBase && r.b > 0 ? round((up / r.b) * 100, 1) / 100 : '',
+        ...(byDays ? [r.plan >= 0 ? (wdMonths[r.plan]?.days ?? '') : ''] : []),
+      ]);
+    }
+    addSheet(byDays ? 'まとめ' : 'まとめ（換算なし）', aoa,
+      [12, 8, 10, 12, 12, 18, 18, 18, ...(split ? [20, 20] : []), 10, ...(byDays ? [8] : [])]);
   }
-  addSheet('まとめ', summary, [12, 8, 10, 12, 12, 18, 18, 18, 10]);
 
   // ── 平均単価の比較（過去最新単価 → 計画）。画面のカードと同じ数字。
   // 過去最新単価・その月の計画・当月の実績数が揃う品目だけで、

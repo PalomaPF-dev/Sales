@@ -555,6 +555,211 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, plan
 }
 
 
+/** 実績（過去最新単価 → 当月）の1件ぶん */
+type ActualRow = NonNullable<DashboardRes['actuals']>[number];
+
+/**
+ * まとめ（実績と計画）の表。同じ中身を2通りの見方で出す。
+ *
+ *   byDays=true  … 計画の月を稼働日で日量換算した数字（その月に実際いくらになる見込みか）
+ *   byDays=false … 実績の月の実績数そのままで計算した数字（換算前。月どうしを同じ土俵で見る）
+ *
+ * 金額はサーバーが換算後で返すため、換算なしの側は稼働日の倍率で割り戻す
+ * （換算は掛け算だけなので、割り戻すと換算前の数字にきちんと戻る）。
+ */
+function SummaryCard({
+  title, noteId, byDays, plan, t, act, gain, months, actYm, actLabel, baseName,
+  split, trend, trendNote, children,
+}: {
+  title: string;
+  /** 説明の開閉を覚えるための目印。カードごとに変える */
+  noteId: string;
+  byDays: boolean;
+  plan: PlanMonth[];
+  t?: AbRow;
+  act?: ActualRow;
+  /** 売上改善額（プラスとマイナスの合計）。実績が無ければ null */
+  gain: number | null;
+  months: number;
+  actYm: string;
+  actLabel: string;
+  baseName: string;
+  split?: DashboardRes['raiseSplit'];
+  /** 計画の月ごとの前日比（前回の取込との差）。出せないときは null */
+  trend: (i: number) => number | null;
+  /** 前日比が出せないときの理由（見出しの吹き出しに出す） */
+  trendNote: string;
+  children?: React.ReactNode;
+}) {
+  // 換算なしの側は倍率で割り戻す。倍率の分からない月は1（そのまま）
+  const rateOf = (i: number) => (plan[i]?.rate > 0 ? plan[i].rate : 1);
+  const adj = (i: number) => (byDays ? 1 : 1 / rateOf(i));
+  const splitYm = split?.ym ?? '';
+  const hasTrend = [0, 1, 2, 3].some((i) => trend(i) != null);
+
+  const rows = [
+    // 値上げ前当初。当月の金額（合計）から売上改善額を引いたもの。値上げのスタート地点
+    ...(gain != null ? [{
+      key: 'pre', ym: `${actYm || '当月'} 値上げ前当初`, kind: '当初' as const,
+      deals: num(t?.deals), base: null as number | null,
+      amt: num(t?.base_amt) - gain, plan: -1,
+      up: null as number | null, same: null as number | null,
+    }] : []),
+    // 実績。取り込んだ当月の金額そのもの（全品目）。値上げ前当初との差が売上改善額
+    {
+      key: 'base', ym: actYm || '当月', kind: '実績' as const,
+      deals: num(t?.deals),
+      base: (gain == null ? null : num(t?.base_amt) - gain) as number | null,
+      amt: num(t?.base_amt), plan: -1,
+      up: gain == null ? null : num(act?.up), same: gain == null ? null : num(act?.same),
+    },
+    // マスタ分。値決めどおりに出た分（土台との差が見積ぶんなど）
+    ...(num(t?.mp_amt) > 0 ? [{
+      key: 'mp', ym: `${actYm || '当月'}（マスタ）`, kind: '参考' as const,
+      deals: num(t?.deals), base: num(t?.base_amt) as number | null, amt: num(t?.mp_amt),
+      plan: -1, up: null as number | null, same: num(t?.mp_same) as number | null,
+    }] : []),
+    // 計画（マスタ登録単価）。月ごとに1行
+    ...([[0, num(t?.a0_amt)], [1, num(t?.a1_amt)],
+      [2, num(t?.a2_amt)], [3, num(t?.a3_amt)]] as [number, number][])
+      .map(([i, amt]) => ({
+        key: `plan-${i}`,
+        // 換算した側だけ、何稼働日ぶんの計画かを月の横に出す
+        ym: `${plan[i]?.ym || ''}${byDays && plan[i]?.days ? `（${plan[i].days}稼働日）` : ''}`,
+        kind: '計画' as const,
+        deals: num(t?.deals),
+        // 比較のもとは実績（当月の金額）。換算した側は同じ倍率を掛けて土俵を揃える
+        base: num(t?.base_amt) * (byDays ? rateOf(i) : 1) as number | null,
+        amt: amt * adj(i), plan: i, up: null, same: null,
+      })),
+  ];
+
+  return (
+    <Card title={title}>
+      <NoteFold id={noteId}>
+        <strong>当初</strong>は値上げ前の金額で、{actLabel}の金額（合計）から
+        <strong>売上改善額</strong>（＝（{actLabel}のマスタ単価 − 過去最新単価）× マスタ分の数量）を
+        引いたものです。上がった品目のプラスと、下がった品目のマイナスを合わせた額を引いています。
+        <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
+        <strong>計画</strong>は、この{actLabel}の金額（合計）へ
+        「マスタ登録単価 − {baseName}」×{actLabel}の実績数を足したものです。
+        {byDays
+          ? <>　この表は月ごとの<strong>稼働日で日量換算</strong>してあり、
+              比較のもとにも同じ倍率を掛けています（値上げ率は換算の前後で変わりません）。</>
+          : <>　この表は<strong>換算をしていません</strong>。どの月も{actLabel}の実績数のままなので、
+              月どうしを同じ土俵で見比べられます
+              （案件一覧の「値上げ額（月）合計」と同じ数字です）。</>}
+        <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
+        実績との差が見積ぶんなどにあたります。
+        {splitYm && <>　<strong>うち承認日</strong>の2列は、計画の値上げ額を
+          マスタ承認日で分けたものです（{splitYm}以降が今回の取り組みで承認された分）。
+          承認日の入っていないものはどちらにも入れていません。</>}
+        {hasTrend && <>　<strong>前日比</strong>は、前回の取込のときの値上げ額との差です。</>}
+      </NoteFold>
+      {children}
+      <div className="tbl-scroll">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>月</th>
+              <th>区分</th>
+              <th style={nums}>件数</th>
+              <th style={nums} title="実績の行だけ。過去最新単価より上がった件数と、変わっていない件数">
+                内訳<br /><small>上がった / 同じ</small>
+              </th>
+              <th style={nums}
+                  title="実績は値上げ前当初と、計画は実績（当月の金額）と比べます">
+                比較のもと<br /><small>月あたり</small>
+              </th>
+              <th style={nums}>金額<br /><small>月あたり</small></th>
+              <th style={nums}>値上げ額<br /><small>月あたり</small></th>
+              <th style={nums} title={hasTrend
+                ? '前回の取込のときの値上げ額との差（取込のたびに記録しています）'
+                : trendNote}>
+                前日比<br /><small>前回の取込から</small>
+              </th>
+              {splitYm && (
+                <>
+                  <th style={nums} title={`値上げ額のうち、${splitYm}以降に承認された分`}>
+                    うち承認日<br /><small>{splitYm} 以降</small>
+                  </th>
+                  <th style={nums} title={`値上げ額のうち、${splitYm}より前に承認されていた分`}>
+                    うち承認日<br /><small>{splitYm} より前</small>
+                  </th>
+                </>
+              )}
+              <th style={nums} title="値上げ額 ÷ 現状額">値上げ率</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const up = row.base == null ? null : row.amt - row.base;
+              const pct = row.base != null && row.base > 0
+                ? Math.round((up! / row.base) * 1000) / 10 : null;
+              // 承認日の前後の内訳と前日比は、計画の行にだけ出す
+              const sp = row.plan >= 0 ? split?.months?.[row.plan] : undefined;
+              const diff = row.plan >= 0 ? trend(row.plan) : null;
+              const money = (v: number | null | undefined, sign = true) => (v == null ? '—'
+                : v === 0 ? '—'
+                  : `${sign ? (v > 0 ? '＋' : '−') : ''}${yen(Math.abs(v) / months)}`);
+              const color = (v: number | null | undefined) => (v == null || v === 0 ? undefined
+                : v < 0 ? '#c2410c' : '#15803d');
+              return (
+                <tr key={row.key}>
+                  <td><strong>{row.ym}</strong></td>
+                  <td>
+                    <span className={`badge ${row.kind === '当初' || row.kind === '参考' ? 'gray'
+                      : row.kind === '実績' ? 'green' : 'blue'}`}>
+                      {row.kind}
+                    </span>
+                  </td>
+                  <td style={nums}>{row.deals.toLocaleString()}</td>
+                  <td style={nums}>
+                    {row.kind === '参考' ? (
+                      <span title={`実単価が${actLabel}のマスタ単価と同じ品目の件数`}>
+                        <span style={{ color: 'var(--muted)' }}>—</span>
+                        {' / '}{row.same?.toLocaleString()}
+                      </span>
+                    ) : row.up == null ? '—' : (
+                      <span title={`上がった ${row.up.toLocaleString()}件 / 単価が変わっていない ${row.same?.toLocaleString()}件`}>
+                        <span style={{ fontWeight: 700, color: row.up > 0 ? '#15803d' : 'var(--muted)' }}>
+                          {row.up.toLocaleString()}
+                        </span>
+                        {' / '}{row.same?.toLocaleString()}
+                      </span>
+                    )}
+                  </td>
+                  <td style={nums}>{row.base == null ? '—' : yen(row.base / months)}</td>
+                  <td style={nums}>{yen(row.amt / months)}</td>
+                  <td style={{ ...nums, fontWeight: 700, color: color(up) }}>{money(up)}</td>
+                  {/* 前日比。記録と同じ条件（全社・絞り込みなし）のときだけ出す */}
+                  <td style={{ ...nums, fontWeight: 700, color: color(diff) }}
+                      title={diff == null && row.plan >= 0 ? trendNote : undefined}>
+                    {row.plan < 0 ? '—' : diff == null ? '—' : diff === 0 ? '±0' : money(diff)}
+                  </td>
+                  {splitYm && (
+                    <>
+                      <td style={{ ...nums, fontWeight: 700, color: color(sp ? sp.after : null) }}
+                          title={sp ? `${sp.cntAfter.toLocaleString()}件` : undefined}>
+                        {sp ? money(sp.after * adj(row.plan)) : '—'}
+                      </td>
+                      <td style={{ ...nums, color: 'var(--muted)' }}
+                          title={sp ? `${sp.cntBefore.toLocaleString()}件` : undefined}>
+                        {sp ? money(sp.before * adj(row.plan)) : '—'}
+                      </td>
+                    </>
+                  )}
+                  <td style={nums}>{pct == null ? '—' : `${pct > 0 ? '+' : ''}${pct}%`}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 /**
  * 計画の値上げ額を、承認日の前後で分けた内訳。
  *
@@ -754,6 +959,35 @@ export default function Dashboard() {
   }));
   /** 稼働日での換算が効いているか（実績の月と計画の月の日数が分かっているか） */
   const hasWorkdays = Boolean(wd?.baseDays) && plan.some((x) => x.days);
+
+  /*
+    前日比（前回の取込との差）。取込のたびに残している記録から出す。
+    記録は「全社・絞り込みなし・基準はマスタ単価・承認日は既定」で取ったものなので、
+    画面がその条件と違うときは出さない（違う条件の数字と引き算しても意味が無いため）。
+  */
+  const trendDays = data.raiseHistory ?? [];
+  const trendSame = data.scope?.level === 'all'
+    && !FILTER_KEYS.some((k) => k !== 'aDateYm' && k !== 'aDateOp' && get(k))
+    && (get('aDateYm') || '') === (trendDays[0]?.aDateYm ?? '')
+    && (get('aDateOp') || 'from') === 'from';
+  const trendNote = trendDays.length < 2
+    ? '前回の取込の記録がまだありません（次の取込から出ます）'
+    : !trendSame
+      ? '絞り込み中は出せません（記録は全社・絞り込みなしの合計のため、「解除」で出ます）'
+      : '';
+  /**
+   * 計画の月ぶんの前日比。byDays=false のときは稼働日の倍率で割り戻し、
+   * その表の数字（換算前）と同じ土俵に揃える。
+   */
+  const trendOf = (i: number, byDays: boolean): number | null => {
+    if (!trendSame || trendDays.length < 2) return null;
+    const ym = plan[i]?.ym;
+    const cur = trendDays[0].months.find((x) => x.ym === ym);
+    const prev = trendDays[1].months.find((x) => x.ym === ym);
+    if (!cur || !prev) return null;
+    const rate = plan[i]?.rate > 0 ? plan[i].rate : 1;
+    return (cur.after - prev.after) * (byDays ? 1 : 1 / rate);
+  };
   const actYm = data.actuals?.[0]?.ym ?? '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
   // 値上げ幅の基準（比較のもと）。案件一覧と同じ選び方
@@ -1008,30 +1242,17 @@ export default function Dashboard() {
       )}
       <div style={busy ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
 
-      {/* まとめ（実績と計画）を値上げ額の内訳より先（上）に置く */}
-      <Card title={`まとめ（実績と計画）${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}>
-        <NoteFold id="summary">
-          <strong>当初</strong>は値上げ前の金額で、{actLabel}の金額（合計）から
-          <strong>売上改善額</strong>（＝（{actLabel}のマスタ単価 − 過去最新単価）× マスタ分の数量）を
-          引いたものです。上がった品目のプラスと、下がった品目のマイナスを合わせた額を引いています。
-          <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
-          <strong>計画</strong>は、この{actLabel}の金額（合計）へ
-          「マスタ登録単価 − {baseName}」×{actLabel}の実績数を足したもので、
-          <strong>実績（{actLabel}の金額）と比べます</strong>
-          {hasWorkdays
-            ? <>（月ごとの<strong>稼働日で日量換算</strong>してあり、
-                比較のもとにも同じ倍率を掛けています。
-                換算前の額は案件一覧の「値上げ額（月）合計」と同じ数字です）。</>
-            : <>（案件一覧の「値上げ額（月）合計」と同じ数字になります）。</>}
-          <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
-          実績との差が見積ぶんなどにあたります。
-          どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
-          実績の行は<strong>過去最新単価のある品目だけ</strong>が対象のため、件数と金額がマスタ分より小さくなります
-          （比べる相手の無い品目は値上げ額を出せないため）。
-          計画の行は全品目が対象で、承認のある品目だけ
-          「マスタ登録単価 − {baseName}」×{actLabel}の実績数 を足しています
-          （{baseName}が無い品目・{actLabel}の実績数が無い品目は変動なしです）。
-        </NoteFold>
+      {/*
+        まとめ（実績と計画）。稼働日で日量換算した表と、換算前（実績の月の実績数の
+        まま）の表を並べて出す。前者はその月にいくらになる見込みか、
+        後者は月どうしを同じ土俵で見比べるためのもの。
+      */}
+      <SummaryCard
+        title={`まとめ（実績と計画）　稼働日で日量換算${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}
+        noteId="summary" byDays plan={plan} t={t} act={act} gain={gain} months={months}
+        actYm={actYm} actLabel={actLabel} baseName={baseName}
+        split={data.raiseSplit} trend={(i) => trendOf(i, true)} trendNote={trendNote}
+      >
         {/*
           同じ数字を、当初 → 実績 → 計画 の棒グラフでも出す。
           値上げ額のラベルは、どの本も値上げ前当初との差
@@ -1067,113 +1288,18 @@ export default function Dashboard() {
           ];
           return <FlowChart bars={bars} />;
         })()}
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>月</th>
-              <th>区分</th>
-              <th style={nums}>件数</th>
-              <th style={nums} title="実績の行だけ。過去最新単価より上がった件数と、変わっていない件数">
-                内訳<br /><small>上がった / 同じ</small>
-              </th>
-              <th style={nums}
-                  title="実績は値上げ前当初と、計画は実績（当月の金額）と比べます">
-                比較のもと<br /><small>月あたり</small>
-              </th>
-              <th style={nums}>金額<br /><small>月あたり</small></th>
-              <th style={nums}>値上げ額<br /><small>月あたり</small></th>
-              <th style={nums} title="値上げ額 ÷ 現状額">値上げ率</th>
-            </tr>
-          </thead>
-          <tbody>
-            {/*
-              土台（合計）→ マスタ分 → 実績（過去→当月）→ 計画（A基準）の順に並べる。
-              8月のように実績と計画の両方がある月は2行になり、
-              計画どおりに上がっているかをその場で見比べられる。
-            */}
-            {[
-              // 値上げ前当初。7月金額（合計）から売上改善額を引いたもの。
-              // ここが値上げのスタート地点になる
-              ...(gain != null ? [{
-                key: 'pre', ym: `${actYm || '当月'} 値上げ前当初`, kind: '当初' as const,
-                deals: num(t?.deals), base: null as number | null,
-                amt: num(t?.base_amt) - gain,
-                up: null as number | null, same: null as number | null,
-              }] : []),
-              // 実績。取り込んだ当月の金額そのもの（全品目）。
-              // 値上げ前当初との差が売上改善額
-              {
-                key: 'base', ym: actYm || '当月', kind: '実績' as const,
-                deals: num(t?.deals),
-                base: (gain == null ? null : num(t?.base_amt) - gain) as number | null,
-                amt: num(t?.base_amt),
-                up: gain == null ? null : num(act?.up), same: gain == null ? null : num(act?.same),
-              },
-              // マスタ分。値決めどおりに出た分（土台との差が見積ぶんなど）
-              ...(num(t?.mp_amt) > 0 ? [{
-                key: 'mp', ym: `${actYm || '当月'}（マスタ）`, kind: '参考' as const,
-                deals: num(t?.deals), base: num(t?.base_amt) as number | null, amt: num(t?.mp_amt),
-                up: null as number | null, same: num(t?.mp_same) as number | null,
-              }] : []),
-              ...([[0, m0, num(t?.a0_amt)], [1, m1, num(t?.a1_amt)],
-                [2, m2, num(t?.a2_amt)], [3, m3, num(t?.a3_amt)]] as [number, string, number][])
-                .map(([i, label, amt]) => ({
-                  key: `plan-${label}`,
-                  // 何稼働日ぶんの計画かを月の横に出す
-                  ym: `${label}${plan[i]?.days ? `（${plan[i].days}稼働日）` : ''}`,
-                  kind: '計画' as const,
-                  deals: num(t?.deals),
-                  // 比較のもとは実績（当月の金額）。計画は稼働日で日量換算してあるので、
-                  // 比較のもとにも同じ倍率を掛けて同じ土俵で見る
-                  base: num(t?.base_amt) * (plan[i]?.rate ?? 1) as number | null,
-                  amt, up: null, same: null,
-                })),
-            ]
-              .map((row) => {
-                const gain = row.base == null ? null : row.amt - row.base;
-                const rate = row.base != null && row.base > 0
-                  ? Math.round((gain! / row.base) * 1000) / 10 : null;
-                return (
-                  <tr key={row.key}>
-                    <td><strong>{row.ym}</strong></td>
-                    <td>
-                      <span className={`badge ${row.kind === '当初' || row.kind === '参考' ? 'gray'
-                        : row.kind === '実績' ? 'green' : 'blue'}`}>
-                        {row.kind}
-                      </span>
-                    </td>
-                    <td style={nums}>{row.deals.toLocaleString()}</td>
-                    <td style={nums}>
-                      {row.kind === '参考' ? (
-                        <span title={`実単価が${actLabel}のマスタ単価と同じ品目の件数`}>
-                          <span style={{ color: 'var(--muted)' }}>—</span>
-                          {' / '}{row.same?.toLocaleString()}
-                        </span>
-                      ) : row.up == null ? '—' : (
-                        <span title={`上がった ${row.up.toLocaleString()}件 / 単価が変わっていない ${row.same?.toLocaleString()}件`}>
-                          <span style={{ fontWeight: 700, color: row.up > 0 ? '#15803d' : 'var(--muted)' }}>
-                            {row.up.toLocaleString()}
-                          </span>
-                          {' / '}{row.same?.toLocaleString()}
-                        </span>
-                      )}
-                    </td>
-                    <td style={nums}>{row.base == null ? '—' : yen(row.base / months)}</td>
-                    <td style={nums}>{yen(row.amt / months)}</td>
-                    <td style={{ ...nums, fontWeight: 700,
-                                 color: gain == null ? undefined
-                                   : gain < 0 ? '#c2410c' : gain > 0 ? '#15803d' : undefined }}>
-                      {gain == null ? '—'
-                        : gain === 0 ? '—'
-                          : `${gain > 0 ? '＋' : '−'}${yen(Math.abs(gain) / months)}`}
-                    </td>
-                    <td style={nums}>{rate == null ? '—' : `${rate > 0 ? '+' : ''}${rate}%`}</td>
-                  </tr>
-                );
-              })}
-          </tbody>
-        </table>
-      </Card>
+      </SummaryCard>
+
+      {/* 稼働日で換算する前（どの月も実績の月の実績数のまま）。
+          換算のある月がある場合だけ出す（無ければ上の表と同じ数字になるため） */}
+      {hasWorkdays && (
+        <SummaryCard
+          title={`まとめ（${actLabel}の実績数ベース）　稼働日の換算なし`}
+          noteId="summary-raw" byDays={false} plan={plan} t={t} act={act} gain={gain}
+          months={months} actYm={actYm} actLabel={actLabel} baseName={baseName}
+          split={data.raiseSplit} trend={(i) => trendOf(i, false)} trendNote={trendNote}
+        />
+      )}
 
       {/* 計画の値上げ額を、承認日の前後で分けた内訳 */}
       {data.raiseSplit && <ApprovalSplitCard split={data.raiseSplit} months={months} />}
