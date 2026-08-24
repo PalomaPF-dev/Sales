@@ -5,6 +5,8 @@ import { Card } from '../components/ui';
 import { useUser } from '../user';
 import AggImportCard from '../components/AggImportCard';
 import SurveyImportCard from '../components/SurveyImportCard';
+import RaiseTrendCard from '../components/RaiseTrend';
+import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
 
 /** 取込データの点検結果（数字だけになっている名前欄） */
@@ -27,10 +29,16 @@ export default function ImportPage() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
   // 価格調査の「4月」が何年かは、マスタ登録の当月から決める
   const [meta, setMeta] = useState<Meta | null>(null);
+  // 取込のたびに残している値上げ額の履歴（取込履歴として出す）
+  const [history, setHistory] = useState<RaiseDay[]>([]);
   const canCheck = me.role === 'admin' || me.role === 'developer';
   const navigate = useNavigate();
 
   const load = () => {
+    // 取込の記録（値上げ額の合計）はいつでも見られるようにする
+    api<{ days: RaiseDay[] }>('/raise-history?limit=60')
+      .then((r) => setHistory(r.days ?? []))
+      .catch(() => {});
     // 取込のたびに点検し直す（列ズレの値が入ったらすぐ気づけるように）
     if (canCheck) {
       api<Meta>('/meta').then(setMeta).catch(() => {});
@@ -83,33 +91,10 @@ export default function ImportPage() {
         </Card>
       )}
 
-      {canCheck && (
-        <Card title="値上げ交渉の値の入れ直し">
-          <p className="pt-note" style={{ marginTop: 0 }}>
-            商談結果・商談メモ・最終確定日・最終確定単価に、
-            <strong>以前の取込で入った古い値が残って、いまのファイルと食い違う</strong>ことがあります。
-            下のボタンで一度すべて空に戻し、そのあと
-            <strong>①価格調査（毎日更新）を取り込み直す</strong>と、ファイルの値だけが入り直ります。
-            合意単価・適用年月・完了（画面で入れる項目）は消えません。
-          </p>
-          <button className="btn danger" disabled={cleaning}
-            onClick={async () => {
-              if (!window.confirm('商談結果・商談メモ・最終確定日・最終確定単価をすべて空に戻します。\n'
-                + 'このあと①価格調査（毎日更新）を取り込み直してください。よろしいですか？')) return;
-              setCleaning(true);
-              setMsg(null);
-              try {
-                const r = await api<{ cleared: number }>('/admin/clear-nego', { method: 'POST' });
-                setMsg({ kind: 'ok', text: `${r.cleared.toLocaleString()}件の交渉の値を空に戻しました。続けて①価格調査（毎日更新）を取り込んでください` });
-              } catch (e) {
-                setMsg({ kind: 'error', text: (e as Error).message });
-              } finally {
-                setCleaning(false);
-              }
-            }}>
-            {cleaning ? '処理中...' : '商談結果・最終確定日などを空に戻す'}
-          </button>
-        </Card>
+      {/* 取込履歴。取り込むたびに値上げ額の合計を残しているので、
+          いつ・どれだけ動いたかをここでたどれる */}
+      {history.length > 0 && (
+        <RaiseTrendCard days={history} title="取込履歴（値上げ額の推移）" />
       )}
 
       {canCheck && blankCorp > 0 && (

@@ -20,6 +20,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   const [parsed, setParsed] = useState<{ p: AggParsed; name: string } | null>(null);
   const [result, setResult] = useState<AggResult | null>(null);
   const [err, setErr] = useState('');
+  // この取込に限り、商談結果・最終確定日・最終確定単価をファイルの値で入れ直す。
+  // 既定は上書きしない（値上げ交渉の記録は営業担当者がアプリで入れるため）
+  const [overwriteNego, setOverwriteNego] = useState(false);
 
   const onPick = async () => {
     const file = fileRef.current?.files?.[0];
@@ -54,6 +57,7 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       const r = await (await aggClient()).sendAggImport(parsed.p, parsed.name, {
         onProgress: (done, total) =>
           setProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行を取込中...`),
+        overwriteNego,
       });
       setResult(r);
       setProgress('');
@@ -93,10 +97,11 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
         「取り込んだ前日まで」の値が残ります（実績列の無いファイルでは当月単価を記録します）。
         <strong>目標単価</strong>の列があるファイルでは、その内容を正として入れ直します
         （ファイルで空欄の品目は空に戻ります）。列の無いファイルでは今の値を残します。
-        <strong>値上げ交渉の記録（商談結果・商談メモ・最終確定日・最終確定単価）は取り込みません。</strong>
+        <strong>値上げ交渉の記録（商談結果・最終確定日・最終確定単価）は取り込みません。</strong>
         営業担当者がアプリで入れた値がそのまま残ります
-        （毎日の取込で更新されるのはマスタ登録単価などのマスタ側の項目だけです。
-        新しく追加される案件にだけ、ファイルに値があればそれが入ります）。
+        （毎日の取込で更新されるのはマスタ登録単価などのマスタ側の項目だけです）。
+        ファイル側でまとめて直したときは、ファイルを選んだあとに出る
+        <strong>「ファイルの値で入れ直す」に印</strong>を付けると入れ直せます。
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" ref={fileRef} accept=".xlsx,.xlsm" onChange={onPick} disabled={busy} />
@@ -141,6 +146,27 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
           </>
         )}
       </div>
+      {/* 交渉の記録は既定で取り込まない。ファイル側を正として入れ直したいときだけ、
+          この印を付ける。取込ごとの選択で、次の取込には持ち越さない */}
+      {parsed && (
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, fontSize: 12.5 }}>
+          <input type="checkbox" checked={overwriteNego} disabled={busy}
+            onChange={(e) => setOverwriteNego(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>
+            <strong>商談結果・最終確定日・最終確定単価もファイルの値で入れ直す</strong>
+            （通常は印を付けません）。
+            <br />
+            <span style={{ color: 'var(--muted)' }}>
+              値上げ交渉の記録は営業担当者がアプリで入れるため、毎日の取込では変えません。
+              ファイル側でまとめて直したときだけ印を付けてください
+              （ファイルで空欄の品目は今の値が残ります）。
+              商談メモはファイルに無いため、印の有無にかかわらず変わりません。
+              新しく追加される案件には、印の有無にかかわらずファイルの値が入ります。
+              この選択は今回の取込にだけ効きます。
+            </span>
+          </span>
+        </label>
+      )}
       {progress && <p className="pt-note">{progress}</p>}
     </Card>
   );

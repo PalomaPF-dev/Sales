@@ -965,23 +965,6 @@ api.post('/admin/cleanup-blank-corp', wrap(async (req, res) => {
   res.json({ removed: Number(r?.changes ?? 0), total: Number(total) });
 }));
 
-/**
- * 値上げ交渉の値（商談結果・商談メモ・最終確定日・最終確定単価）を一括で空に戻す。
- *
- * 旧形式のファイルで入った古い値が残り、いまのファイルと食い違って見えることがある。
- * 空に戻してから価格調査（毎日更新）を取り込み直すと、ファイルの値だけが入る。
- * 合意単価・適用年月・完了（画面だけで入れる項目）は触らない。
- */
-api.post('/admin/clear-nego', wrap(async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const r = await db.run(`
-    UPDATE deals SET nego_result = NULL, nego_note = NULL,
-           final_date = NULL, final_price = NULL, updated_at = ?
-     WHERE nego_result IS NOT NULL OR nego_note IS NOT NULL
-        OR final_date IS NOT NULL OR final_price IS NOT NULL`, [now()]);
-  res.json({ cleared: Number(r?.changes ?? 0) });
-}));
-
 // ---- 全国基準価格表（マスター） ----
 
 /**
@@ -1873,6 +1856,131 @@ function avgPriceAgg(query, aggMeta) {
     SUM(CASE WHEN ${target} THEN ${plan(n)} * ${qty} END) AS avg_plan_m${n}`).join(',')}`;
 }
 
+/**
+ * 値上げの取り組みが始まった年月。ダッシュボードの承認日の既定値と同じ。
+ * これより前の承認は前回までの古い単価が多く、値上げ額として見ると実態と合わない。
+ * 画面側の client/src/filterOptions.ts の RAISE_START_YM と合わせること。
+ */
+const RAISE_START_YM = '2026-05';
+
+/** 表示用の日付（YYYY-MM-DD）。サーバーはUTCで動くため日本時間に直す */
+const localDate = (value = Date.now()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: DISPLAY_TZ }).format(new Date(value));
+
+/**
+ * 値上げ額の合計を、取込のたびに記録する。
+ *
+ * 毎日取り込み直すと、そのたびにマスタ登録単価が入れ替わって値上げ額も動く。
+ * あとから「前回の取込からいくら動いたか」を追えるように、
+ * 取込日 × 計画の月 ごとに合計を残しておく。
+ *
+ * 記録するのは全社・絞り込みなし・基準はマスタ単価（画面の既定）で、
+ * 承認日が RAISE_START_YM 以降ぶんと、それより前ぶんに分けて持つ。
+ * 画面の数字と同じく、稼働日での日量換算をしたあとの額を入れる。
+ *
+ * 取込そのものは成功させたいので、ここで失敗しても投げずに警告だけ残す。
+ */
+async function recordRaiseHistory(source, filename) {
+  try {
+    const { aggMeta, actualMeta } = await loadImportMeta();
+    const planYms = [0, 1, 2, 3].map((n) => String(aggMeta?.[`m${n}`] ?? ''));
+    if (!planYms.some((ym) => /^\d{4}-\d{2}$/.test(ym))) return;   // 計画の月が分からない
+    const workdays = workdayPlan(actualMeta?.ym ?? '', planYms);
+    const dayRate = (n) => {
+      const days = workdays.months[n]?.days;
+      return workdays.baseDays > 0 && days > 0 ? ` * ${days}.0 / ${workdays.baseDays}.0` : '';
+    };
+    const f = (c) => `CAST(${c} AS FLOAT)`;
+    // 現状額（実績の月の金額そのもの）。ダッシュボードの「現状額（合計）」と同じ
+    const effAmt = `COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)`;
+    const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta));
+    // 承認日の前後。承認日の無いA基準は、どちらにも入れない（画面と同じ決まり）
+    const first = `${RAISE_START_YM}-01`;
+    const sides = { after: `a_date_m3 >= '${first}'`, before: `a_date_m3 < '${first}'` };
+    // 基準はマスタ単価（画面の既定）。空の絞り込みを渡すとその選び方になる
+    const gain = (n, cond) => raiseAmtSql(aPrice(n), {}, cond);
+    const cols = [0, 1, 2, 3].flatMap((n) => Object.entries(sides).flatMap(([key, cond]) => [
+      `SUM(${gain(n, cond)}${dayRate(n)}) AS ${key}_${n}`,
+      `SUM(CASE WHEN ${aPrice(n)} > 0 AND ${cond} THEN 1 ELSE 0 END) AS ${key}_cnt_${n}`,
+    ]));
+    const row = await db.get(`
+      SELECT COUNT(*) AS deals, SUM(${f('master_qty')}) AS qty,
+             SUM(${effAmt}) AS base_amt, ${cols.join(', ')}
+        FROM deal_calc`);
+    const takenAt = now();
+    const takenOn = localDate();
+    const n = (v) => Number(v ?? 0);
+    for (const [i, planYm] of planYms.entries()) {
+      if (!/^\d{4}-\d{2}$/.test(planYm)) continue;
+      // 計画額（日量換算後）＝ 現状額 × 稼働日の倍率 ＋ 値上げ額（前後の合計）
+      const rate = workdays.months[i]?.rate > 0 ? workdays.months[i].rate : 1;
+      const after = n(row?.[`after_${i}`]);
+      const before = n(row?.[`before_${i}`]);
+      await db.run(`
+        INSERT INTO raise_history (taken_on, plan_ym, source, filename, act_ym,
+          work_days, base_days, deals, qty, base_amt, plan_amt,
+          raise_after, raise_before, cnt_after, cnt_before, a_date_ym, taken_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (taken_on, plan_ym) DO UPDATE SET
+          source = excluded.source, filename = excluded.filename, act_ym = excluded.act_ym,
+          work_days = excluded.work_days, base_days = excluded.base_days,
+          deals = excluded.deals, qty = excluded.qty, base_amt = excluded.base_amt,
+          plan_amt = excluded.plan_amt,
+          raise_after = excluded.raise_after, raise_before = excluded.raise_before,
+          cnt_after = excluded.cnt_after, cnt_before = excluded.cnt_before,
+          a_date_ym = excluded.a_date_ym, taken_at = excluded.taken_at`,
+        [takenOn, planYm, source, filename || null, actualMeta?.ym ?? null,
+          workdays.months[i]?.days ?? null, workdays.baseDays ?? null,
+          n(row?.deals), n(row?.qty), n(row?.base_amt),
+          n(row?.base_amt) * rate + after + before,
+          after, before, n(row?.[`after_cnt_${i}`]), n(row?.[`before_cnt_${i}`]),
+          RAISE_START_YM, takenAt]);
+    }
+  } catch (e) {
+    console.warn(`値上げ額の履歴を残せませんでした → ${e.message}`);
+  }
+}
+
+/**
+ * 値上げ額の推移。取込日ごとに、計画の月ぶんの合計を新しい順で返す。
+ * 画面では前回の取込との差（前日比）を添えて出す。
+ */
+async function raiseHistoryRows(limit = 30) {
+  let days = [];
+  try {
+    days = await db.all(
+      'SELECT DISTINCT taken_on FROM raise_history ORDER BY taken_on DESC LIMIT ?', [limit]);
+  } catch { return []; }
+  if (!days.length) return [];
+  const oldest = String(days[days.length - 1].taken_on);
+  const rows = await db.all(
+    'SELECT * FROM raise_history WHERE taken_on >= ? ORDER BY taken_on DESC, plan_ym', [oldest]);
+  const byDay = new Map();
+  for (const r of rows) {
+    const day = String(r.taken_on);
+    if (!byDay.has(day)) {
+      byDay.set(day, {
+        takenOn: day, takenAt: r.taken_at, source: r.source, filename: r.filename,
+        actYm: r.act_ym, deals: Number(r.deals ?? 0), baseAmt: Number(r.base_amt ?? 0),
+        aDateYm: r.a_date_ym, months: [],
+      });
+    }
+    byDay.get(day).months.push({
+      ym: String(r.plan_ym), days: r.work_days ?? null, baseDays: r.base_days ?? null,
+      planAmt: Number(r.plan_amt ?? 0),
+      after: Number(r.raise_after ?? 0), before: Number(r.raise_before ?? 0),
+      cntAfter: Number(r.cnt_after ?? 0), cntBefore: Number(r.cnt_before ?? 0),
+    });
+  }
+  return [...byDay.values()];
+}
+
+api.get('/raise-history', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const limit = Math.min(90, Math.max(2, Number(req.query.limit) || 30));
+  res.json({ days: await raiseHistoryRows(limit) });
+}));
+
 async function dashboardData(query, user) {
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
   const { where, params: p } = dealFilters(query, user);
@@ -2035,6 +2143,24 @@ async function dashboardData(query, user) {
   const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
   const avgAgg = avgPriceAgg(query, aggMeta);
 
+  // 承認日の前後で分けた値上げ額の内訳。
+  // 画面の「承認日」で選んだ年月（未指定なら取り組みの開始月）を境目に、
+  // それ以降に承認された分と、それより前に承認された分へ分ける。
+  // 上の値上げ額は選んだ向きだけを計上するが、こちらは両側とも出すので、
+  // 「新しく承認された分がいくらで、前からの分がいくらか」を見比べられる。
+  // 承認日の無いA基準はどちらにも入れない（計画に充てない決まりと同じ）。
+  const splitYm = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(query.aDateYm ?? ''))
+    ? String(query.aDateYm) : RAISE_START_YM;
+  const splitSides = {
+    after: `a_date_m3 >= '${splitYm}-01'`,
+    before: `a_date_m3 < '${splitYm}-01'`,
+  };
+  const splitAgg = [0, 1, 2, 3].flatMap((n) =>
+    Object.entries(splitSides).flatMap(([key, cond]) => [
+      `SUM(${raiseAmtSql(aPrice(n), query, cond)}${dayRate(n)}) AS raise_${key}_m${n}`,
+      `SUM(CASE WHEN ${aPrice(n)} > 0 AND ${cond} THEN 1 ELSE 0 END) AS cnt_${key}_m${n}`,
+    ])).join(',');
+
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
     SUM(${aGain(n)}${dayRate(n)}) AS raise_m${n}`)
@@ -2059,7 +2185,7 @@ async function dashboardData(query, user) {
     db.get(`SELECT COUNT(*) AS deals, SUM(${effQty}) AS qty, ${actAmt}
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
-    db.get(`SELECT ${monthAgg}, ${avgAgg},
+    db.get(`SELECT ${monthAgg}, ${avgAgg}, ${splitAgg},
               SUM(CASE WHEN ${planned(3)} THEN 1 ELSE 0 END) AS covered
             FROM deal_calc ${planJoin} ${where}`, p),
     db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
@@ -2126,6 +2252,20 @@ async function dashboardData(query, user) {
     actuals,
     // 計画の日量換算に使った稼働日（画面とExcelが同じ数字で計算できるように返す）
     workdays,
+    // 承認日の前後で分けた値上げ額の内訳（計画の月ごと）
+    raiseSplit: {
+      ym: splitYm,
+      months: [0, 1, 2, 3].map((n) => ({
+        ym: workdays.months[n]?.ym || '',
+        days: workdays.months[n]?.days ?? null,
+        after: Number(aMonths?.[`raise_after_m${n}`] ?? 0),
+        before: Number(aMonths?.[`raise_before_m${n}`] ?? 0),
+        cntAfter: Number(aMonths?.[`cnt_after_m${n}`] ?? 0),
+        cntBefore: Number(aMonths?.[`cnt_before_m${n}`] ?? 0),
+      })),
+    },
+    // 値上げ額の推移（取込ごと・全社の合計）。前回の取込との差を画面で出す
+    raiseHistory: await raiseHistoryRows(14),
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
     abActYms: actualMeta?.ym ? [actualMeta.ym] : [],
   };
@@ -3475,6 +3615,11 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
+        // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
+        // 入れ直すか。毎日の取込はマスタ登録単価を入れ直すためのもので、
+        // 交渉の記録は営業担当者がアプリで入れるため、既定では触らない。
+        // ファイル側でまとめて直したときだけ true にする
+        overwriteNego: req.body?.overwriteNego === true,
         // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
         histMonths: Array.isArray(meta.histMonths)
           ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
@@ -3715,10 +3860,15 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     ? 'CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END'
     : `COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
                  deals.r2_target_price)`;
-  // 商談結果・商談メモ・最終確定日・最終確定単価（値上げ交渉の記録）は
-  // 営業担当者がアプリで入れる項目なので、取込では触らない
-  // （既にある案件は画面の値がそのまま残る。新しく追加される案件にだけ
-  //   ファイルの値が入る）。
+  // 商談結果・最終確定日・最終確定単価（値上げ交渉の記録）は営業担当者が
+  // アプリで入れる項目なので、毎日の取込では触らない（画面の値がそのまま残る）。
+  // 取込のときに「ファイルの値で入れ直す」を選んだ場合だけ、値のある列を上書きする。
+  // 商談メモはもともとファイルに無いため、どちらの場合も変わらない。
+  const overwriteNego = startedMeta?.overwriteNego === true;
+  const negoSql = !overwriteNego ? '' : `
+      nego_result = COALESCE(s.nego_result, deals.nego_result),
+      final_date = COALESCE(s.final_date, deals.final_date),
+      final_price = COALESCE(s.final_price, deals.final_price),`;
   // 当月実績の単価・数量（master_*）は売上高の取込が正なので、ここでは触らない。
   await db.run(`
     UPDATE deals SET
@@ -3746,6 +3896,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
       -- 目標単価（第2弾新値上げ単価）。列のあるファイルならファイルの内容を正とする
       r2_target_price = ${targetSql},
+      -- 商談結果・最終確定日・最終確定単価（「ファイルの値で入れ直す」を選んだときだけ）
+      ${negoSql}
       -- ベース（価格調査）に載っている印。売上高（月次）の取込で
       -- 「今月の売上高に無い行」を落とすときに、この印のある行は残す
       agg_batch = ?,
@@ -3819,6 +3971,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // ここでは行を消さないため VACUUM は不要（毎日の取込なので、時間のかかる
   // 掃除を毎回走らせない。行が消える売上高の取込側にだけ残す）
   invalidateMetaCache();
+  // 値上げ額の合計をこの取込の日付で残す（前回の取込との差を追えるように）
+  await recordRaiseHistory('agg', startedMeta?.filename ?? '');
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added, renamed });
 }));
 
@@ -4077,6 +4231,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   await db.run('DELETE FROM act_staging');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
   invalidateMetaCache();
+  // 売上高が入れ替わると実績数（値上げ額のもと）も変わるので、ここでも残す
+  await recordRaiseHistory('survey', actualMeta?.filename ?? '');
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), removed });
 }));
 

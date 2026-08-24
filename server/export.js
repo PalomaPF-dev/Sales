@@ -300,6 +300,54 @@ export function buildDashboardWorkbook(data, opts = {}) {
     addSheet('平均単価', avg, [12, 10, 18, 18, 18, 18, 10]);
   }
 
+  // ── 計画の値上げ額を承認日の前後で分けた内訳（画面のカードと同じ数字）
+  {
+    const split = data.raiseSplit;
+    const rows = (split?.months ?? []).filter((r) => r.ym);
+    if (rows.length) {
+      const aoa = [[
+        '計画の月', '稼働日',
+        `${split.ym} 以降 値上げ額（月あたり）`, `${split.ym} 以降 件数`,
+        `${split.ym} より前 値上げ額（月あたり）`, `${split.ym} より前 件数`,
+        '合計 値上げ額（月あたり）',
+      ]];
+      for (const r of rows) {
+        aoa.push([ymLabel(r.ym, r.ym), r.days ?? '',
+          round(n(r.after) / months), n(r.cntAfter),
+          round(n(r.before) / months), n(r.cntBefore),
+          round((n(r.after) + n(r.before)) / months)]);
+      }
+      addSheet('承認日の内訳', aoa, [12, 10, 24, 12, 24, 12, 22]);
+    }
+  }
+
+  // ── 値上げ額の推移（取込ごとに残している合計。全社・絞り込みなし）
+  {
+    const days = Array.isArray(data.raiseHistory) ? data.raiseHistory : [];
+    // 計画の月は取込のたびにずれるので、出てきた月をすべて集めて列にする
+    const yms = [...new Set(days.flatMap((d) => (d.months ?? []).map((x) => x.ym)))].sort();
+    if (days.length && yms.length) {
+      const aoa = [['取込日', '取込', 'ファイル', '件数',
+        ...yms.flatMap((ym) => [
+          `${ymLabel(ym, ym)} 値上げ額（月あたり）`, `${ymLabel(ym, ym)} 前回比`,
+        ])]];
+      for (const [i, d] of days.entries()) {
+        const before = days[i + 1];
+        const at = (day, ym) => (day?.months ?? []).find((x) => x.ym === ym);
+        aoa.push([d.takenOn, d.source === 'survey' ? '売上高' : '価格調査',
+          d.filename ?? '', n(d.deals),
+          ...yms.flatMap((ym) => {
+            const cur = at(d, ym);
+            if (!cur) return ['', ''];
+            const old = at(before, ym);
+            return [round(n(cur.after)), old ? round(n(cur.after) - n(old.after)) : ''];
+          })]);
+      }
+      addSheet('値上げ額の推移', aoa,
+        [12, 12, 28, 10, ...yms.flatMap(() => [22, 16])]);
+    }
+  }
+
   // ── 器具区分別・支店別・法人別（画面と同じ数字）
   // 月ごとに「A基準額 / 値上げ額 / 値上げ率」を出す。
   // 想定B基準は法人ごとに決める値のため、法人別のシートにだけ添える。

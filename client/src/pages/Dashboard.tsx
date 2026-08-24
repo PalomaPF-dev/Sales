@@ -4,6 +4,8 @@ import SearchBox from '../components/SearchBox';
 import { api } from '../api';
 import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
 import { Card, NoteFold, num, nums } from '../components/ui';
+import RaiseTrendCard, { ymLabel } from '../components/RaiseTrend';
+import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
 
@@ -103,6 +105,18 @@ interface DashboardRes {
     baseYm: string; baseDays: number | null;
     months: { ym: string; days: number | null; rate: number }[];
   };
+  /**
+   * 承認日の前後で分けた値上げ額の内訳（計画の月ごと）。
+   * ym が境目の年月で、after=それ以降に承認された分、before=それより前の分。
+   * 画面のほかの絞り込みは効いている（承認日の絞り込みだけ外して両側を出す）。
+   */
+  raiseSplit?: {
+    ym: string;
+    months: { ym: string; days: number | null; after: number; before: number;
+      cntAfter: number; cntBefore: number }[];
+  };
+  /** 値上げ額の推移（取込ごと・全社の合計）。新しい取込が先頭 */
+  raiseHistory?: RaiseDay[];
 }
 
 /**
@@ -540,6 +554,72 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, plan
   );
 }
 
+
+/**
+ * 計画の値上げ額を、承認日の前後で分けた内訳。
+ *
+ * 上の表の値上げ額は「承認日が境目以降のものだけ」を計上している。
+ * ここでは境目より前に承認された分も並べて、
+ * 今回の取り組みで積み上がった分と、前からの分を見比べられるようにする。
+ */
+function ApprovalSplitCard({ split, months }: {
+  split: NonNullable<DashboardRes['raiseSplit']>; months: number;
+}) {
+  const rows = split.months.filter((m) => m.ym);
+  if (!rows.length) return null;
+  const cell = (amt: number, cnt: number, color?: string) => (
+    <td style={{ ...nums, fontWeight: 700, color: amt === 0 ? 'var(--muted)' : color }}>
+      {amt === 0 ? '—' : `${amt > 0 ? '＋' : '−'}${yen(Math.abs(amt) / months)}`}
+      <div style={{ fontSize: 12, fontWeight: 400, color: 'var(--muted)', marginTop: 2 }}>
+        {cnt.toLocaleString()}件
+      </div>
+    </td>
+  );
+  return (
+    <Card title={`計画の値上げ額の内訳（承認日 ${split.ym} の前後）`}>
+      <NoteFold id="split">
+        計画の月ごとの値上げ額を、<strong>マスタ承認日</strong>で分けたものです。
+        <strong>{split.ym}以降</strong>が今回の取り組みで承認された分、
+        <strong>{split.ym}より前</strong>がそれ以前に承認されていた分。
+        上の表やまとめの<strong>値上げ額は「以降」の分だけ</strong>を計上しているため、
+        この表の「以降」の列と同じ数字になります。
+        承認日の入っていないマスタ登録単価は、どちらにも入れていません（計画に充てない決まりです）。
+        検索・支店・品目などほかの絞り込みは、この表にも効きます。
+      </NoteFold>
+      <div className="tbl-scroll">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>計画の月</th>
+              <th style={nums} title={`${split.ym}以降に承認されたマスタ登録単価ぶん`}>
+                {split.ym} 以降<br /><small>値上げ額 / 件数</small>
+              </th>
+              <th style={nums} title={`${split.ym}より前に承認されていたマスタ登録単価ぶん`}>
+                {split.ym} より前<br /><small>値上げ額 / 件数</small>
+              </th>
+              <th style={nums}>合計<br /><small>値上げ額</small></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.ym}>
+                <td>
+                  <strong>{ymLabel(r.ym)}</strong>
+                  {r.days ? <small style={{ color: 'var(--muted)' }}>{` ${r.days}稼働日`}</small> : null}
+                </td>
+                {cell(r.after, r.cntAfter, '#15803d')}
+                {cell(r.before, r.cntBefore, 'var(--muted)')}
+                <td style={{ ...nums, fontWeight: 700 }}>
+                  {yen((r.after + r.before) / months)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
 
 export default function Dashboard() {
   const mobile = useIsMobile();
@@ -1095,7 +1175,15 @@ export default function Dashboard() {
         </table>
       </Card>
 
+      {/* 計画の値上げ額を、承認日の前後で分けた内訳 */}
+      {data.raiseSplit && <ApprovalSplitCard split={data.raiseSplit} months={months} />}
+
       </div>
+
+      {/* 取込ごとに残している値上げ額の推移（絞り込みでは変わらないので薄くしない） */}
+      {data.raiseHistory && data.raiseHistory.length > 0 && (
+        <RaiseTrendCard days={data.raiseHistory} />
+      )}
 
       <div style={busy ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
 

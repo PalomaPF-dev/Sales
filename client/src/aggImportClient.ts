@@ -495,11 +495,18 @@ export interface AggResult {
 export async function sendAggImport(
   parsed: AggParsed,
   filename: string,
-  opts: { onProgress?: (done: number, total: number) => void }
+  /**
+   * overwriteNego … 商談結果・最終確定日・最終確定単価をファイルの値で上書きする。
+   * これらは営業担当者がアプリで入れる項目のため、既定では上書きしない
+   * （毎日の取込はマスタ登録単価を入れ直すためのもの）。
+   */
+  opts: { onProgress?: (done: number, total: number) => void; overwriteNego?: boolean }
 ): Promise<AggResult> {
   await api('/agg-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, meta: parsed.meta }),
+    body: JSON.stringify({
+      filename, meta: parsed.meta, overwriteNego: opts.overwriteNego === true,
+    }),
   });
   let matched = 0;
   let unmatched = 0;
