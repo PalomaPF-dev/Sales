@@ -2036,7 +2036,7 @@ const localDate = (value = Date.now()) =>
  *
  * 取込そのものは成功させたいので、ここで失敗しても投げずに警告だけ残す。
  */
-async function recordRaiseHistory(source, filename) {
+async function recordRaiseHistory(source, filename, takenOnRaw) {
   try {
     const { aggMeta, actualMeta } = await loadImportMeta();
     const planYms = [0, 1, 2, 3].map((n) => String(aggMeta?.[`m${n}`] ?? ''));
@@ -2064,7 +2064,11 @@ async function recordRaiseHistory(source, filename) {
              SUM(${effAmt}) AS base_amt, ${cols.join(', ')}
         FROM deal_calc`);
     const takenAt = now();
-    const takenOn = localDate();
+    // 取込日。ふだんは今日だが、過去のファイルを取り込み直して履歴を
+    // 埋めるときは、そのファイルの日付を指定できる（明日以降は受けない）
+    const today = localDate();
+    const takenOn = /^\d{4}-\d{2}-\d{2}$/.test(String(takenOnRaw ?? ''))
+      && String(takenOnRaw) <= today ? String(takenOnRaw) : today;
     const n = (v) => Number(v ?? 0);
     for (const [i, planYm] of planYms.entries()) {
       if (!/^\d{4}-\d{2}$/.test(planYm)) continue;
@@ -2130,6 +2134,29 @@ async function raiseHistoryRows(limit = 30) {
   }
   return [...byDay.values()];
 }
+
+/**
+ * いまの案件の内容で、値上げ額の履歴を1件残す。
+ *
+ * 取込のたびに自動で残しているが、この仕組みより前に取り込んだ分は
+ * 記録が無い。案件には最後に取り込んだファイルの内容がそのまま入っているので、
+ * 取り込み直さなくても、その日付で記録だけを残せるようにする。
+ * 同じ日付の記録があるときは置き換える。
+ */
+api.post('/raise-history/record', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const takenOn = String(req.body?.takenOn ?? '');
+  if (takenOn && !/^\d{4}-\d{2}-\d{2}$/.test(takenOn)) {
+    return res.status(400).json({ error: '日付の形が違います' });
+  }
+  if (takenOn && takenOn > localDate()) {
+    return res.status(400).json({ error: '明日以降の日付では記録できません' });
+  }
+  await recordRaiseHistory('manual', '（いまの内容から記録）', takenOn);
+  const days = await raiseHistoryRows(2);
+  if (!days.length) return res.status(400).json({ error: '記録できませんでした（取込がまだのようです）' });
+  res.json({ ok: true, takenOn: days.find((d) => d.takenOn === (takenOn || localDate()))?.takenOn ?? days[0].takenOn });
+}));
 
 api.get('/raise-history', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
@@ -3771,6 +3798,10 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
+        // 値上げ額の履歴に残す取込日（YYYY-MM-DD）。ふだんは空＝今日。
+        // 前回のファイルを取り込み直して前日比を埋めたいときだけ指定する
+        takenOn: /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.takenOn ?? ''))
+          ? String(req.body.takenOn) : '',
         // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
         // 入れ直すか。毎日の取込はマスタ登録単価を入れ直すためのもので、
         // 交渉の記録は営業担当者がアプリで入れるため、既定では触らない。
@@ -4128,7 +4159,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // 掃除を毎回走らせない。行が消える売上高の取込側にだけ残す）
   invalidateMetaCache();
   // 値上げ額の合計をこの取込の日付で残す（前回の取込との差を追えるように）
-  await recordRaiseHistory('agg', startedMeta?.filename ?? '');
+  await recordRaiseHistory('agg', startedMeta?.filename ?? '', startedMeta?.takenOn);
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added, renamed });
 }));
 

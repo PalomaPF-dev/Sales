@@ -6,6 +6,9 @@ import type { AggParsed, AggResult } from '../aggImportClient';
 // ログインまで遅くなるため、ファイルを選んだ時にだけ読み込む。
 const aggClient = () => import('../aggImportClient');
 
+/** 今日（日本時間）。取込日に明日以降を選べないようにするため */
+const today = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
 /**
  * マスタ登録（値上げ結果の集約表）の取込カード。管理者・開発者だけに出す。
  *
@@ -23,6 +26,9 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
   // この取込に限り、商談結果・最終確定日・最終確定単価をファイルの値で入れ直す。
   // 既定は上書きしない（値上げ交渉の記録は営業担当者がアプリで入れるため）
   const [overwriteNego, setOverwriteNego] = useState(false);
+  // 値上げ額の履歴に残す取込日。空なら今日。
+  // 前回のファイルを取り込み直して前日比を埋めるときだけ日付を入れる
+  const [takenOn, setTakenOn] = useState('');
 
   const onPick = async () => {
     const file = fileRef.current?.files?.[0];
@@ -58,10 +64,12 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
         onProgress: (done, total) =>
           setProgress(`${done.toLocaleString()} / ${total.toLocaleString()}行を取込中...`),
         overwriteNego,
+        takenOn,
       });
       setResult(r);
       setProgress('');
       setParsed(null);
+      setTakenOn('');
       if (fileRef.current) fileRef.current.value = '';
       onDone?.();
     } catch (e) {
@@ -164,6 +172,24 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
               新しく追加される案件には、印の有無にかかわらずファイルの値が入ります。
               この選択は今回の取込にだけ効きます。
             </span>
+          </span>
+        </label>
+      )}
+      {/* 過去のファイルを取り込み直して、値上げ額の推移（前日比）を埋めるための欄。
+          ふだんは空のまま＝今日の日付で記録する */}
+      {parsed && (
+        <label className="fld" style={{ marginTop: 10, maxWidth: 460 }}>
+          <span style={{ fontSize: 12.5 }}>
+            値上げ額の履歴に残す<strong>取込日</strong>（ふだんは空のまま）
+          </span>
+          <input type="date" value={takenOn} max={today()} disabled={busy}
+                 onChange={(e) => setTakenOn(e.target.value)} />
+          <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+            空なら今日の日付で記録します。
+            <strong>前回のファイルを取り込み直して前日比を埋めたいとき</strong>だけ、
+            そのファイルの日付を入れてください
+            （そのあと必ず<strong>最新のファイルを取り込み直して</strong>ください。
+            案件の単価は最後に取り込んだファイルの内容になります）。
           </span>
         </label>
       )}
