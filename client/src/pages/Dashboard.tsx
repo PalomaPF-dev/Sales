@@ -569,7 +569,7 @@ type ActualRow = NonNullable<DashboardRes['actuals']>[number];
  */
 function SummaryCard({
   title, noteId, byDays, plan, t, act, gain, months, actYm, actLabel, baseName,
-  split, trend, trendNote, trendLabel, children,
+  split, trend, trendCount, trendNote, trendLabel, children,
 }: {
   title: string;
   /** 説明の開閉を覚えるための目印。カードごとに変える */
@@ -590,6 +590,8 @@ function SummaryCard({
    * 前回の取込の記録との差を返す。出せないときは null。
    */
   trend: (i: number, up: number) => number | null;
+  /** 計画の月ごとの件数の前日比（新しく増えた案件・新しく承認された品目） */
+  trendCount: (i: number) => number | null;
   /** 前日比の説明（見出しの吹き出しに出す。出せないときは理由） */
   trendNote: string;
   /** 見出しに添える比較先の日付（「8/21」）。比べられないときは空 */
@@ -661,7 +663,11 @@ function SummaryCard({
           承認日の入っていないものはどちらにも入れていません。</>}
         {hasTrend && <>　<strong>{trendLabel} 前日比</strong>は、この表の値上げ額と
           <strong>前回の取込（{trendLabel}）</strong>のときの値上げ額との差です。
-          取込日が飛んでいても、いちばん近い前の取込と比べます。</>}
+          取込日が飛んでいても、いちばん近い前の取込と比べます。
+          毎日の取込で変わるのは<strong>マスタ登録単価（当月・翌月・翌々月・3か月後）</strong>だけなので、
+          この差はその動きを表します（過去最新単価や数量は売上高の取込で入るため、
+          毎日の取込では変わりません）。金額の下の<strong>件数</strong>は、
+          承認日以降の品目が何件増えたか（新しく増えた案件・新しく承認された分）です。</>}
       </NoteFold>
       {children}
       <div className="tbl-scroll">
@@ -707,6 +713,8 @@ function SummaryCard({
               const rawDiff = row.plan >= 0 && up != null ? trend(row.plan, up) : null;
               // 1円に満たない差は計算上の端数なので「変わっていない」として扱う
               const diff = rawDiff != null && Math.abs(rawDiff) < 0.5 ? 0 : rawDiff;
+              // 件数の増減（新しく増えた案件・新しく承認された品目）
+              const cntDiff = row.plan >= 0 ? trendCount(row.plan) : null;
               const money = (v: number | null | undefined, sign = true) => (v == null ? '—'
                 : v === 0 ? '—'
                   : `${sign ? (v > 0 ? '＋' : '−') : ''}${yen(Math.abs(v) / months)}`);
@@ -742,8 +750,19 @@ function SummaryCard({
                   <td style={{ ...nums, fontWeight: 700, color: color(up) }}>{money(up)}</td>
                   {/* 前日比。記録と同じ条件（全社・絞り込みなし）のときだけ出す */}
                   <td style={{ ...nums, fontWeight: 700, color: color(diff) }}
-                      title={diff == null && row.plan >= 0 ? trendNote : undefined}>
+                      title={diff == null && row.plan >= 0 ? trendNote
+                        : cntDiff != null
+                          ? `承認日 ${splitYm}以降の品目が ${cntDiff >= 0 ? '＋' : '−'}`
+                            + `${Math.abs(cntDiff).toLocaleString()}件（新しく増えた案件・新しく承認された分）`
+                          : undefined}>
                     {row.plan < 0 ? '—' : diff == null ? '—' : diff === 0 ? '±0' : money(diff)}
+                    {/* 金額だけでは「案件が増えたのか単価が動いたのか」が分からないため、
+                        承認済みの件数の増減も添える */}
+                    {diff != null && cntDiff != null && cntDiff !== 0 && (
+                      <div style={{ fontSize: 12, fontWeight: 400, color: 'var(--muted)', marginTop: 2 }}>
+                        {cntDiff > 0 ? '＋' : '−'}{Math.abs(cntDiff).toLocaleString()}件
+                      </div>
+                    )}
                   </td>
                   {splitYm && (
                     <>
@@ -1018,6 +1037,18 @@ export default function Dashboard() {
     const rate = plan[i]?.rate > 0 ? plan[i].rate : 1;
     return up - was * (byDays ? 1 : 1 / rate);
   };
+  /**
+   * 件数の前日比。承認日以降の計画が入っている品目の増減で、
+   * 新しく増えた案件や、新しく承認された品目のぶんが出る。
+   * 金額と違って基準では変わらないので、記録があれば必ず出せる。
+   */
+  const trendCountOf = (i: number): number | null => {
+    if (!trendSame || !trendPrev) return null;
+    const prev = trendPrev.months.find((x) => x.ym === plan[i]?.ym);
+    const now = data.raiseSplit?.months?.[i];
+    if (!prev || !now) return null;
+    return now.cntAfter - prev.cntAfter;
+  };
   // 過去最新単価は「いつまでの受注か」を添える（取込のたびに動くのでデータから取る）
   const pastMax = meta?.pastMax ?? '';
   const pastUntil = base === 'past' && /^\d{4}-\d{2}/.test(pastMax)
@@ -1276,7 +1307,7 @@ export default function Dashboard() {
         noteId="summary" byDays plan={plan} t={t} act={act} gain={gain} months={months}
         actYm={actYm} actLabel={actLabel} baseName={baseName}
         split={data.raiseSplit} trend={(i, up) => trendOf(i, up, true)}
-        trendNote={trendNote} trendLabel={trendLabel}
+        trendCount={trendCountOf} trendNote={trendNote} trendLabel={trendLabel}
       >
         {/*
           同じ数字を、当初 → 実績 → 計画 の棒グラフでも出す。
@@ -1323,7 +1354,7 @@ export default function Dashboard() {
           noteId="summary-raw" byDays={false} plan={plan} t={t} act={act} gain={gain}
           months={months} actYm={actYm} actLabel={actLabel} baseName={baseName}
           split={data.raiseSplit} trend={(i, up) => trendOf(i, up, false)}
-          trendNote={trendNote} trendLabel={trendLabel}
+          trendCount={trendCountOf} trendNote={trendNote} trendLabel={trendLabel}
         />
       )}
 
