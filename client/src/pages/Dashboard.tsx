@@ -4,7 +4,7 @@ import SearchBox from '../components/SearchBox';
 import { api } from '../api';
 import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
 import { Card, NoteFold, num, nums } from '../components/ui';
-import RaiseTrendCard, { ymLabel } from '../components/RaiseTrend';
+import RaiseTrendCard, { dayLabel, ymLabel } from '../components/RaiseTrend';
 import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
@@ -569,7 +569,7 @@ type ActualRow = NonNullable<DashboardRes['actuals']>[number];
  */
 function SummaryCard({
   title, noteId, byDays, plan, t, act, gain, months, actYm, actLabel, baseName,
-  split, trend, trendNote, children,
+  split, trend, trendNote, trendLabel, children,
 }: {
   title: string;
   /** 説明の開閉を覚えるための目印。カードごとに変える */
@@ -585,17 +585,22 @@ function SummaryCard({
   actLabel: string;
   baseName: string;
   split?: DashboardRes['raiseSplit'];
-  /** 計画の月ごとの前日比（前回の取込との差）。出せないときは null */
-  trend: (i: number) => number | null;
-  /** 前日比が出せないときの理由（見出しの吹き出しに出す） */
+  /**
+   * 計画の月ごとの前日比。その行の値上げ額（up）を渡すと、
+   * 前回の取込の記録との差を返す。出せないときは null。
+   */
+  trend: (i: number, up: number) => number | null;
+  /** 前日比の説明（見出しの吹き出しに出す。出せないときは理由） */
   trendNote: string;
+  /** 見出しに添える「8/21比」。比べられないときは空 */
+  trendLabel: string;
   children?: React.ReactNode;
 }) {
   // 換算なしの側は倍率で割り戻す。倍率の分からない月は1（そのまま）
   const rateOf = (i: number) => (plan[i]?.rate > 0 ? plan[i].rate : 1);
   const adj = (i: number) => (byDays ? 1 : 1 / rateOf(i));
   const splitYm = split?.ym ?? '';
-  const hasTrend = [0, 1, 2, 3].some((i) => trend(i) != null);
+  const hasTrend = Boolean(trendLabel);
 
   const rows = [
     // 値上げ前当初。当月の金額（合計）から売上改善額を引いたもの。値上げのスタート地点
@@ -654,7 +659,9 @@ function SummaryCard({
         {splitYm && <>　<strong>うち承認日</strong>の2列は、計画の値上げ額を
           マスタ承認日で分けたものです（{splitYm}以降が今回の取り組みで承認された分）。
           承認日の入っていないものはどちらにも入れていません。</>}
-        {hasTrend && <>　<strong>前日比</strong>は、前回の取込のときの値上げ額との差です。</>}
+        {hasTrend && <>　<strong>前日比</strong>は、この表の値上げ額と
+          <strong>前回の取込（{trendLabel.replace('比', '')}）</strong>のときの値上げ額との差です。
+          取込日が飛んでいても、いちばん近い前の取込と比べます。</>}
       </NoteFold>
       {children}
       <div className="tbl-scroll">
@@ -673,10 +680,8 @@ function SummaryCard({
               </th>
               <th style={nums}>金額<br /><small>月あたり</small></th>
               <th style={nums}>値上げ額<br /><small>月あたり</small></th>
-              <th style={nums} title={hasTrend
-                ? '前回の取込のときの値上げ額との差（取込のたびに記録しています）'
-                : trendNote}>
-                前日比<br /><small>前回の取込から</small>
+              <th style={nums} title={trendNote}>
+                前日比<br /><small>{trendLabel || '前回の取込から'}</small>
               </th>
               {splitYm && (
                 <>
@@ -698,7 +703,9 @@ function SummaryCard({
                 ? Math.round((up! / row.base) * 1000) / 10 : null;
               // 承認日の前後の内訳と前日比は、計画の行にだけ出す
               const sp = row.plan >= 0 ? split?.months?.[row.plan] : undefined;
-              const diff = row.plan >= 0 ? trend(row.plan) : null;
+              const rawDiff = row.plan >= 0 && up != null ? trend(row.plan, up) : null;
+              // 1円に満たない差は計算上の端数なので「変わっていない」として扱う
+              const diff = rawDiff != null && Math.abs(rawDiff) < 0.5 ? 0 : rawDiff;
               const money = (v: number | null | undefined, sign = true) => (v == null ? '—'
                 : v === 0 ? '—'
                   : `${sign ? (v > 0 ? '＋' : '−') : ''}${yen(Math.abs(v) / months)}`);
@@ -961,32 +968,38 @@ export default function Dashboard() {
   const hasWorkdays = Boolean(wd?.baseDays) && plan.some((x) => x.days);
 
   /*
-    前日比（前回の取込との差）。取込のたびに残している記録から出す。
+    前日比（前回の取込との差）。取込のたびに残している記録と、いま画面に出ている
+    値上げ額を比べる。比べる相手は「今日より前でいちばん新しい記録」で、
+    取込日が飛んでいても（8/24 に対して 8/21 でも）その日と比べる。
+
     記録は「全社・絞り込みなし・基準はマスタ単価・承認日は既定」で取ったものなので、
     画面がその条件と違うときは出さない（違う条件の数字と引き算しても意味が無いため）。
   */
   const trendDays = data.raiseHistory ?? [];
+  /** 今日（日本時間）。今日ぶんの記録は「前回」に選ばない */
+  const todayYmd = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const trendPrev = trendDays.find((d) => d.takenOn < todayYmd);
   const trendSame = data.scope?.level === 'all'
     && !FILTER_KEYS.some((k) => k !== 'aDateYm' && k !== 'aDateOp' && get(k))
-    && (get('aDateYm') || '') === (trendDays[0]?.aDateYm ?? '')
+    && (get('aDateYm') || '') === (trendPrev?.aDateYm ?? '')
     && (get('aDateOp') || 'from') === 'from';
-  const trendNote = trendDays.length < 2
+  const trendNote = !trendPrev
     ? '前回の取込の記録がまだありません（次の取込から出ます）'
     : !trendSame
       ? '絞り込み中は出せません（記録は全社・絞り込みなしの合計のため、「解除」で出ます）'
-      : '';
+      : `${dayLabel(trendPrev.takenOn)}（前回の取込）の値上げ額と比べています`;
+  /** 見出しに添える「◯/◯比」。比べられないときは空 */
+  const trendLabel = trendPrev && trendSame ? `${dayLabel(trendPrev.takenOn)}比` : '';
   /**
-   * 計画の月ぶんの前日比。byDays=false のときは稼働日の倍率で割り戻し、
-   * その表の数字（換算前）と同じ土俵に揃える。
+   * 計画の月ぶんの前日比。いま出ている値上げ額（up）から、前回の記録を引く。
+   * byDays=false の表では記録のほうを稼働日の倍率で割り戻し、同じ土俵に揃える。
    */
-  const trendOf = (i: number, byDays: boolean): number | null => {
-    if (!trendSame || trendDays.length < 2) return null;
-    const ym = plan[i]?.ym;
-    const cur = trendDays[0].months.find((x) => x.ym === ym);
-    const prev = trendDays[1].months.find((x) => x.ym === ym);
-    if (!cur || !prev) return null;
+  const trendOf = (i: number, up: number, byDays: boolean): number | null => {
+    if (!trendSame || !trendPrev) return null;
+    const prev = trendPrev.months.find((x) => x.ym === plan[i]?.ym);
+    if (!prev) return null;
     const rate = plan[i]?.rate > 0 ? plan[i].rate : 1;
-    return (cur.after - prev.after) * (byDays ? 1 : 1 / rate);
+    return up - prev.after * (byDays ? 1 : 1 / rate);
   };
   const actYm = data.actuals?.[0]?.ym ?? '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
@@ -1251,7 +1264,8 @@ export default function Dashboard() {
         title={`まとめ（実績と計画）　稼働日で日量換算${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}
         noteId="summary" byDays plan={plan} t={t} act={act} gain={gain} months={months}
         actYm={actYm} actLabel={actLabel} baseName={baseName}
-        split={data.raiseSplit} trend={(i) => trendOf(i, true)} trendNote={trendNote}
+        split={data.raiseSplit} trend={(i, up) => trendOf(i, up, true)}
+        trendNote={trendNote} trendLabel={trendLabel}
       >
         {/*
           同じ数字を、当初 → 実績 → 計画 の棒グラフでも出す。
@@ -1297,7 +1311,8 @@ export default function Dashboard() {
           title={`まとめ（${actLabel}の実績数ベース）　稼働日の換算なし`}
           noteId="summary-raw" byDays={false} plan={plan} t={t} act={act} gain={gain}
           months={months} actYm={actYm} actLabel={actLabel} baseName={baseName}
-          split={data.raiseSplit} trend={(i) => trendOf(i, false)} trendNote={trendNote}
+          split={data.raiseSplit} trend={(i, up) => trendOf(i, up, false)}
+          trendNote={trendNote} trendLabel={trendLabel}
         />
       )}
 
