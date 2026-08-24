@@ -146,6 +146,9 @@ CREATE TABLE IF NOT EXISTS deals (
   act_price_11 REAL,   -- 価格調査の実単価（11番目の月。月の並びは settings の actual_meta）
   act_price_12 REAL,   -- 価格調査の実単価（12番目の月。月の並びは settings の actual_meta）
   hist_batch      TEXT,   -- 出荷実績の取込回。今回に含まれない行を消すための印
+  -- 価格調査（毎日更新）で入った行の印（最後に取り込んだ日時）。
+  -- ベースに載っている品目は、売上高（月次）に無くても一覧から消さない
+  agg_batch       TEXT,
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率
@@ -369,6 +372,30 @@ CREATE TABLE IF NOT EXISTS inquiries (
 CREATE INDEX IF NOT EXISTS idx_inquiries_user ON inquiries(user_id);
 CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
 
+-- お知らせ（全員への連絡）。本社・管理者が出し、全員の画面に届く。
+-- 問い合わせが「一人から本社へ」なのに対して、こちらは「本社から全員へ」。
+CREATE TABLE IF NOT EXISTS announcements (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,   -- 見出し
+  body       TEXT NOT NULL,   -- 本文
+  -- info=お知らせ（青） / important=重要（赤）。重要は一覧の上に出す
+  level      TEXT NOT NULL DEFAULT 'info',
+  ends_at    TEXT,            -- 掲載の終わり（YYYY-MM-DD）。空なら消すまで出し続ける
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name TEXT,       -- 出した人の氏名（利用者が消えても残す）
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+
+-- お知らせを読んだ記録。誰がどれを読んだかを持ち、未読の件数を出すために使う
+CREATE TABLE IF NOT EXISTS announcement_reads (
+  announcement_id INTEGER NOT NULL,
+  user_id         INTEGER NOT NULL,
+  read_at         TEXT NOT NULL,
+  PRIMARY KEY (announcement_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ann_reads_user ON announcement_reads(user_id);
+
 -- マスタ単価の実績（月別履歴）。法人×品目×月ごとに1行。
 -- 価格調査（毎日更新）の取込で当月（本日時点）の単価を、
 -- 売上高（月次）の取込でその月のマスタ単価を記録する。
@@ -382,6 +409,33 @@ CREATE TABLE IF NOT EXISTS master_price_history (
   source     TEXT,            -- agg=価格調査（毎日更新） / survey=売上高（月次）
   updated_at TEXT NOT NULL,
   PRIMARY KEY (ent_cd, model_code, ym)
+);
+
+-- 値上げ額の推移（取込ごとの記録）。取込日 × 計画の月 ごとに1行。
+-- 価格調査（毎日更新）・売上高（月次）を取り込むたびに、その時点の
+-- 値上げ額の合計（全社・絞り込みなし）を残す。あとから
+-- 「前回の取込からいくら動いたか」をたどれるようにするためのもの。
+-- 同じ日に何度取り込んだときは、最後の取込の値で上書きする。
+CREATE TABLE IF NOT EXISTS raise_history (
+  taken_on     TEXT NOT NULL,   -- 取込日（YYYY-MM-DD）
+  plan_ym      TEXT NOT NULL,   -- 計画の月（YYYY-MM）
+  source       TEXT,            -- agg=価格調査（毎日更新） / survey=売上高（月次）
+  filename     TEXT,            -- 取り込んだファイル名
+  act_ym       TEXT,            -- 実績の月（売上高の取込月）
+  work_days    INTEGER,         -- その月の稼働日
+  base_days    INTEGER,         -- 実績の月の稼働日（日量換算のもと）
+  deals        INTEGER,         -- 案件件数（全社）
+  qty          REAL,           -- 実績数の合計
+  base_amt     REAL,           -- 現状額（実績の月の金額）
+  plan_amt     REAL,           -- 計画額（日量換算後）
+  -- 値上げ額（月あたり・日量換算後）を承認日の前後で分けて残す
+  raise_after  REAL,           -- 承認日が境目の年月以降ぶん
+  raise_before REAL,           -- 承認日が境目の年月より前ぶん
+  cnt_after    INTEGER,         -- 同 件数
+  cnt_before   INTEGER,
+  a_date_ym    TEXT,            -- 前後を分けた境目の年月（YYYY-MM）
+  taken_at     TEXT NOT NULL,   -- 記録した日時
+  PRIMARY KEY (taken_on, plan_ym)
 );
 
 -- 計算列ビュー

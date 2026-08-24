@@ -4,6 +4,8 @@ import SearchBox from '../components/SearchBox';
 import { api } from '../api';
 import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
 import { Card, NoteFold, num, nums } from '../components/ui';
+import RaiseTrendCard, { ymLabel } from '../components/RaiseTrend';
+import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
 
@@ -94,6 +96,27 @@ interface DashboardRes {
   abByCorp?: AbRow[];
   months?: number;
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string } | null;
+  /**
+   * 計画の日量換算に使った稼働日。
+   * 実績の月（baseYm）の稼働日を1日あたりに直し、計画の月の稼働日を掛けている。
+   * rate は実績の月に対する倍率（稼働日が分からない月は1＝換算なし）。
+   */
+  workdays?: {
+    baseYm: string; baseDays: number | null;
+    months: { ym: string; days: number | null; rate: number }[];
+  };
+  /**
+   * 承認日の前後で分けた値上げ額の内訳（計画の月ごと）。
+   * ym が境目の年月で、after=それ以降に承認された分、before=それより前の分。
+   * 画面のほかの絞り込みは効いている（承認日の絞り込みだけ外して両側を出す）。
+   */
+  raiseSplit?: {
+    ym: string;
+    months: { ym: string; days: number | null; after: number; before: number;
+      cntAfter: number; cntBefore: number }[];
+  };
+  /** 値上げ額の推移（取込ごと・全社の合計）。新しい取込が先頭 */
+  raiseHistory?: RaiseDay[];
 }
 
 /**
@@ -104,6 +127,19 @@ const VIEWS = [
   { key: 'act' as const, label: '実績（売上改善額）' },
   { key: 'plan' as const, label: '計画（マスタ登録単価）' },
 ];
+
+/**
+ * 計画の月ひとつぶん。稼働日と、実績の月（売上高の月）に対する倍率。
+ * 金額はサーバーで倍率を掛けたうえで返ってくるので、画面では
+ * 比較のもと（現状額）に同じ倍率を掛けて同じ土俵に揃える。
+ */
+interface PlanMonth { ym: string; days: number | null; rate: number; baseYm: string; baseDays: number | null }
+
+/** 稼働日の説明（見出し・マスに添える吹き出し） */
+const planNote = (p?: PlanMonth) => (p?.days && p.baseDays
+  ? `。${p.ym} は ${p.days}稼働日。`
+    + `${p.baseYm}（${p.baseDays}稼働日）の日量へ直して ${p.days}日ぶんに換算しています`
+  : '');
 
 /** 値上げ額の内訳。器具区分別・支店別・法人別をそれぞれ別のカードで出す */
 const TABS = [
@@ -274,7 +310,7 @@ function AmtCell({ amt, base, months, note, noteTitle }: {
 type SortCol = 'name' | 'deals' | 'qty' | 'base' | 'mp' | 'a0' | 'a1' | 'a2' | 'a3'
   | `act${number}` | `gp${number}` | `gm${number}`;
 
-function sortValue(r: AbRow, col: SortCol): number | string {
+function sortValue(r: AbRow, col: SortCol, rates: number[] = []): number | string {
   // 実績（月ごと）。その月に実単価のあった品目だけで見るため、現状額もその分だけを引く
   const act = /^act(\d+)$/.exec(col);
   if (act) {
@@ -286,18 +322,20 @@ function sortValue(r: AbRow, col: SortCol): number | string {
   if (gp) return num(r[`gain_plus_${Number(gp[1]) + 1}`]);
   const gm = /^gm(\d+)$/.exec(col);
   if (gm) return -num(r[`gain_minus_${Number(gm[1]) + 1}`]);
-  // 値上げ額の大きい順に並べるため、A基準の列は現状額との差で比べる（案件一覧と同じ）
+  // 値上げ額の大きい順に並べるため、A基準の列は現状額との差で比べる（案件一覧と同じ）。
+  // 計画の金額は稼働日で日量換算してあるので、比べる現状額も同じ倍率に揃える
   const pre = num(r.base_amt);
+  const at = (i: number) => (rates[i] > 0 ? rates[i] : 1);
   switch (col) {
     case 'name': return r.name ?? '';
     case 'deals': return num(r.deals);
     case 'qty': return num(r.qty);
     case 'base': return num(r.base_amt);
     case 'mp': return num(r.mp_amt);
-    case 'a0': return num(r.a0_amt) - pre;
-    case 'a1': return num(r.a1_amt) - pre;
-    case 'a2': return num(r.a2_amt) - pre;
-    case 'a3': return num(r.a3_amt) - pre;
+    case 'a0': return num(r.a0_amt) - pre * at(0);
+    case 'a1': return num(r.a1_amt) - pre * at(1);
+    case 'a2': return num(r.a2_amt) - pre * at(2);
+    case 'a3': return num(r.a3_amt) - pre * at(3);
     default: return 0;
   }
 }
@@ -307,9 +345,11 @@ function sortValue(r: AbRow, col: SortCol): number | string {
  * 金額はすべて1か月あたり。各月は「A基準額 / 値上げ額（値上げ率）」の順に出す。
  * 見出しを押すとその列で並び替える（合計の行は常に一番下に置く）。
  */
-function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link, view }: {
+function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, plan, link, view }: {
   head: string; rows: AbRow[]; total?: AbRow;
   months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
+  /** 計画の月の稼働日と、実績の月に対する倍率（日量換算） */
+  plan: PlanMonth[];
   /** その行の品目を、売上改善額の向きで絞った案件一覧のURL（合計行は渡らない） */
   link?: (name: string | null | undefined, kind: 'plus' | 'minus') => string;
   /** 出す内容。act=実績（売上改善額）、plan=計画（A基準） */
@@ -330,8 +370,8 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
   const sorted = [...rows];
   if (sort) {
     sorted.sort((a, b) => {
-      const va = sortValue(a, sort.col);
-      const vb = sortValue(b, sort.col);
+      const va = sortValue(a, sort.col, plan.map((x) => x.rate));
+      const vb = sortValue(b, sort.col, plan.map((x) => x.rate));
       const c = typeof va === 'string' || typeof vb === 'string'
         ? String(va).localeCompare(String(vb), 'ja')
         : va - vb;
@@ -389,14 +429,17 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
                 {ym} マイナス<br /><small>下がった品目</small>
               </Th>,
             ])}
-            {view === 'plan' && (
-              <>
-                <Th col="a0" right title={`${m0}（当月）の値上げ額（値上げ前当初との差）で並びます`}>{m0}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
-                <Th col="a1" right title={`${m1}の値上げ額で並びます`}>{m1}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
-                <Th col="a2" right title={`${m2}の値上げ額で並びます`}>{m2}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
-                <Th col="a3" right title={`${m3}の値上げ額で並びます`}>{m3}<br /><small>マスタ登録単価額 / 値上げ額</small></Th>
-              </>
-            )}
+            {view === 'plan' && ([[0, m0], [1, m1], [2, m2], [3, m3]] as [number, string][])
+              .map(([i, label]) => (
+                <Th key={label} col={`a${i}` as SortCol} right
+                    title={`${label}の値上げ額（比較のもととの差）で並びます`
+                      + `${planNote(plan[i])}`}>
+                  {label}
+                  {/* 日量換算に使った稼働日。何日ぶんの計画かをその場で分かるようにする */}
+                  {plan[i]?.days ? <small>{` ${plan[i].days}日`}</small> : null}
+                  <br /><small>マスタ登録単価額 / 値上げ額</small>
+                </Th>
+              ))}
           </tr>
         </thead>
         <tbody>
@@ -456,15 +499,16 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
                     cell('minus', gm, num(r[`act_down_${i + 1}`])),
                   ];
                 })}
-                {/* A基準（計画）は現状額（当月のマスタ単価）と比べる＝案件一覧と同じ */}
-                {view === 'plan' && (
-                  <>
-                    <AmtCell amt={num(r.a0_amt)} base={pre} months={months} />
-                    <AmtCell amt={num(r.a1_amt)} base={pre} months={months} />
-                    <AmtCell amt={num(r.a2_amt)} base={pre} months={months} />
-                    <AmtCell amt={num(r.a3_amt)} base={pre} months={months} />
-                  </>
-                )}
+                {/*
+                  A基準（計画）は現状額と比べる。計画の金額は稼働日で日量換算して
+                  あるため、比べる現状額も同じ倍率に揃える（同じ稼働日ぶんで比べる）
+                */}
+                {view === 'plan' && ([num(r.a0_amt), num(r.a1_amt), num(r.a2_amt), num(r.a3_amt)])
+                  .map((amt, i) => (
+                    <AmtCell key={i} amt={amt} base={pre * (plan[i]?.rate ?? 1)} months={months}
+                             note={plan[i]?.days ? `${plan[i].days}稼働日ぶん` : undefined}
+                             noteTitle={planNote(plan[i])} />
+                  ))}
               </tr>
             );
           })}
@@ -478,9 +522,10 @@ function AbTable({ head, rows, total, months, actYms = [], m0, m1, m2, m3, link,
  * 値上げ額の内訳カード。器具区分別・支店別・法人別で1枚ずつ使い、
  * カードの中の切り替えで実績（売上改善額）と計画（マスタ登録単価）を出し分ける。
  */
-function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link }: {
+function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, plan, link }: {
   title: string; head: string; rows: AbRow[]; total?: AbRow;
   months: number; actYms?: string[]; m0: string; m1: string; m2: string; m3: string;
+  plan: PlanMonth[];
   link: (name: string | null | undefined, kind: 'plus' | 'minus') => string;
 }) {
   const [view, setView] = useState<'act' | 'plan'>('act');
@@ -504,11 +549,77 @@ function AbCard({ title, head, rows, total, months, actYms, m0, m1, m2, m3, link
         </div>
       </div>
       <AbTable head={head} rows={rows} total={total} months={months} actYms={actYms}
-               m0={m0} m1={m1} m2={m2} m3={m3} view={view} link={link} />
+               m0={m0} m1={m1} m2={m2} m3={m3} plan={plan} view={view} link={link} />
     </div>
   );
 }
 
+
+/**
+ * 計画の値上げ額を、承認日の前後で分けた内訳。
+ *
+ * 上の表の値上げ額は「承認日が境目以降のものだけ」を計上している。
+ * ここでは境目より前に承認された分も並べて、
+ * 今回の取り組みで積み上がった分と、前からの分を見比べられるようにする。
+ */
+function ApprovalSplitCard({ split, months }: {
+  split: NonNullable<DashboardRes['raiseSplit']>; months: number;
+}) {
+  const rows = split.months.filter((m) => m.ym);
+  if (!rows.length) return null;
+  const cell = (amt: number, cnt: number, color?: string) => (
+    <td style={{ ...nums, fontWeight: 700, color: amt === 0 ? 'var(--muted)' : color }}>
+      {amt === 0 ? '—' : `${amt > 0 ? '＋' : '−'}${yen(Math.abs(amt) / months)}`}
+      <div style={{ fontSize: 12, fontWeight: 400, color: 'var(--muted)', marginTop: 2 }}>
+        {cnt.toLocaleString()}件
+      </div>
+    </td>
+  );
+  return (
+    <Card title={`計画の値上げ額の内訳（承認日 ${split.ym} の前後）`}>
+      <NoteFold id="split">
+        計画の月ごとの値上げ額を、<strong>マスタ承認日</strong>で分けたものです。
+        <strong>{split.ym}以降</strong>が今回の取り組みで承認された分、
+        <strong>{split.ym}より前</strong>がそれ以前に承認されていた分。
+        上の表やまとめの<strong>値上げ額は「以降」の分だけ</strong>を計上しているため、
+        この表の「以降」の列と同じ数字になります。
+        承認日の入っていないマスタ登録単価は、どちらにも入れていません（計画に充てない決まりです）。
+        検索・支店・品目などほかの絞り込みは、この表にも効きます。
+      </NoteFold>
+      <div className="tbl-scroll">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>計画の月</th>
+              <th style={nums} title={`${split.ym}以降に承認されたマスタ登録単価ぶん`}>
+                {split.ym} 以降<br /><small>値上げ額 / 件数</small>
+              </th>
+              <th style={nums} title={`${split.ym}より前に承認されていたマスタ登録単価ぶん`}>
+                {split.ym} より前<br /><small>値上げ額 / 件数</small>
+              </th>
+              <th style={nums}>合計<br /><small>値上げ額</small></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.ym}>
+                <td>
+                  <strong>{ymLabel(r.ym)}</strong>
+                  {r.days ? <small style={{ color: 'var(--muted)' }}>{` ${r.days}稼働日`}</small> : null}
+                </td>
+                {cell(r.after, r.cntAfter, '#15803d')}
+                {cell(r.before, r.cntBefore, 'var(--muted)')}
+                <td style={{ ...nums, fontWeight: 700 }}>
+                  {yen((r.after + r.before) / months)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
 
 export default function Dashboard() {
   const mobile = useIsMobile();
@@ -631,6 +742,18 @@ export default function Dashboard() {
   const m2 = data.aggMeta?.m2 || '翌々月';
   const m3 = data.aggMeta?.m3 || '3か月後';
   const months = data.months || 1;
+  // 計画の月の稼働日（日量換算）。サーバーが金額に倍率を掛けたうえで返すので、
+  // 画面では比較のもと（現状額）へ同じ倍率を掛けて同じ土俵に揃える
+  const wd = data.workdays;
+  const plan: PlanMonth[] = [0, 1, 2, 3].map((i) => ({
+    ym: wd?.months?.[i]?.ym || [m0, m1, m2, m3][i],
+    days: wd?.months?.[i]?.days ?? null,
+    rate: Number(wd?.months?.[i]?.rate) > 0 ? Number(wd!.months[i].rate) : 1,
+    baseYm: wd?.baseYm || '',
+    baseDays: wd?.baseDays ?? null,
+  }));
+  /** 稼働日での換算が効いているか（実績の月と計画の月の日数が分かっているか） */
+  const hasWorkdays = Boolean(wd?.baseDays) && plan.some((x) => x.days);
   const actYm = data.actuals?.[0]?.ym ?? '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
   // 値上げ幅の基準（比較のもと）。案件一覧と同じ選び方
@@ -674,7 +797,16 @@ export default function Dashboard() {
         <strong>値上げ額</strong>は、<strong>{baseName}{pastUntil}</strong>から、
         マスタ承認日 <strong>{aDateText}</strong>のアップ額を、計画の月ごとに示します。
         実績数は<strong>{actLabel}</strong>（価格調査の取込月）。
-        金額はすべて<strong>1か月あたり</strong>です。　表示範囲: <strong>{data.scope.label}</strong>
+        金額はすべて<strong>1か月あたり</strong>です。
+        {hasWorkdays && (
+          <>
+            {' '}計画の月は<strong>稼働日で日量換算</strong>しています
+            （{actLabel}の{wd?.baseDays}稼働日を1日あたりに直し、
+            {plan.filter((x) => x.days).map((x) => `${Number(x.ym.slice(5, 7))}月${x.days}日`).join('・')}
+            を掛けています）。
+          </>
+        )}
+        　表示範囲: <strong>{data.scope.label}</strong>
       </p>
       <NoteFold id="page">
         <strong>値上げ額</strong>は「マスタ登録単価 − <strong>{baseName}</strong>」×{actLabel}の実績数です
@@ -686,6 +818,16 @@ export default function Dashboard() {
         下の表の<strong>現状額</strong>は{actLabel}の金額（合計）そのもので、
         各月の<strong>マスタ登録単価額</strong>はそこへ値上げ額を足した金額。
         その差が値上げ額、現状額に対する割合が<strong>値上げ率</strong>です。
+        {hasWorkdays && (
+          <>
+            {' '}数量は{actLabel}の実績数をそのまま使うため、計画の各月は
+            <strong>稼働日で日量に直して換算</strong>しています
+            （{actLabel} {wd?.baseDays}稼働日 ＝ 1か月ぶん）。
+            比べる相手の<strong>現状額も同じ稼働日ぶん</strong>に揃えているので、
+            値上げ率は換算の前後で変わりません
+            （案件一覧の「値上げ額（月）合計」は換算前の{actLabel}ぶんです）。
+          </>
+        )}
       </NoteFold>
 
       {/*
@@ -876,7 +1018,11 @@ export default function Dashboard() {
           <strong>計画</strong>は、この{actLabel}の金額（合計）へ
           「マスタ登録単価 − {baseName}」×{actLabel}の実績数を足したもので、
           <strong>実績（{actLabel}の金額）と比べます</strong>
-          （案件一覧の「値上げ額（月）合計」と同じ数字になります）。
+          {hasWorkdays
+            ? <>（月ごとの<strong>稼働日で日量換算</strong>してあり、
+                比較のもとにも同じ倍率を掛けています。
+                換算前の額は案件一覧の「値上げ額（月）合計」と同じ数字です）。</>
+            : <>（案件一覧の「値上げ額（月）合計」と同じ数字になります）。</>}
           <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
           実績との差が見積ぶんなどにあたります。
           どの行も「<strong>比較のもと</strong>」と「<strong>金額</strong>」を比べ、その差が値上げ額です。
@@ -969,13 +1115,17 @@ export default function Dashboard() {
                 deals: num(t?.deals), base: num(t?.base_amt) as number | null, amt: num(t?.mp_amt),
                 up: null as number | null, same: num(t?.mp_same) as number | null,
               }] : []),
-              ...([[m0, num(t?.a0_amt)], [m1, num(t?.a1_amt)], [m2, num(t?.a2_amt)], [m3, num(t?.a3_amt)]] as [string, number][])
-                .map(([label, amt]) => ({
-                  key: `plan-${label}`, ym: label, kind: '計画' as const,
+              ...([[0, m0, num(t?.a0_amt)], [1, m1, num(t?.a1_amt)],
+                [2, m2, num(t?.a2_amt)], [3, m3, num(t?.a3_amt)]] as [number, string, number][])
+                .map(([i, label, amt]) => ({
+                  key: `plan-${label}`,
+                  // 何稼働日ぶんの計画かを月の横に出す
+                  ym: `${label}${plan[i]?.days ? `（${plan[i].days}稼働日）` : ''}`,
+                  kind: '計画' as const,
                   deals: num(t?.deals),
-                  // 比較のもとは実績（当月の金額）。ここからA基準までの上がり幅が値上げ額で、
-                  // 案件一覧の「値上げ額（月）合計」と同じ数字になる
-                  base: num(t?.base_amt) as number | null,
+                  // 比較のもとは実績（当月の金額）。計画は稼働日で日量換算してあるので、
+                  // 比較のもとにも同じ倍率を掛けて同じ土俵で見る
+                  base: num(t?.base_amt) * (plan[i]?.rate ?? 1) as number | null,
                   amt, up: null, same: null,
                 })),
             ]
@@ -1025,7 +1175,15 @@ export default function Dashboard() {
         </table>
       </Card>
 
+      {/* 計画の値上げ額を、承認日の前後で分けた内訳 */}
+      {data.raiseSplit && <ApprovalSplitCard split={data.raiseSplit} months={months} />}
+
       </div>
+
+      {/* 取込ごとに残している値上げ額の推移（絞り込みでは変わらないので薄くしない） */}
+      {data.raiseHistory && data.raiseHistory.length > 0 && (
+        <RaiseTrendCard days={data.raiseHistory} />
+      )}
 
       <div style={busy ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
 
@@ -1036,7 +1194,7 @@ export default function Dashboard() {
       {TABS.map((x) => (
         <AbCard key={x.key} title={x.title} head={x.head} rows={rowsOf(x.key)}
                 total={t} months={months} actYms={data.abActYms}
-                m0={m0} m1={m1} m2={m2} m3={m3}
+                m0={m0} m1={m1} m2={m2} m3={m3} plan={plan}
                 link={(name, kind) => dealsLink(kind, { [x.key]: name ?? '' })} />
       ))}
       </div>

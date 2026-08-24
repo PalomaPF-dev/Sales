@@ -19,6 +19,7 @@ import {
   deleteAttachment, fetchAttachment, fileBucket, isFileStoreConfigured, putAttachment,
 } from './fileStore.js';
 import { comparePref } from './prefOrder.js';
+import { workdayPlan } from './workdays.js';
 import {
   KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
   parseStandardWorkbook, replaceStandardPrices,
@@ -227,8 +228,12 @@ const canSeeAllInfo = (role) => isAdminRole(role) || role === 'planning';
 function viewerMayWrite(path) {
   return path === '/logout'
     || path === '/inquiries'
+    || path === '/inquiries/delete'
     || /^\/inquiries\/mine\/\d+\/read$/.test(path)
-    || /^\/inquiries\/\d+$/.test(path);
+    || /^\/inquiries\/\d+$/.test(path)
+    // お知らせは読むだけ。既読にする操作は閲覧専用でも通す
+    || path === '/announcements/read-all'
+    || /^\/announcements\/\d+\/read$/.test(path);
 }
 
 /**
@@ -964,23 +969,6 @@ api.post('/admin/cleanup-blank-corp', wrap(async (req, res) => {
   res.json({ removed: Number(r?.changes ?? 0), total: Number(total) });
 }));
 
-/**
- * 値上げ交渉の値（商談結果・商談メモ・最終確定日・最終確定単価）を一括で空に戻す。
- *
- * 旧形式のファイルで入った古い値が残り、いまのファイルと食い違って見えることがある。
- * 空に戻してから価格調査（毎日更新）を取り込み直すと、ファイルの値だけが入る。
- * 合意単価・適用年月・完了（画面だけで入れる項目）は触らない。
- */
-api.post('/admin/clear-nego', wrap(async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const r = await db.run(`
-    UPDATE deals SET nego_result = NULL, nego_note = NULL,
-           final_date = NULL, final_price = NULL, updated_at = ?
-     WHERE nego_result IS NOT NULL OR nego_note IS NOT NULL
-        OR final_date IS NOT NULL OR final_price IS NOT NULL`, [now()]);
-  res.json({ cleared: Number(r?.changes ?? 0) });
-}));
-
 // ---- 全国基準価格表（マスター） ----
 
 /**
@@ -1402,6 +1390,35 @@ api.delete('/inquiries/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/**
+ * 選んだ問い合わせをまとめて消す。
+ *
+ * 1件ずつ消せるようにはしてあるが、溜まった分を片づけるには押す回数が多い。
+ * 消せるかどうかの判定は1件ずつと同じで、消せない分は消さずに数だけ返す。
+ */
+api.post('/inquiries/delete', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const ids = Array.isArray(req.body?.ids)
+    ? [...new Set(req.body.ids.map(Number).filter(Number.isInteger))].slice(0, 500)
+    : [];
+  if (!ids.length) return res.status(400).json({ error: '消すお問い合わせを選んでください' });
+  const rows = await db.all(
+    `SELECT * FROM inquiries WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+  const dests = destsFor(req.user.role);
+  const mayDelete = (row) => row.user_id === req.user.id
+    || (row.login_id != null && row.login_id === (req.user.login_id ?? ''))
+    // 宛先の無い古い分は「アプリのこと」として扱う（一覧の出し方と同じ）
+    || dests.includes(destOf(row.dest));
+  const targets = rows.filter(mayDelete).map((r) => r.id);
+  if (targets.length) {
+    await db.run(
+      `DELETE FROM inquiries WHERE id IN (${targets.map(() => '?').join(',')})`, targets);
+  }
+  // 見つからなかった分（すでに誰かが消した分）は、消せたものとして数えない。
+  // 画面は消し終えたあとに一覧を取り直すので、そこで消えていることが分かる
+  res.json({ deleted: targets.length, skipped: ids.length - targets.length });
+}));
+
 api.patch('/inquiries/:id', wrap(async (req, res) => {
   if (!requireInquiryStaff(req, res)) return;
   const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
@@ -1429,6 +1446,129 @@ api.patch('/inquiries/:id', wrap(async (req, res) => {
     return res.status(400).json({ error: '更新項目がありません' });
   }
   res.json(await db.get('SELECT * FROM inquiries WHERE id = ?', [row.id]));
+}));
+
+// ---- お知らせ（全員への連絡） ----
+//
+// 問い合わせが「一人から本社へ」なのに対して、お知らせは「本社から全員へ」。
+// 出せるのは本社（営業部・製品企画部）と管理者で、全員の画面に届く。
+// 読んだかどうかは人ごとに持ち、未読があるあいだは画面の上に帯を出す。
+//
+//   GET    /announcements          … 一覧と未読の件数。掲載の終わった分は担当者にだけ出す
+//   POST   /announcements          … 出す（担当者のみ）
+//   PATCH  /announcements/:id      … 直す（担当者のみ）
+//   DELETE /announcements/:id      … 消す（担当者のみ）
+//   POST   /announcements/:id/read … 既読にする（本人）
+//   POST   /announcements/read-all … 出ているお知らせをまとめて既読にする（本人）
+
+/** お知らせの重み。important=重要（赤・一覧の上）／info=お知らせ（青） */
+const ANNOUNCE_LEVELS = ['info', 'important'];
+const levelOf = (v) => (ANNOUNCE_LEVELS.includes(String(v ?? '')) ? String(v) : 'info');
+
+/** 掲載中かどうかの条件。掲載の終わりが未設定か、今日以降なら出す */
+const LIVE_COND = "(a.ends_at IS NULL OR a.ends_at = '' OR a.ends_at >= ?)";
+
+/** 入力の点検。見出しと本文は必須で、長すぎるものは受けない */
+function readAnnounceBody(body) {
+  const title = String(body?.title ?? '').trim();
+  const text = String(body?.body ?? '').trim();
+  if (!title) return { error: '見出しを入力してください' };
+  if (title.length > 120) return { error: '見出しは120文字以内で入力してください' };
+  if (!text) return { error: '本文を入力してください' };
+  if (text.length > 4000) return { error: '本文は4000文字以内で入力してください' };
+  const endsAt = String(body?.endsAt ?? '').trim();
+  if (endsAt && !/^\d{4}-\d{2}-\d{2}$/.test(endsAt)) {
+    return { error: '掲載の終わりは日付で入力してください' };
+  }
+  return { title, text, endsAt: endsAt || null, level: levelOf(body?.level) };
+}
+
+api.get('/announcements', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const today = localDate();
+  const staff = isInquiryStaff(req.user.role);
+  // 担当者には掲載の終わった分も出す（直したり消したりできるように）。
+  // ほかの人には掲載中のものだけ。
+  const rows = await db.all(`
+    SELECT a.*, r.read_at
+      FROM announcements a
+      LEFT JOIN announcement_reads r
+             ON r.announcement_id = a.id AND r.user_id = ?
+     ${staff ? '' : `WHERE ${LIVE_COND}`}
+     ORDER BY CASE a.level WHEN 'important' THEN 0 ELSE 1 END, a.id DESC`,
+  staff ? [req.user.id] : [req.user.id, today]);
+  const live = (a) => !a.ends_at || a.ends_at >= today;
+  res.json({
+    rows: rows.map((a) => ({ ...a, live: live(a) })),
+    // 未読は掲載中のものだけ数える（終わった分で帯が出続けないように）
+    unread: rows.filter((a) => live(a) && !a.read_at).length,
+    canPost: staff,
+  });
+}));
+
+api.post('/announcements', wrap(async (req, res) => {
+  if (!requireInquiryStaff(req, res)) return;
+  const v = readAnnounceBody(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const stamp = now();
+  const r = await db.run(
+    `INSERT INTO announcements (title, body, level, ends_at, created_by, created_by_name, created_at)
+     VALUES (?,?,?,?,?,?,?)`,
+    [v.title, v.text, v.level, v.endsAt, req.user.id, req.user.name, stamp]);
+  // 新しい行のID（PostgreSQLでは RETURNING id が自動で付く）
+  const id = r?.lastInsertRowid ?? null;
+  // 出した本人は読んだものとして扱う（自分の出したお知らせで未読が付かないように）
+  if (id) {
+    await db.run(
+      `INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?,?,?)
+       ON CONFLICT (announcement_id, user_id) DO NOTHING`, [id, req.user.id, stamp]);
+  }
+  res.json({ ok: true, id });
+}));
+
+api.patch('/announcements/:id', wrap(async (req, res) => {
+  if (!requireInquiryStaff(req, res)) return;
+  const row = await db.get('SELECT * FROM announcements WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'お知らせが見つかりません' });
+  const v = readAnnounceBody(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  await db.run(
+    `UPDATE announcements SET title = ?, body = ?, level = ?, ends_at = ?, updated_at = ?
+      WHERE id = ?`,
+    [v.title, v.text, v.level, v.endsAt, now(), row.id]);
+  res.json({ ok: true });
+}));
+
+api.delete('/announcements/:id', wrap(async (req, res) => {
+  if (!requireInquiryStaff(req, res)) return;
+  const row = await db.get('SELECT * FROM announcements WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'お知らせが見つかりません' });
+  await db.run('DELETE FROM announcement_reads WHERE announcement_id = ?', [row.id]);
+  await db.run('DELETE FROM announcements WHERE id = ?', [row.id]);
+  res.json({ ok: true });
+}));
+
+api.post('/announcements/read-all', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const stamp = now();
+  const rows = await db.all(
+    `SELECT a.id FROM announcements a WHERE ${LIVE_COND}`, [localDate()]);
+  for (const a of rows) {
+    await db.run(
+      `INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?,?,?)
+       ON CONFLICT (announcement_id, user_id) DO NOTHING`, [a.id, req.user.id, stamp]);
+  }
+  res.json({ ok: true, read: rows.length });
+}));
+
+api.post('/announcements/:id/read', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const row = await db.get('SELECT * FROM announcements WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'お知らせが見つかりません' });
+  await db.run(
+    `INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?,?,?)
+     ON CONFLICT (announcement_id, user_id) DO NOTHING`, [row.id, req.user.id, now()]);
+  res.json({ ok: true });
 }));
 
 // ---- ユーザーの一括登録 ----
@@ -1872,6 +2012,131 @@ function avgPriceAgg(query, aggMeta) {
     SUM(CASE WHEN ${target} THEN ${plan(n)} * ${qty} END) AS avg_plan_m${n}`).join(',')}`;
 }
 
+/**
+ * 値上げの取り組みが始まった年月。ダッシュボードの承認日の既定値と同じ。
+ * これより前の承認は前回までの古い単価が多く、値上げ額として見ると実態と合わない。
+ * 画面側の client/src/filterOptions.ts の RAISE_START_YM と合わせること。
+ */
+const RAISE_START_YM = '2026-05';
+
+/** 表示用の日付（YYYY-MM-DD）。サーバーはUTCで動くため日本時間に直す */
+const localDate = (value = Date.now()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: DISPLAY_TZ }).format(new Date(value));
+
+/**
+ * 値上げ額の合計を、取込のたびに記録する。
+ *
+ * 毎日取り込み直すと、そのたびにマスタ登録単価が入れ替わって値上げ額も動く。
+ * あとから「前回の取込からいくら動いたか」を追えるように、
+ * 取込日 × 計画の月 ごとに合計を残しておく。
+ *
+ * 記録するのは全社・絞り込みなし・基準はマスタ単価（画面の既定）で、
+ * 承認日が RAISE_START_YM 以降ぶんと、それより前ぶんに分けて持つ。
+ * 画面の数字と同じく、稼働日での日量換算をしたあとの額を入れる。
+ *
+ * 取込そのものは成功させたいので、ここで失敗しても投げずに警告だけ残す。
+ */
+async function recordRaiseHistory(source, filename) {
+  try {
+    const { aggMeta, actualMeta } = await loadImportMeta();
+    const planYms = [0, 1, 2, 3].map((n) => String(aggMeta?.[`m${n}`] ?? ''));
+    if (!planYms.some((ym) => /^\d{4}-\d{2}$/.test(ym))) return;   // 計画の月が分からない
+    const workdays = workdayPlan(actualMeta?.ym ?? '', planYms);
+    const dayRate = (n) => {
+      const days = workdays.months[n]?.days;
+      return workdays.baseDays > 0 && days > 0 ? ` * ${days}.0 / ${workdays.baseDays}.0` : '';
+    };
+    const f = (c) => `CAST(${c} AS FLOAT)`;
+    // 現状額（実績の月の金額そのもの）。ダッシュボードの「現状額（合計）」と同じ
+    const effAmt = `COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)`;
+    const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta));
+    // 承認日の前後。承認日の無いA基準は、どちらにも入れない（画面と同じ決まり）
+    const first = `${RAISE_START_YM}-01`;
+    const sides = { after: `a_date_m3 >= '${first}'`, before: `a_date_m3 < '${first}'` };
+    // 基準はマスタ単価（画面の既定）。空の絞り込みを渡すとその選び方になる
+    const gain = (n, cond) => raiseAmtSql(aPrice(n), {}, cond);
+    const cols = [0, 1, 2, 3].flatMap((n) => Object.entries(sides).flatMap(([key, cond]) => [
+      `SUM(${gain(n, cond)}${dayRate(n)}) AS ${key}_${n}`,
+      `SUM(CASE WHEN ${aPrice(n)} > 0 AND ${cond} THEN 1 ELSE 0 END) AS ${key}_cnt_${n}`,
+    ]));
+    const row = await db.get(`
+      SELECT COUNT(*) AS deals, SUM(${f('master_qty')}) AS qty,
+             SUM(${effAmt}) AS base_amt, ${cols.join(', ')}
+        FROM deal_calc`);
+    const takenAt = now();
+    const takenOn = localDate();
+    const n = (v) => Number(v ?? 0);
+    for (const [i, planYm] of planYms.entries()) {
+      if (!/^\d{4}-\d{2}$/.test(planYm)) continue;
+      // 計画額（日量換算後）＝ 現状額 × 稼働日の倍率 ＋ 値上げ額（前後の合計）
+      const rate = workdays.months[i]?.rate > 0 ? workdays.months[i].rate : 1;
+      const after = n(row?.[`after_${i}`]);
+      const before = n(row?.[`before_${i}`]);
+      await db.run(`
+        INSERT INTO raise_history (taken_on, plan_ym, source, filename, act_ym,
+          work_days, base_days, deals, qty, base_amt, plan_amt,
+          raise_after, raise_before, cnt_after, cnt_before, a_date_ym, taken_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (taken_on, plan_ym) DO UPDATE SET
+          source = excluded.source, filename = excluded.filename, act_ym = excluded.act_ym,
+          work_days = excluded.work_days, base_days = excluded.base_days,
+          deals = excluded.deals, qty = excluded.qty, base_amt = excluded.base_amt,
+          plan_amt = excluded.plan_amt,
+          raise_after = excluded.raise_after, raise_before = excluded.raise_before,
+          cnt_after = excluded.cnt_after, cnt_before = excluded.cnt_before,
+          a_date_ym = excluded.a_date_ym, taken_at = excluded.taken_at`,
+        [takenOn, planYm, source, filename || null, actualMeta?.ym ?? null,
+          workdays.months[i]?.days ?? null, workdays.baseDays ?? null,
+          n(row?.deals), n(row?.qty), n(row?.base_amt),
+          n(row?.base_amt) * rate + after + before,
+          after, before, n(row?.[`after_cnt_${i}`]), n(row?.[`before_cnt_${i}`]),
+          RAISE_START_YM, takenAt]);
+    }
+  } catch (e) {
+    console.warn(`値上げ額の履歴を残せませんでした → ${e.message}`);
+  }
+}
+
+/**
+ * 値上げ額の推移。取込日ごとに、計画の月ぶんの合計を新しい順で返す。
+ * 画面では前回の取込との差（前日比）を添えて出す。
+ */
+async function raiseHistoryRows(limit = 30) {
+  let days = [];
+  try {
+    days = await db.all(
+      'SELECT DISTINCT taken_on FROM raise_history ORDER BY taken_on DESC LIMIT ?', [limit]);
+  } catch { return []; }
+  if (!days.length) return [];
+  const oldest = String(days[days.length - 1].taken_on);
+  const rows = await db.all(
+    'SELECT * FROM raise_history WHERE taken_on >= ? ORDER BY taken_on DESC, plan_ym', [oldest]);
+  const byDay = new Map();
+  for (const r of rows) {
+    const day = String(r.taken_on);
+    if (!byDay.has(day)) {
+      byDay.set(day, {
+        takenOn: day, takenAt: r.taken_at, source: r.source, filename: r.filename,
+        actYm: r.act_ym, deals: Number(r.deals ?? 0), baseAmt: Number(r.base_amt ?? 0),
+        aDateYm: r.a_date_ym, months: [],
+      });
+    }
+    byDay.get(day).months.push({
+      ym: String(r.plan_ym), days: r.work_days ?? null, baseDays: r.base_days ?? null,
+      planAmt: Number(r.plan_amt ?? 0),
+      after: Number(r.raise_after ?? 0), before: Number(r.raise_before ?? 0),
+      cntAfter: Number(r.cnt_after ?? 0), cntBefore: Number(r.cnt_before ?? 0),
+    });
+  }
+  return [...byDay.values()];
+}
+
+api.get('/raise-history', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const limit = Math.min(90, Math.max(2, Number(req.query.limit) || 30));
+  res.json({ days: await raiseHistoryRows(limit) });
+}));
+
 async function dashboardData(query, user) {
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
   const { where, params: p } = dealFilters(query, user);
@@ -1932,7 +2197,19 @@ async function dashboardData(query, user) {
   const basePrice = basePriceSql(query);
   const raiseQty = raiseQtySql();
   const aGain = (n) => raiseAmtSql(aPrice(n), query, approved);
-  const aCol = (n) => `(${planBase} + ${aGain(n)})`;
+
+  // 稼働日での日量換算。数量は売上高（実績の月）のものをそのまま使っているため、
+  // 月ごとの稼働日の違いをそのままにすると、稼働日の少ない月の計画が大きく出る。
+  // 実績の月を稼働日で割って日量に直し、計画の月の稼働日を掛け直す。
+  // 稼働日の分からない月は倍率1（換算しない）。
+  const workdays = workdayPlan(actualMeta?.ym ?? '',
+    [0, 1, 2, 3].map((n) => aggMeta?.[`m${n}`] ?? ''));
+  // SQLiteでは整数どうしの割り算が整数になるため、小数で書く
+  const dayRate = (n) => {
+    const days = workdays.months[n]?.days;
+    return workdays.baseDays > 0 && days > 0 ? ` * ${days}.0 / ${workdays.baseDays}.0` : '';
+  };
+  const aCol = (n) => `((${planBase} + ${aGain(n)})${dayRate(n)})`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -2009,7 +2286,7 @@ async function dashboardData(query, user) {
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
-    SUM(${planBase} + ${bsimGain}) AS bsim_amt,
+    SUM((${planBase} + ${bsimGain})${dayRate(3)}) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows${abAct}`;
   // 土台は価格調査の全品目。A基準の有無でも、当月の売上の有無でも絞らない
   // （当月に売上の無い品目は金額0として数える）。
@@ -2022,13 +2299,31 @@ async function dashboardData(query, user) {
   const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
   const avgAgg = avgPriceAgg(query, aggMeta);
 
+  // 承認日の前後で分けた値上げ額の内訳。
+  // 画面の「承認日」で選んだ年月（未指定なら取り組みの開始月）を境目に、
+  // それ以降に承認された分と、それより前に承認された分へ分ける。
+  // 上の値上げ額は選んだ向きだけを計上するが、こちらは両側とも出すので、
+  // 「新しく承認された分がいくらで、前からの分がいくらか」を見比べられる。
+  // 承認日の無いA基準はどちらにも入れない（計画に充てない決まりと同じ）。
+  const splitYm = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(query.aDateYm ?? ''))
+    ? String(query.aDateYm) : RAISE_START_YM;
+  const splitSides = {
+    after: `a_date_m3 >= '${splitYm}-01'`,
+    before: `a_date_m3 < '${splitYm}-01'`,
+  };
+  const splitAgg = [0, 1, 2, 3].flatMap((n) =>
+    Object.entries(splitSides).flatMap(([key, cond]) => [
+      `SUM(${raiseAmtSql(aPrice(n), query, cond)}${dayRate(n)}) AS raise_${key}_m${n}`,
+      `SUM(CASE WHEN ${aPrice(n)} > 0 AND ${cond} THEN 1 ELSE 0 END) AS cnt_${key}_m${n}`,
+    ])).join(',');
+
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
-    SUM(${aGain(n)}) AS raise_m${n}`)
+    SUM(${aGain(n)}${dayRate(n)}) AS raise_m${n}`)
     .join(',')
     // 想定B基準（法人ごとの妥結見通し）にした場合の値上げ額。A基準との比較に使う
     + `,
-    SUM(CASE WHEN ${planned(3)} THEN ${bsimGain} ELSE 0 END) AS raise_bsim,
+    SUM(CASE WHEN ${planned(3)} THEN ${bsimGain}${dayRate(3)} ELSE 0 END) AS raise_bsim,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
@@ -2046,7 +2341,7 @@ async function dashboardData(query, user) {
     db.get(`SELECT COUNT(*) AS deals, SUM(${effQty}) AS qty, ${actAmt}
             FROM deal_calc ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
-    db.get(`SELECT ${monthAgg}, ${avgAgg},
+    db.get(`SELECT ${monthAgg}, ${avgAgg}, ${splitAgg},
               SUM(CASE WHEN ${planned(3)} THEN 1 ELSE 0 END) AS covered
             FROM deal_calc ${planJoin} ${where}`, p),
     db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
@@ -2111,6 +2406,22 @@ async function dashboardData(query, user) {
     months,
     aggMeta,
     actuals,
+    // 計画の日量換算に使った稼働日（画面とExcelが同じ数字で計算できるように返す）
+    workdays,
+    // 承認日の前後で分けた値上げ額の内訳（計画の月ごと）
+    raiseSplit: {
+      ym: splitYm,
+      months: [0, 1, 2, 3].map((n) => ({
+        ym: workdays.months[n]?.ym || '',
+        days: workdays.months[n]?.days ?? null,
+        after: Number(aMonths?.[`raise_after_m${n}`] ?? 0),
+        before: Number(aMonths?.[`raise_before_m${n}`] ?? 0),
+        cntAfter: Number(aMonths?.[`cnt_after_m${n}`] ?? 0),
+        cntBefore: Number(aMonths?.[`cnt_before_m${n}`] ?? 0),
+      })),
+    },
+    // 値上げ額の推移（取込ごと・全社の合計）。前回の取込との差を画面で出す
+    raiseHistory: await raiseHistoryRows(14),
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
     abActYms: actualMeta?.ym ? [actualMeta.ym] : [],
   };
@@ -3460,9 +3771,11 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
-        // この取込では商談結果・最終確定日・最終確定単価を今の値のままにするか
-        // （画面で入れた交渉の記録を、ファイルの値で上書きしたくないときに使う）
-        keepNego: req.body?.keepNego === true,
+        // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
+        // 入れ直すか。毎日の取込はマスタ登録単価を入れ直すためのもので、
+        // 交渉の記録は営業担当者がアプリで入れるため、既定では触らない。
+        // ファイル側でまとめて直したときだけ true にする
+        overwriteNego: req.body?.overwriteNego === true,
         // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
         histMonths: Array.isArray(meta.histMonths)
           ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
@@ -3703,12 +4016,12 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     ? 'CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END'
     : `COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
                  deals.r2_target_price)`;
-  // 商談結果・最終確定日・最終確定単価。
-  // 通常はファイルに値があればそれを入れる（無ければ今の値を残す）が、
-  // 「今の値を残す」を選んだ取込では、いま入っている案件には触れない。
+  // 商談結果・最終確定日・最終確定単価（値上げ交渉の記録）は営業担当者が
+  // アプリで入れる項目なので、毎日の取込では触らない（画面の値がそのまま残る）。
+  // 取込のときに「ファイルの値で入れ直す」を選んだ場合だけ、値のある列を上書きする。
   // 商談メモはもともとファイルに無いため、どちらの場合も変わらない。
-  const keepNego = startedMeta?.keepNego === true;
-  const negoSql = keepNego ? '' : `
+  const overwriteNego = startedMeta?.overwriteNego === true;
+  const negoSql = !overwriteNego ? '' : `
       nego_result = COALESCE(s.nego_result, deals.nego_result),
       final_date = COALESCE(s.final_date, deals.final_date),
       final_price = COALESCE(s.final_price, deals.final_price),`;
@@ -3739,11 +4052,14 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
       -- 目標単価（第2弾新値上げ単価）。列のあるファイルならファイルの内容を正とする
       r2_target_price = ${targetSql},
-      -- 商談結果・最終確定日・最終確定単価（「今の値を残す」を選んだときは触れない）
+      -- 商談結果・最終確定日・最終確定単価（「ファイルの値で入れ直す」を選んだときだけ）
       ${negoSql}
+      -- ベース（価格調査）に載っている印。売上高（月次）の取込で
+      -- 「今月の売上高に無い行」を落とすときに、この印のある行は残す
+      agg_batch = ?,
       updated_at = ?
     FROM agg_staging s
-    WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
+    WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp, stamp]);
 
   // 実績（価格調査）に無い品目も、案件として追加する。
   // 当月の実績（単価・数量・金額）は空のまま。翌月以降の価格調査で
@@ -3757,7 +4073,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       a_date_m0, a_date_m1, a_date_m2, a_date_m3,
       a_ringi_m0, a_ringi_m1, a_ringi_m2, a_ringi_m3,
       r2_target_price, nego_result, final_date, final_price,
-      branch, office, sales_person, updated_at)
+      branch, office, sales_person, agg_batch, updated_at)
     SELECT s.ent_cd || '|' || s.model_code, s.ent_cd,
       COALESCE(NULLIF(s.corp_group, ''), s.ent_cd),
       COALESCE(NULLIF(s.corp_group, ''), s.customer_name),
@@ -3773,11 +4089,11 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       s.r0_no, s.r1_no, s.r2_no, s.r3_no,
       CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
       s.nego_result, s.final_date, s.final_price,
-      s.branch, s.office, s.sales_person, ?
+      s.branch, s.office, s.sales_person, ?, ?
     FROM agg_staging s
     WHERE NOT EXISTS (
       SELECT 1 FROM deals d
-       WHERE d.hist_ent_cd = s.ent_cd AND d.model_code = s.model_code)`, [stamp]);
+       WHERE d.hist_ent_cd = s.ent_cd AND d.model_code = s.model_code)`, [stamp, stamp]);
   const added = Number(ins?.changes ?? 0);
 
   // マスタ単価の実績（月別履歴）。当月（本日時点）の単価をその月の枠へ記録する。
@@ -3811,6 +4127,8 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
   // ここでは行を消さないため VACUUM は不要（毎日の取込なので、時間のかかる
   // 掃除を毎回走らせない。行が消える売上高の取込側にだけ残す）
   invalidateMetaCache();
+  // 値上げ額の合計をこの取込の日付で残す（前回の取込との差を追えるように）
+  await recordRaiseHistory('agg', startedMeta?.filename ?? '');
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), added, renamed });
 }));
 
@@ -4041,8 +4359,12 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
       [stamp, batch]);
 
     // 前の月の売上高にだけあった行（ベースに無く、今回の売上高にも無い）は落とす。
-    // ベース由来の行は出荷単価・数量・マスタ登録単価・目標単価のどれかを持つので残る
+    // ベース（価格調査（毎日更新））で入った行は agg_batch の印を持つので、
+    // 単価がまだ1つも入っていなくても残す。
+    // 「売上高（7月）に無い品目も一覧に載せる」ためで、次の価格調査の取込で
+    // 単価が入ることもある。印の無い古い行は、これまでどおり単価の有無で判断する
     const orphan = `hist_batch IS DISTINCT FROM ?
+      AND agg_batch IS NULL
       AND qty IS NULL AND base_price IS NULL
       AND a_price_m0 IS NULL AND a_price_m1 IS NULL
       AND a_price_m2 IS NULL AND a_price_m3 IS NULL
@@ -4065,6 +4387,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   await db.run('DELETE FROM act_staging');
   try { await db.run('VACUUM deals'); } catch { /* 自動VACUUMに任せる */ }
   invalidateMetaCache();
+  // 売上高が入れ替わると実績数（値上げ額のもと）も変わるので、ここでも残す
+  await recordRaiseHistory('survey', actualMeta?.filename ?? '');
   res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), removed });
 }));
 
