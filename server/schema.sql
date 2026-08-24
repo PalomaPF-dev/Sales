@@ -372,6 +372,30 @@ CREATE TABLE IF NOT EXISTS inquiries (
 CREATE INDEX IF NOT EXISTS idx_inquiries_user ON inquiries(user_id);
 CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
 
+-- お知らせ（全員への連絡）。本社・管理者が出し、全員の画面に届く。
+-- 問い合わせが「一人から本社へ」なのに対して、こちらは「本社から全員へ」。
+CREATE TABLE IF NOT EXISTS announcements (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,   -- 見出し
+  body       TEXT NOT NULL,   -- 本文
+  -- info=お知らせ（青） / important=重要（赤）。重要は一覧の上に出す
+  level      TEXT NOT NULL DEFAULT 'info',
+  ends_at    TEXT,            -- 掲載の終わり（YYYY-MM-DD）。空なら消すまで出し続ける
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name TEXT,       -- 出した人の氏名（利用者が消えても残す）
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+
+-- お知らせを読んだ記録。誰がどれを読んだかを持ち、未読の件数を出すために使う
+CREATE TABLE IF NOT EXISTS announcement_reads (
+  announcement_id INTEGER NOT NULL,
+  user_id         INTEGER NOT NULL,
+  read_at         TEXT NOT NULL,
+  PRIMARY KEY (announcement_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ann_reads_user ON announcement_reads(user_id);
+
 -- マスタ単価の実績（月別履歴）。法人×品目×月ごとに1行。
 -- 価格調査（毎日更新）の取込で当月（本日時点）の単価を、
 -- 売上高（月次）の取込でその月のマスタ単価を記録する。

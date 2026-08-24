@@ -228,8 +228,12 @@ const canSeeAllInfo = (role) => isAdminRole(role) || role === 'planning';
 function viewerMayWrite(path) {
   return path === '/logout'
     || path === '/inquiries'
+    || path === '/inquiries/delete'
     || /^\/inquiries\/mine\/\d+\/read$/.test(path)
-    || /^\/inquiries\/\d+$/.test(path);
+    || /^\/inquiries\/\d+$/.test(path)
+    // お知らせは読むだけ。既読にする操作は閲覧専用でも通す
+    || path === '/announcements/read-all'
+    || /^\/announcements\/\d+\/read$/.test(path);
 }
 
 /**
@@ -1386,6 +1390,35 @@ api.delete('/inquiries/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/**
+ * 選んだ問い合わせをまとめて消す。
+ *
+ * 1件ずつ消せるようにはしてあるが、溜まった分を片づけるには押す回数が多い。
+ * 消せるかどうかの判定は1件ずつと同じで、消せない分は消さずに数だけ返す。
+ */
+api.post('/inquiries/delete', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const ids = Array.isArray(req.body?.ids)
+    ? [...new Set(req.body.ids.map(Number).filter(Number.isInteger))].slice(0, 500)
+    : [];
+  if (!ids.length) return res.status(400).json({ error: '消すお問い合わせを選んでください' });
+  const rows = await db.all(
+    `SELECT * FROM inquiries WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+  const dests = destsFor(req.user.role);
+  const mayDelete = (row) => row.user_id === req.user.id
+    || (row.login_id != null && row.login_id === (req.user.login_id ?? ''))
+    // 宛先の無い古い分は「アプリのこと」として扱う（一覧の出し方と同じ）
+    || dests.includes(destOf(row.dest));
+  const targets = rows.filter(mayDelete).map((r) => r.id);
+  if (targets.length) {
+    await db.run(
+      `DELETE FROM inquiries WHERE id IN (${targets.map(() => '?').join(',')})`, targets);
+  }
+  // 見つからなかった分（すでに誰かが消した分）は、消せたものとして数えない。
+  // 画面は消し終えたあとに一覧を取り直すので、そこで消えていることが分かる
+  res.json({ deleted: targets.length, skipped: ids.length - targets.length });
+}));
+
 api.patch('/inquiries/:id', wrap(async (req, res) => {
   if (!requireInquiryStaff(req, res)) return;
   const row = await db.get('SELECT * FROM inquiries WHERE id = ?', [req.params.id]);
@@ -1413,6 +1446,129 @@ api.patch('/inquiries/:id', wrap(async (req, res) => {
     return res.status(400).json({ error: '更新項目がありません' });
   }
   res.json(await db.get('SELECT * FROM inquiries WHERE id = ?', [row.id]));
+}));
+
+// ---- お知らせ（全員への連絡） ----
+//
+// 問い合わせが「一人から本社へ」なのに対して、お知らせは「本社から全員へ」。
+// 出せるのは本社（営業部・製品企画部）と管理者で、全員の画面に届く。
+// 読んだかどうかは人ごとに持ち、未読があるあいだは画面の上に帯を出す。
+//
+//   GET    /announcements          … 一覧と未読の件数。掲載の終わった分は担当者にだけ出す
+//   POST   /announcements          … 出す（担当者のみ）
+//   PATCH  /announcements/:id      … 直す（担当者のみ）
+//   DELETE /announcements/:id      … 消す（担当者のみ）
+//   POST   /announcements/:id/read … 既読にする（本人）
+//   POST   /announcements/read-all … 出ているお知らせをまとめて既読にする（本人）
+
+/** お知らせの重み。important=重要（赤・一覧の上）／info=お知らせ（青） */
+const ANNOUNCE_LEVELS = ['info', 'important'];
+const levelOf = (v) => (ANNOUNCE_LEVELS.includes(String(v ?? '')) ? String(v) : 'info');
+
+/** 掲載中かどうかの条件。掲載の終わりが未設定か、今日以降なら出す */
+const LIVE_COND = "(a.ends_at IS NULL OR a.ends_at = '' OR a.ends_at >= ?)";
+
+/** 入力の点検。見出しと本文は必須で、長すぎるものは受けない */
+function readAnnounceBody(body) {
+  const title = String(body?.title ?? '').trim();
+  const text = String(body?.body ?? '').trim();
+  if (!title) return { error: '見出しを入力してください' };
+  if (title.length > 120) return { error: '見出しは120文字以内で入力してください' };
+  if (!text) return { error: '本文を入力してください' };
+  if (text.length > 4000) return { error: '本文は4000文字以内で入力してください' };
+  const endsAt = String(body?.endsAt ?? '').trim();
+  if (endsAt && !/^\d{4}-\d{2}-\d{2}$/.test(endsAt)) {
+    return { error: '掲載の終わりは日付で入力してください' };
+  }
+  return { title, text, endsAt: endsAt || null, level: levelOf(body?.level) };
+}
+
+api.get('/announcements', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const today = localDate();
+  const staff = isInquiryStaff(req.user.role);
+  // 担当者には掲載の終わった分も出す（直したり消したりできるように）。
+  // ほかの人には掲載中のものだけ。
+  const rows = await db.all(`
+    SELECT a.*, r.read_at
+      FROM announcements a
+      LEFT JOIN announcement_reads r
+             ON r.announcement_id = a.id AND r.user_id = ?
+     ${staff ? '' : `WHERE ${LIVE_COND}`}
+     ORDER BY CASE a.level WHEN 'important' THEN 0 ELSE 1 END, a.id DESC`,
+  staff ? [req.user.id] : [req.user.id, today]);
+  const live = (a) => !a.ends_at || a.ends_at >= today;
+  res.json({
+    rows: rows.map((a) => ({ ...a, live: live(a) })),
+    // 未読は掲載中のものだけ数える（終わった分で帯が出続けないように）
+    unread: rows.filter((a) => live(a) && !a.read_at).length,
+    canPost: staff,
+  });
+}));
+
+api.post('/announcements', wrap(async (req, res) => {
+  if (!requireInquiryStaff(req, res)) return;
+  const v = readAnnounceBody(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const stamp = now();
+  const r = await db.run(
+    `INSERT INTO announcements (title, body, level, ends_at, created_by, created_by_name, created_at)
+     VALUES (?,?,?,?,?,?,?)`,
+    [v.title, v.text, v.level, v.endsAt, req.user.id, req.user.name, stamp]);
+  // 新しい行のID（PostgreSQLでは RETURNING id が自動で付く）
+  const id = r?.lastInsertRowid ?? null;
+  // 出した本人は読んだものとして扱う（自分の出したお知らせで未読が付かないように）
+  if (id) {
+    await db.run(
+      `INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?,?,?)
+       ON CONFLICT (announcement_id, user_id) DO NOTHING`, [id, req.user.id, stamp]);
+  }
+  res.json({ ok: true, id });
+}));
+
+api.patch('/announcements/:id', wrap(async (req, res) => {
+  if (!requireInquiryStaff(req, res)) return;
+  const row = await db.get('SELECT * FROM announcements WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'お知らせが見つかりません' });
+  const v = readAnnounceBody(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  await db.run(
+    `UPDATE announcements SET title = ?, body = ?, level = ?, ends_at = ?, updated_at = ?
+      WHERE id = ?`,
+    [v.title, v.text, v.level, v.endsAt, now(), row.id]);
+  res.json({ ok: true });
+}));
+
+api.delete('/announcements/:id', wrap(async (req, res) => {
+  if (!requireInquiryStaff(req, res)) return;
+  const row = await db.get('SELECT * FROM announcements WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'お知らせが見つかりません' });
+  await db.run('DELETE FROM announcement_reads WHERE announcement_id = ?', [row.id]);
+  await db.run('DELETE FROM announcements WHERE id = ?', [row.id]);
+  res.json({ ok: true });
+}));
+
+api.post('/announcements/read-all', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const stamp = now();
+  const rows = await db.all(
+    `SELECT a.id FROM announcements a WHERE ${LIVE_COND}`, [localDate()]);
+  for (const a of rows) {
+    await db.run(
+      `INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?,?,?)
+       ON CONFLICT (announcement_id, user_id) DO NOTHING`, [a.id, req.user.id, stamp]);
+  }
+  res.json({ ok: true, read: rows.length });
+}));
+
+api.post('/announcements/:id/read', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const row = await db.get('SELECT * FROM announcements WHERE id = ?', [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'お知らせが見つかりません' });
+  await db.run(
+    `INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?,?,?)
+     ON CONFLICT (announcement_id, user_id) DO NOTHING`, [row.id, req.user.id, now()]);
+  res.json({ ok: true });
 }));
 
 // ---- ユーザーの一括登録 ----

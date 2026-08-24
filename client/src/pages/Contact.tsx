@@ -89,6 +89,9 @@ export default function Contact() {
   const [rows, setRows] = useState<Inquiry[]>([]);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  // まとめて消すために選んだ問い合わせ（届いた分・自分の履歴でそれぞれ持つ）
+  const [selInbox, setSelInbox] = useState<number[]>([]);
+  const [selMine, setSelMine] = useState<number[]>([]);
 
   const load = () => {
     api<{ rows: Inquiry[]; unread: number }>('/inquiries/mine')
@@ -140,6 +143,14 @@ export default function Contact() {
     }
   };
 
+  /** 消したあとの後片づけ。両方の一覧を取り直し、選んだ印も外す */
+  const afterRemove = () => {
+    load();
+    loadInbox();
+    setSelInbox([]);
+    setSelMine([]);
+  };
+
   /**
    * 問い合わせを消す。戻せないので、押したときに一度だけ確かめる。
    * 送った本人と、受け持ちの回答担当が消せる。
@@ -150,12 +161,70 @@ export default function Contact() {
     try {
       await api(`/inquiries/${id}`, { method: 'DELETE' });
       setMsg({ kind: 'ok', text: 'お問い合わせを消しました。' });
-      load();
+    } catch (err) {
+      // すでに消えている分は「消えている」で正しいので、そのまま一覧を取り直す
+      const text = (err as Error).message;
+      setMsg(/見つかりません/.test(text)
+        ? { kind: 'ok', text: 'このお問い合わせはすでに消えています。一覧を取り直しました。' }
+        : { kind: 'error', text });
+    } finally {
+      afterRemove();
+      setBusy(false);
+    }
+  };
+
+  /** 選んだ分をまとめて消す。1件ずつ押さなくても片づけられるように */
+  const removeMany = async (ids: number[]) => {
+    if (!ids.length) return;
+    if (!window.confirm(`選んだ ${ids.length}件のお問い合わせを消します。元に戻せません。よろしいですか？`)) return;
+    setBusy(true);
+    try {
+      const r = await api<{ deleted: number; skipped: number }>(
+        '/inquiries/delete', { method: 'POST', body: JSON.stringify({ ids }) });
+      setMsg({
+        kind: 'ok',
+        text: `${r.deleted.toLocaleString()}件のお問い合わせを消しました。`
+          + (r.skipped > 0 ? `（${r.skipped}件は消せないか、すでに消えていました）` : ''),
+      });
     } catch (err) {
       setMsg({ kind: 'error', text: (err as Error).message });
     } finally {
+      afterRemove();
       setBusy(false);
     }
+  };
+
+  /** 選ぶ・外す。チェックの状態は番号の並びで持つ */
+  const toggleSel = (sel: number[], setSel: (v: number[]) => void, id: number) =>
+    setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
+
+  /**
+   * 一覧の上に出す「まとめて消す」の帯。届いた分と自分の履歴で同じものを使う。
+   * 選んでいる件数と、すべて選ぶ・外すの操作を出す。
+   */
+  const selectBar = (ids: number[], sel: number[], setSel: (v: number[]) => void) => {
+    const all = ids.length > 0 && ids.every((id) => sel.includes(id));
+    return (
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+                    marginBottom: 10, fontSize: 12.5 }}>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+          <input type="checkbox" checked={all} disabled={busy || !ids.length}
+                 onChange={() => setSel(all ? [] : ids)} />
+          すべて選ぶ
+        </label>
+        <span style={{ color: 'var(--muted)' }}>
+          {sel.length > 0 ? `${sel.length.toLocaleString()}件を選んでいます` : '消したいものに印を付けてください'}
+        </span>
+        {/* 何も選んでいないうちは押せない。押せないことが見て分かるよう色も変える */}
+        <button className={`btn sm ${sel.length ? 'danger' : 'secondary'}`}
+                disabled={busy || !sel.length}
+                style={{ marginLeft: 'auto' }}
+                title="印を付けたお問い合わせをまとめて消します（元に戻せません）"
+                onClick={() => removeMany(sel)}>
+          {sel.length > 0 ? `選んだ ${sel.length}件を消す` : '選んだ分を消す'}
+        </button>
+      </div>
+    );
   };
 
   const markRead = async (id: number) => {
@@ -183,11 +252,16 @@ export default function Contact() {
             <p className="pt-note" style={{ margin: 0 }}>届いているお問い合わせはありません。</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {selectBar(inbox.map((q) => q.id), selInbox, setSelInbox)}
               {inbox.map((q) => (
                 <div key={q.id} ref={q.id === picked ? pickedRef : undefined}
                      style={{ border: q.id === picked ? '2px solid var(--accent)' : '1px solid var(--border)',
                               borderRadius: 10, padding: 12 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                    {/* まとめて消すための印 */}
+                    <input type="checkbox" checked={selInbox.includes(q.id)} disabled={busy}
+                           title="まとめて消すときに選びます"
+                           onChange={() => toggleSel(selInbox, setSelInbox, q.id)} />
                     <span className="badge violet">{destOf(q.dest).label}</span>
                     <span className="badge blue">{q.category}</span>
                     {q.status === 'resolved'
@@ -298,9 +372,14 @@ export default function Contact() {
           <p className="pt-note" style={{ margin: 0 }}>これまでのお問い合わせはありません。</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {selectBar(rows.map((r) => r.id), selMine, setSelMine)}
             {rows.map((r) => (
               <div key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                  {/* まとめて消すための印 */}
+                  <input type="checkbox" checked={selMine.includes(r.id)} disabled={busy}
+                         title="まとめて消すときに選びます"
+                         onChange={() => toggleSel(selMine, setSelMine, r.id)} />
                   <span className="badge violet">{destOf(r.dest).label}</span>
                   <span className="badge blue">{r.category}</span>
                   {r.status === 'resolved'

@@ -9,7 +9,7 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconChart, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
+import { IconBell, IconChart, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
@@ -21,6 +21,7 @@ const CorpDetail = lazy(() => import('./pages/CorpDetail'));
 const Users = lazy(() => import('./pages/Users'));
 const ImportPage = lazy(() => import('./pages/ImportPage'));
 const Contact = lazy(() => import('./pages/Contact'));
+const News = lazy(() => import('./pages/News'));
 const Help = lazy(() => import('./pages/Help'));
 const About = lazy(() => import('./pages/About'));
 const Terms = lazy(() => import('./pages/Terms'));
@@ -56,6 +57,9 @@ export default function App() {
   const [serverError, setServerError] = useState<string | null>(null);
   // お問い合わせへの未読の回答数。ログイン後に1回だけ確かめて、上部の帯で知らせる
   const [unreadReplies, setUnreadReplies] = useState(0);
+  // 未読のお知らせ（本社・管理者から全員への連絡）。同じく上部の帯で知らせる
+  const [unreadNews, setUnreadNews] = useState(0);
+  const [newsTitle, setNewsTitle] = useState('');
   // 表示の切替。自動（画面の幅で決める）／スマホ／PC の3つ。選んだ内容は覚えておく
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode);
   // いまスマホ向けの見た目で出しているか（自動のときは画面の幅で決まる）
@@ -113,6 +117,17 @@ export default function App() {
     if (!user) { setUnreadReplies(0); return; }
     api<{ unread: number }>('/inquiries/mine')
       .then((r) => setUnreadReplies(r.unread))
+      .catch(() => {});
+  }, [user]);
+
+  // 未読のお知らせ。件数と、いちばん上のお知らせの見出しを帯に出す
+  useEffect(() => {
+    if (!user) { setUnreadNews(0); setNewsTitle(''); return; }
+    api<{ rows: { title: string; read_at: string | null; live: boolean }[]; unread: number }>('/announcements')
+      .then((r) => {
+        setUnreadNews(r.unread);
+        setNewsTitle(r.rows.find((a) => a.live && !a.read_at)?.title ?? '');
+      })
       .catch(() => {});
   }, [user]);
 
@@ -279,6 +294,13 @@ export default function App() {
             {/* 設定（ユーザー管理など）。管理者だけに見せる */}
             {isAdmin && <NavLink to="/settings"><IconSettings /><span className="lbl">設定</span></NavLink>}
             <div className="nav-head">サポート</div>
+            <NavLink to="/news">
+              <IconBell />
+              <span className="lbl">
+                お知らせ
+                {unreadNews > 0 && <span className="badge red" style={{ marginLeft: 6 }}>{unreadNews}</span>}
+              </span>
+            </NavLink>
             <NavLink to="/help"><IconHelp /><span className="lbl">使い方</span></NavLink>
             <NavLink to="/contact">
               <IconInbox />
@@ -366,6 +388,14 @@ export default function App() {
               </span>
             </div>
           </header>
+          {/* 本社・管理者からの全員へのお知らせ。未読があるあいだはどの画面でも出す */}
+          {unreadNews > 0 && (
+            <div className="alert info" style={{ cursor: 'pointer' }}
+                 onClick={() => navigate('/news')}>
+              <strong>お知らせが届いています</strong>（{unreadNews}件）
+              {newsTitle && <>：{newsTitle}</>}。ここを押すと読めます。
+            </div>
+          )}
           {/* お問い合わせに回答が付いたことを知らせる（ポータルと同じ）。開くと消える */}
           {unreadReplies > 0 && (
             <div className="alert info" style={{ cursor: 'pointer' }}
@@ -384,6 +414,8 @@ export default function App() {
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />
               <Route path="/contact" element={<Contact />} />
+              {/* お知らせ。読むと未読の数が減るので、メニューの印もその場で直す */}
+              <Route path="/news" element={<News onUnreadChange={setUnreadNews} />} />
               <Route path="/help" element={<Help />} />
               <Route path="/about" element={<About />} />
               <Route path="/terms" element={<Terms />} />
