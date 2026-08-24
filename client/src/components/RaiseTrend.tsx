@@ -52,8 +52,9 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
     <Card title={title}>
       <NoteFold id="trend">
         取込のたびに、そのときの<strong>値上げ額の合計</strong>を計画の月ごとに残しています。
-        マスの下の数字は<strong>前回の取込との差</strong>
+        マスの下の数字は<strong>1つ前の取込との差</strong>
         {prev ? `（${dayLabel(days[0].takenOn)} は ${dayLabel(prev.takenOn)} 比）` : ''}です。
+        取込日が飛んでいても、その行のすぐ下（1つ前の取込）と比べます。
         金額は<strong>全社・絞り込みなし</strong>、基準は<strong>マスタ単価</strong>、
         承認日は<strong>{days[0].aDateYm ?? ''}以降</strong>の分で、
         稼働日での日量換算をしたあとの1か月あたりの額です
@@ -69,7 +70,8 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
               <th style={nums}>件数</th>
               {yms.map((ym) => (
                 <th key={ym} style={nums}>
-                  {ymLabel(ym)} 計画<br /><small>値上げ額 / 前回比</small>
+                  {ymLabel(ym)} 計画<br />
+                <small>値上げ額 / {prev ? `${dayLabel(prev.takenOn)}比` : '前回比'}</small>
                 </th>
               ))}
             </tr>
@@ -101,7 +103,8 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
                           title={`承認日 ${d.aDateYm ?? ''}以降 ${Math.round(cur.after).toLocaleString()}円`
                             + ` / より前 ${Math.round(cur.before).toLocaleString()}円`
                             + ` / 合計 ${Math.round(cur.after + cur.before).toLocaleString()}円`
-                            + `（${cur.cntAfter.toLocaleString()}件 / ${cur.cntBefore.toLocaleString()}件）`}>
+                            + `（${cur.cntAfter.toLocaleString()}件 / ${cur.cntBefore.toLocaleString()}件）`
+                            + (before ? `\n前回比は ${dayLabel(before.takenOn)} との差です` : '')}>
                         {yen(cur.after)}
                         <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2,
                                       color: diff == null ? 'var(--muted)'
