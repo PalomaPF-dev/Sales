@@ -532,7 +532,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-25-inquiry-dest';
+const SCHEMA_VERSION = '2026-08-26-agg-batch';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -850,6 +850,9 @@ async function beforeSchema() {
     'ALTER TABLE users ADD COLUMN email TEXT',
     // 納入先名（価格調査（毎日更新）の代表値。案件一覧に出す）
     'ALTER TABLE agg_staging ADD COLUMN delivery_name TEXT',
+    // 価格調査（毎日更新）で入った行の印。ベースに載っている品目は、
+    // 売上高（月次）に無くても一覧から消さないための目印
+    'ALTER TABLE deals ADD COLUMN agg_batch TEXT',
   ]) {
     await tryAlter(sql);
   }
@@ -873,7 +876,8 @@ async function beforeSchema() {
   // 列を1つでも足したら、その列を並びに含めた形へ作り直す必要がある。
   // 一番あとに足した列がビューに無ければ、旧構成とみなして落とす。
   try {
-    await db.get('SELECT nego_result, nego_note, final_date, product_name, plan_qty FROM deal_calc LIMIT 1');
+    await db.get('SELECT nego_result, nego_note, final_date, product_name, plan_qty, agg_batch'
+      + ' FROM deal_calc LIMIT 1');
   } catch {
     try { await db.run('DROP VIEW IF EXISTS deal_calc'); } catch { /* 無ければよい */ }
   }

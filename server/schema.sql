@@ -146,6 +146,9 @@ CREATE TABLE IF NOT EXISTS deals (
   act_price_11 REAL,   -- 価格調査の実単価（11番目の月。月の並びは settings の actual_meta）
   act_price_12 REAL,   -- 価格調査の実単価（12番目の月。月の並びは settings の actual_meta）
   hist_batch      TEXT,   -- 出荷実績の取込回。今回に含まれない行を消すための印
+  -- 価格調査（毎日更新）で入った行の印（最後に取り込んだ日時）。
+  -- ベースに載っている品目は、売上高（月次）に無くても一覧から消さない
+  agg_batch       TEXT,
   r2_target_price REAL,   -- ❷ 目標値上げ単価（列名の r2_ は旧・第2弾の名残）
   offer1_date     TEXT,   -- BW 1回目提示日
   offer1_rate     REAL,   -- BX 1回目提示率

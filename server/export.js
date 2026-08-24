@@ -175,6 +175,13 @@ export function buildDashboardWorkbook(data, opts = {}) {
   const m2 = m('m2', '翌々月');
   const m3 = m('m3', '3か月後');
   const t = data.abTotals ?? {};
+  // 計画の月の日量換算（稼働日）。実績の月を1として、その月の稼働日ぶんに直す。
+  // 画面と同じ倍率をサーバーから受け取り、比較のもとにも同じ倍率を掛ける
+  const wd = data.workdays ?? {};
+  const wdMonths = Array.isArray(wd.months) ? wd.months : [];
+  const rateOf = (i) => (Number(wdMonths[i]?.rate) > 0 ? Number(wdMonths[i].rate) : 1);
+  // 見出しに添える稼働日（「16日」など）。分からない月は付けない
+  const daysOf = (i) => (Number(wdMonths[i]?.days) > 0 ? `（${wdMonths[i].days}稼働日）` : '');
   // 当月の金額そのもの（土台）。条件シートとまとめシートの両方で使う
   const base = n(t.base_amt);
   // マスタ分（値決めどおりに出た分）の金額。A基準の比較のもと。合計との差が見積ぶん
@@ -213,6 +220,18 @@ export function buildDashboardWorkbook(data, opts = {}) {
     }
   }
   cond.push(['マスタ登録単価ありの件数', n(data.aMonths?.covered)]);
+  // 計画の金額をどの稼働日で日量換算したか。数字の出どころが分かるように残す
+  if (Number(wd.baseDays) > 0 && wdMonths.some((x) => Number(x?.days) > 0)) {
+    cond.push([]);
+    cond.push(['計画の日量換算', `${ymLabel(wd.baseYm, '実績の月')} ${wd.baseDays}稼働日をもとに、`
+      + '計画の月の稼働日ぶんへ換算しています']);
+    for (const [i, ym] of [[0, m0], [1, m1], [2, m2], [3, m3]]) {
+      const days = Number(wdMonths[i]?.days);
+      cond.push([`稼働日 ${ym}`, days > 0
+        ? `${days}日（${wd.baseDays}日比 ${round(rateOf(i) * 100, 1)}%）`
+        : '未設定（換算なし）']);
+    }
+  }
   addSheet('条件', cond, [28, 40]);
 
   // ── まとめ（実績と計画を月の流れで並べる）
@@ -239,9 +258,12 @@ export function buildDashboardWorkbook(data, opts = {}) {
       ym: `${actYm}（マスタ）`, kind: '参考',
       deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
     }] : []),
-    // 計画。比較のもとは値上げ前当初（当初からA基準までの上がり幅が値上げ額）
-    ...[[m0, n(t.a0_amt)], [m1, n(t.a1_amt)], [m2, n(t.a2_amt)], [m3, n(t.a3_amt)]].map(([ym, amt]) => ({
-      ym, kind: '計画', deals: n(t.deals), b: gain == null ? base : base - gain,
+    // 計画。比較のもとは値上げ前当初（当初からA基準までの上がり幅が値上げ額）。
+    // 金額は稼働日で日量換算してあるので、比較のもとも同じ倍率に揃える
+    ...[[0, m0, n(t.a0_amt)], [1, m1, n(t.a1_amt)],
+      [2, m2, n(t.a2_amt)], [3, m3, n(t.a3_amt)]].map(([i, ym, amt]) => ({
+      ym: `${ym}${daysOf(i)}`, kind: '計画', deals: n(t.deals),
+      b: (gain == null ? base : base - gain) * rateOf(i),
       amt, up: '', same: '',
     })),
   ];
@@ -295,17 +317,19 @@ export function buildDashboardWorkbook(data, opts = {}) {
       `${ym} 改善額 マイナス（月あたり）`, `${ym} 下がった件数`,
       `${ym} 単価同じ件数`,
     ]),
-    `${m0} A基準額（月あたり）`, `${m0} 値上げ額（月あたり）`, `${m0} 値上げ率`,
-    `${m1} A基準額（月あたり）`, `${m1} 値上げ額（月あたり）`, `${m1} 値上げ率`,
-    `${m2} A基準額（月あたり）`, `${m2} 値上げ額（月あたり）`, `${m2} 値上げ率`,
-    `${m3} A基準額（月あたり）`, `${m3} 値上げ額（月あたり）`, `${m3} 値上げ率`,
+    ...[[0, m0], [1, m1], [2, m2], [3, m3]].flatMap(([i, ym]) => [
+      `${ym}${daysOf(i)} A基準額（月あたり）`,
+      `${ym}${daysOf(i)} 値上げ額（月あたり）`,
+      `${ym}${daysOf(i)} 値上げ率`,
+    ]),
   ];
   const line = (r) => {
     // 現状額は当月の金額（合計）。A基準（計画）は値上げ前当初と比べる
     const b = n(r.base_amt);
     const g = n(r.gain_plus_1) + n(r.gain_minus_1);
     const pre = b - g;
-    const rate = (amt) => (pre > 0 ? round(((amt - pre) / pre) * 100, 1) / 100 : '');
+    // 値上げ率。計画の月は日量換算した比較のもと（p）で見る
+    const rate = (amt, p = pre) => (p > 0 ? round(((amt - p) / p) * 100, 1) / 100 : '');
     return [
       r.name || '—', n(r.deals), round(n(r.qty) / months, 1),
       round(b / months),
@@ -323,10 +347,12 @@ export function buildDashboardWorkbook(data, opts = {}) {
           n(r[`act_same_${i + 1}`]),
         ];
       }),
-      round(n(r.a0_amt) / months), round((n(r.a0_amt) - pre) / months), rate(n(r.a0_amt)),
-      round(n(r.a1_amt) / months), round((n(r.a1_amt) - pre) / months), rate(n(r.a1_amt)),
-      round(n(r.a2_amt) / months), round((n(r.a2_amt) - pre) / months), rate(n(r.a2_amt)),
-      round(n(r.a3_amt) / months), round((n(r.a3_amt) - pre) / months), rate(n(r.a3_amt)),
+      // 計画は稼働日で日量換算した金額。比較のもと（値上げ前当初）も同じ倍率に揃える
+      ...[[0, n(r.a0_amt)], [1, n(r.a1_amt)],
+        [2, n(r.a2_amt)], [3, n(r.a3_amt)]].flatMap(([i, amt]) => {
+        const p = pre * rateOf(i);
+        return [round(amt / months), round((amt - p) / months), rate(amt, p)];
+      }),
     ];
   };
   const widths = [22, 8, 12, 18, 20,

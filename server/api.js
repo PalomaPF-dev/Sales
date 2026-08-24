@@ -19,6 +19,7 @@ import {
   deleteAttachment, fetchAttachment, fileBucket, isFileStoreConfigured, putAttachment,
 } from './fileStore.js';
 import { comparePref } from './prefOrder.js';
+import { workdayPlan } from './workdays.js';
 import {
   KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
   parseStandardWorkbook, replaceStandardPrices,
@@ -1932,7 +1933,19 @@ async function dashboardData(query, user) {
   const basePrice = basePriceSql(query);
   const raiseQty = raiseQtySql();
   const aGain = (n) => raiseAmtSql(aPrice(n), query, approved);
-  const aCol = (n) => `(${planBase} + ${aGain(n)})`;
+
+  // 稼働日での日量換算。数量は売上高（実績の月）のものをそのまま使っているため、
+  // 月ごとの稼働日の違いをそのままにすると、稼働日の少ない月の計画が大きく出る。
+  // 実績の月を稼働日で割って日量に直し、計画の月の稼働日を掛け直す。
+  // 稼働日の分からない月は倍率1（換算しない）。
+  const workdays = workdayPlan(actualMeta?.ym ?? '',
+    [0, 1, 2, 3].map((n) => aggMeta?.[`m${n}`] ?? ''));
+  // SQLiteでは整数どうしの割り算が整数になるため、小数で書く
+  const dayRate = (n) => {
+    const days = workdays.months[n]?.days;
+    return workdays.baseDays > 0 && days > 0 ? ` * ${days}.0 / ${workdays.baseDays}.0` : '';
+  };
+  const aCol = (n) => `((${planBase} + ${aGain(n)})${dayRate(n)})`;
 
   // 想定B基準。法人ごと（さらに器具区分ごと）に決めた「A基準の何%で妥結するか」を当てる。
   // 決定単価（B基準）が入っている案件はそちらが正。設定が無ければ100%＝A基準どおり。
@@ -2009,7 +2022,7 @@ async function dashboardData(query, user) {
     SUM(${aCol(1)}) AS a1_amt,
     SUM(${aCol(2)}) AS a2_amt,
     SUM(${aCol(3)}) AS a3_amt,
-    SUM(${planBase} + ${bsimGain}) AS bsim_amt,
+    SUM((${planBase} + ${bsimGain})${dayRate(3)}) AS bsim_amt,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows${abAct}`;
   // 土台は価格調査の全品目。A基準の有無でも、当月の売上の有無でも絞らない
   // （当月に売上の無い品目は金額0として数える）。
@@ -2024,11 +2037,11 @@ async function dashboardData(query, user) {
 
   const monthAgg = [0, 1, 2, 3].map((n) => `
     SUM(CASE WHEN ${planned(n)} THEN 1 ELSE 0 END) AS cnt_m${n},
-    SUM(${aGain(n)}) AS raise_m${n}`)
+    SUM(${aGain(n)}${dayRate(n)}) AS raise_m${n}`)
     .join(',')
     // 想定B基準（法人ごとの妥結見通し）にした場合の値上げ額。A基準との比較に使う
     + `,
-    SUM(CASE WHEN ${planned(3)} THEN ${bsimGain} ELSE 0 END) AS raise_bsim,
+    SUM(CASE WHEN ${planned(3)} THEN ${bsimGain}${dayRate(3)} ELSE 0 END) AS raise_bsim,
     SUM(CASE WHEN b_price IS NOT NULL THEN 1 ELSE 0 END) AS b_rows`;
 
   // 出荷実績のタイルは「純粋に集計した品目件数」。マスタ登録側の絞り込み
@@ -2111,6 +2124,8 @@ async function dashboardData(query, user) {
     months,
     aggMeta,
     actuals,
+    // 計画の日量換算に使った稼働日（画面とExcelが同じ数字で計算できるように返す）
+    workdays,
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
     abActYms: actualMeta?.ym ? [actualMeta.ym] : [],
   };
@@ -3460,9 +3475,11 @@ api.post('/agg-import/start', wrap(async (req, res) => {
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
-        // この取込では商談結果・最終確定日・最終確定単価を今の値のままにするか
-        // （画面で入れた交渉の記録を、ファイルの値で上書きしたくないときに使う）
-        keepNego: req.body?.keepNego === true,
+        // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
+        // 上書きするか。毎日の取込はマスタ登録単価を入れ直すためのもので、
+        // 交渉の記録は営業担当者がアプリで入れるため、既定では上書きしない。
+        // ファイル側の交渉列を正として入れ直したいときだけ true にする
+        overwriteNego: req.body?.overwriteNego === true,
         // マスタ単価の実績（月別）の月。「マスター単価（4月実績）」…の列があるファイルで入る
         histMonths: Array.isArray(meta.histMonths)
           ? meta.histMonths.map(String).filter((ym) => /^\d{4}-\d{2}$/.test(ym)).slice(0, 24)
@@ -3703,12 +3720,13 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
     ? 'CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END'
     : `COALESCE(CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
                  deals.r2_target_price)`;
-  // 商談結果・最終確定日・最終確定単価。
-  // 通常はファイルに値があればそれを入れる（無ければ今の値を残す）が、
-  // 「今の値を残す」を選んだ取込では、いま入っている案件には触れない。
+  // 商談結果・最終確定日・最終確定単価（値上げ交渉の記録）。
+  // これは営業担当者がアプリで入れる項目なので、毎日の取込では触らない
+  // （既にある案件は画面の値がそのまま残る）。
+  // ファイル側の交渉列を正として入れ直す取込のときだけ、値のある列を上書きする。
   // 商談メモはもともとファイルに無いため、どちらの場合も変わらない。
-  const keepNego = startedMeta?.keepNego === true;
-  const negoSql = keepNego ? '' : `
+  const overwriteNego = startedMeta?.overwriteNego === true;
+  const negoSql = !overwriteNego ? '' : `
       nego_result = COALESCE(s.nego_result, deals.nego_result),
       final_date = COALESCE(s.final_date, deals.final_date),
       final_price = COALESCE(s.final_price, deals.final_price),`;
@@ -3739,11 +3757,14 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       delivery_name = COALESCE(s.delivery_name, deals.delivery_name),
       -- 目標単価（第2弾新値上げ単価）。列のあるファイルならファイルの内容を正とする
       r2_target_price = ${targetSql},
-      -- 商談結果・最終確定日・最終確定単価（「今の値を残す」を選んだときは触れない）
+      -- 商談結果・最終確定日・最終確定単価（ファイルで入れ直す取込のときだけ）
       ${negoSql}
+      -- ベース（価格調査）に載っている印。売上高（月次）の取込で
+      -- 「今月の売上高に無い行」を落とすときに、この印のある行は残す
+      agg_batch = ?,
       updated_at = ?
     FROM agg_staging s
-    WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp]);
+    WHERE deals.hist_ent_cd = s.ent_cd AND deals.model_code = s.model_code`, [stamp, stamp]);
 
   // 実績（価格調査）に無い品目も、案件として追加する。
   // 当月の実績（単価・数量・金額）は空のまま。翌月以降の価格調査で
@@ -3757,7 +3778,7 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       a_date_m0, a_date_m1, a_date_m2, a_date_m3,
       a_ringi_m0, a_ringi_m1, a_ringi_m2, a_ringi_m3,
       r2_target_price, nego_result, final_date, final_price,
-      branch, office, sales_person, updated_at)
+      branch, office, sales_person, agg_batch, updated_at)
     SELECT s.ent_cd || '|' || s.model_code, s.ent_cd,
       COALESCE(NULLIF(s.corp_group, ''), s.ent_cd),
       COALESCE(NULLIF(s.corp_group, ''), s.customer_name),
@@ -3773,11 +3794,11 @@ api.post('/agg-import/finish', wrap(async (req, res) => {
       s.r0_no, s.r1_no, s.r2_no, s.r3_no,
       CASE WHEN s.tgt_wgt > 0 THEN s.tgt_amt / s.tgt_wgt END,
       s.nego_result, s.final_date, s.final_price,
-      s.branch, s.office, s.sales_person, ?
+      s.branch, s.office, s.sales_person, ?, ?
     FROM agg_staging s
     WHERE NOT EXISTS (
       SELECT 1 FROM deals d
-       WHERE d.hist_ent_cd = s.ent_cd AND d.model_code = s.model_code)`, [stamp]);
+       WHERE d.hist_ent_cd = s.ent_cd AND d.model_code = s.model_code)`, [stamp, stamp]);
   const added = Number(ins?.changes ?? 0);
 
   // マスタ単価の実績（月別履歴）。当月（本日時点）の単価をその月の枠へ記録する。
@@ -4041,8 +4062,12 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
       [stamp, batch]);
 
     // 前の月の売上高にだけあった行（ベースに無く、今回の売上高にも無い）は落とす。
-    // ベース由来の行は出荷単価・数量・マスタ登録単価・目標単価のどれかを持つので残る
+    // ベース（価格調査（毎日更新））で入った行は agg_batch の印を持つので、
+    // 単価がまだ1つも入っていなくても残す。
+    // 「売上高（7月）に無い品目も一覧に載せる」ためで、次の価格調査の取込で
+    // 単価が入ることもある。印の無い古い行は、これまでどおり単価の有無で判断する
     const orphan = `hist_batch IS DISTINCT FROM ?
+      AND agg_batch IS NULL
       AND qty IS NULL AND base_price IS NULL
       AND a_price_m0 IS NULL AND a_price_m1 IS NULL
       AND a_price_m2 IS NULL AND a_price_m3 IS NULL
