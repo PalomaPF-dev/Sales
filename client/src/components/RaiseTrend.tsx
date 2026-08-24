@@ -70,8 +70,7 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
               <th style={nums}>件数</th>
               {yms.map((ym) => (
                 <th key={ym} style={nums}>
-                  {ymLabel(ym)} 計画<br />
-                <small>値上げ額 / {prev ? `${dayLabel(prev.takenOn)}比` : '前回比'}</small>
+                  {ymLabel(ym)} 計画<br /><small>値上げ額 / 前回比</small>
                 </th>
               ))}
             </tr>
@@ -84,6 +83,10 @@ export default function RaiseTrendCard({ days, title = '値上げ額の推移（
                 <tr key={d.takenOn}>
                   <td title={`${d.takenOn}${d.filename ? ` / ${d.filename}` : ''}`}>
                     <strong>{dayLabel(d.takenOn)}</strong>
+                    {/* その行がどの取込日と比べているか。いちばん古い行は比べる相手が無い */}
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                      {before ? `${dayLabel(before.takenOn)}比` : '比較なし'}
+                    </div>
                   </td>
                   <td>
                     <span className={`badge ${d.source === 'survey' ? 'gray'

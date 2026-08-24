@@ -592,7 +592,7 @@ function SummaryCard({
   trend: (i: number, up: number) => number | null;
   /** 前日比の説明（見出しの吹き出しに出す。出せないときは理由） */
   trendNote: string;
-  /** 見出しに添える「8/21比」。比べられないときは空 */
+  /** 見出しに添える比較先の日付（「8/21」）。比べられないときは空 */
   trendLabel: string;
   children?: React.ReactNode;
 }) {
@@ -659,8 +659,8 @@ function SummaryCard({
         {splitYm && <>　<strong>うち承認日</strong>の2列は、計画の値上げ額を
           マスタ承認日で分けたものです（{splitYm}以降が今回の取り組みで承認された分）。
           承認日の入っていないものはどちらにも入れていません。</>}
-        {hasTrend && <>　<strong>前日比</strong>は、この表の値上げ額と
-          <strong>前回の取込（{trendLabel.replace('比', '')}）</strong>のときの値上げ額との差です。
+        {hasTrend && <>　<strong>{trendLabel} 前日比</strong>は、この表の値上げ額と
+          <strong>前回の取込（{trendLabel}）</strong>のときの値上げ額との差です。
           取込日が飛んでいても、いちばん近い前の取込と比べます。</>}
       </NoteFold>
       {children}
@@ -681,7 +681,8 @@ function SummaryCard({
               <th style={nums}>金額<br /><small>月あたり</small></th>
               <th style={nums}>値上げ額<br /><small>月あたり</small></th>
               <th style={nums} title={trendNote}>
-                前日比<br /><small>{trendLabel || '前回の取込から'}</small>
+                {trendLabel ? `${trendLabel} 前日比` : '前日比'}
+                <br /><small>前回の取込から</small>
               </th>
               {splitYm && (
                 <>
@@ -988,8 +989,8 @@ export default function Dashboard() {
     : !trendSame
       ? '絞り込み中は出せません（記録は全社・絞り込みなしの合計のため、「解除」で出ます）'
       : `${dayLabel(trendPrev.takenOn)}（前回の取込）の値上げ額と比べています`;
-  /** 見出しに添える「◯/◯比」。比べられないときは空 */
-  const trendLabel = trendPrev && trendSame ? `${dayLabel(trendPrev.takenOn)}比` : '';
+  /** 見出しに添える比較先の日付（「8/21」）。比べられないときは空 */
+  const trendLabel = trendPrev && trendSame ? dayLabel(trendPrev.takenOn) : '';
   /**
    * 計画の月ぶんの前日比。いま出ている値上げ額（up）から、前回の記録を引く。
    * byDays=false の表では記録のほうを稼働日の倍率で割り戻し、同じ土俵に揃える。
