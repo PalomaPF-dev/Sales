@@ -532,7 +532,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-28-announcements';
+const SCHEMA_VERSION = '2026-08-29-raise-history-bases';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -853,6 +853,13 @@ async function beforeSchema() {
     // 価格調査（毎日更新）で入った行の印。ベースに載っている品目は、
     // 売上高（月次）に無くても一覧から消さないための目印
     'ALTER TABLE deals ADD COLUMN agg_batch TEXT',
+    // 値上げ額の履歴を、値上げ幅の「基準」ごとに残す。
+    // 画面で基準を変えても、同じ基準の記録と前日比を出せるようにするため
+    // （無印の raise_after / raise_before はマスタ単価が基準）
+    'ALTER TABLE raise_history ADD COLUMN raise_after_past DOUBLE PRECISION',
+    'ALTER TABLE raise_history ADD COLUMN raise_before_past DOUBLE PRECISION',
+    'ALTER TABLE raise_history ADD COLUMN raise_after_actual DOUBLE PRECISION',
+    'ALTER TABLE raise_history ADD COLUMN raise_before_actual DOUBLE PRECISION',
   ]) {
     await tryAlter(sql);
   }

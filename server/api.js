@@ -2019,6 +2019,9 @@ function avgPriceAgg(query, aggMeta) {
  */
 const RAISE_START_YM = '2026-05';
 
+/** 値上げ幅の「基準」の一覧。履歴はこの3つぶんを残す（画面で選べるため） */
+const RAISE_BASES = ['master', 'past', 'actual'];
+
 /** 表示用の日付（YYYY-MM-DD）。サーバーはUTCで動くため日本時間に直す */
 const localDate = (value = Date.now()) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: DISPLAY_TZ }).format(new Date(value));
@@ -2053,10 +2056,14 @@ async function recordRaiseHistory(source, filename, takenOnRaw) {
     // 承認日の前後。承認日の無いA基準は、どちらにも入れない（画面と同じ決まり）
     const first = `${RAISE_START_YM}-01`;
     const sides = { after: `a_date_m3 >= '${first}'`, before: `a_date_m3 < '${first}'` };
-    // 基準はマスタ単価（画面の既定）。空の絞り込みを渡すとその選び方になる
-    const gain = (n, cond) => raiseAmtSql(aPrice(n), {}, cond);
+    // 値上げ幅の「基準」は画面で選べるので、3つとも残す。
+    // 同じ基準どうしでないと前日比が出せないため（マスタ単価の記録と
+    // 過去最新単価の画面を引き算しても意味が無い）。
+    // 件数は基準によらないので、マスタ単価のぶんだけ数える。
+    const gain = (n, cond, base) => raiseAmtSql(aPrice(n), { base }, cond);
     const cols = [0, 1, 2, 3].flatMap((n) => Object.entries(sides).flatMap(([key, cond]) => [
-      `SUM(${gain(n, cond)}${dayRate(n)}) AS ${key}_${n}`,
+      ...RAISE_BASES.map((base) =>
+        `SUM(${gain(n, cond, base)}${dayRate(n)}) AS ${key}_${base}_${n}`),
       `SUM(CASE WHEN ${aPrice(n)} > 0 AND ${cond} THEN 1 ELSE 0 END) AS ${key}_cnt_${n}`,
     ]));
     const row = await db.get(`
@@ -2072,28 +2079,37 @@ async function recordRaiseHistory(source, filename, takenOnRaw) {
     const n = (v) => Number(v ?? 0);
     for (const [i, planYm] of planYms.entries()) {
       if (!/^\d{4}-\d{2}$/.test(planYm)) continue;
-      // 計画額（日量換算後）＝ 現状額 × 稼働日の倍率 ＋ 値上げ額（前後の合計）
+      // 計画額（日量換算後）＝ 現状額 × 稼働日の倍率 ＋ 値上げ額（前後の合計）。
+      // 計画額は画面の既定（マスタ単価）で出す
       const rate = workdays.months[i]?.rate > 0 ? workdays.months[i].rate : 1;
-      const after = n(row?.[`after_${i}`]);
-      const before = n(row?.[`before_${i}`]);
+      const at = (key, base) => n(row?.[`${key}_${base}_${i}`]);
       await db.run(`
         INSERT INTO raise_history (taken_on, plan_ym, source, filename, act_ym,
           work_days, base_days, deals, qty, base_amt, plan_amt,
-          raise_after, raise_before, cnt_after, cnt_before, a_date_ym, taken_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          raise_after, raise_before,
+          raise_after_past, raise_before_past, raise_after_actual, raise_before_actual,
+          cnt_after, cnt_before, a_date_ym, taken_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT (taken_on, plan_ym) DO UPDATE SET
           source = excluded.source, filename = excluded.filename, act_ym = excluded.act_ym,
           work_days = excluded.work_days, base_days = excluded.base_days,
           deals = excluded.deals, qty = excluded.qty, base_amt = excluded.base_amt,
           plan_amt = excluded.plan_amt,
           raise_after = excluded.raise_after, raise_before = excluded.raise_before,
+          raise_after_past = excluded.raise_after_past,
+          raise_before_past = excluded.raise_before_past,
+          raise_after_actual = excluded.raise_after_actual,
+          raise_before_actual = excluded.raise_before_actual,
           cnt_after = excluded.cnt_after, cnt_before = excluded.cnt_before,
           a_date_ym = excluded.a_date_ym, taken_at = excluded.taken_at`,
         [takenOn, planYm, source, filename || null, actualMeta?.ym ?? null,
           workdays.months[i]?.days ?? null, workdays.baseDays ?? null,
           n(row?.deals), n(row?.qty), n(row?.base_amt),
-          n(row?.base_amt) * rate + after + before,
-          after, before, n(row?.[`after_cnt_${i}`]), n(row?.[`before_cnt_${i}`]),
+          n(row?.base_amt) * rate + at('after', 'master') + at('before', 'master'),
+          at('after', 'master'), at('before', 'master'),
+          at('after', 'past'), at('before', 'past'),
+          at('after', 'actual'), at('before', 'actual'),
+          n(row?.[`after_cnt_${i}`]), n(row?.[`before_cnt_${i}`]),
           RAISE_START_YM, takenAt]);
     }
   } catch (e) {
@@ -2125,11 +2141,20 @@ async function raiseHistoryRows(limit = 30) {
         aDateYm: r.a_date_ym, months: [],
       });
     }
+    // 値上げ幅の基準ごとの値。この仕組みより前の記録はマスタ単価ぶんしか無いので、
+    // 無い基準は null にして「比べられない」と分かるようにする
+    const num0 = (v) => (v == null ? null : Number(v));
     byDay.get(day).months.push({
       ym: String(r.plan_ym), days: r.work_days ?? null, baseDays: r.base_days ?? null,
       planAmt: Number(r.plan_amt ?? 0),
       after: Number(r.raise_after ?? 0), before: Number(r.raise_before ?? 0),
       cntAfter: Number(r.cnt_after ?? 0), cntBefore: Number(r.cnt_before ?? 0),
+      // 基準ごと（master＝無印。past／actual は後から足したので古い記録では null）
+      byBase: {
+        master: { after: num0(r.raise_after), before: num0(r.raise_before) },
+        past: { after: num0(r.raise_after_past), before: num0(r.raise_before_past) },
+        actual: { after: num0(r.raise_after_actual), before: num0(r.raise_before_actual) },
+      },
     });
   }
   return [...byDay.values()];

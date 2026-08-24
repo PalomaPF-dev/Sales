@@ -434,9 +434,15 @@ CREATE TABLE IF NOT EXISTS raise_history (
   qty          DOUBLE PRECISION,           -- 実績数の合計
   base_amt     DOUBLE PRECISION,           -- 現状額（実績の月の金額）
   plan_amt     DOUBLE PRECISION,           -- 計画額（日量換算後）
-  -- 値上げ額（月あたり・日量換算後）を承認日の前後で分けて残す
-  raise_after  DOUBLE PRECISION,           -- 承認日が境目の年月以降ぶん
-  raise_before DOUBLE PRECISION,           -- 承認日が境目の年月より前ぶん
+  -- 値上げ額（月あたり・日量換算後）を承認日の前後で分けて残す。
+  -- 値上げ幅の「基準」は画面で選べるため、3つの基準ぶんをそれぞれ残す
+  -- （無印＝マスタ単価。画面の基準に合った値と比べられるようにするため）
+  raise_after  DOUBLE PRECISION,           -- 承認日が境目の年月以降ぶん（マスタ単価が基準）
+  raise_before DOUBLE PRECISION,           -- 承認日が境目の年月より前ぶん（同上）
+  raise_after_past    DOUBLE PRECISION,    -- 過去最新単価が基準
+  raise_before_past   DOUBLE PRECISION,
+  raise_after_actual  DOUBLE PRECISION,    -- 実単価（金額÷数量）が基準
+  raise_before_actual DOUBLE PRECISION,
   cnt_after    INTEGER,         -- 同 件数
   cnt_before   INTEGER,
   a_date_ym    TEXT,            -- 前後を分けた境目の年月（YYYY-MM）

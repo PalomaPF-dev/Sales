@@ -968,6 +968,13 @@ export default function Dashboard() {
   /** 稼働日での換算が効いているか（実績の月と計画の月の日数が分かっているか） */
   const hasWorkdays = Boolean(wd?.baseDays) && plan.some((x) => x.days);
 
+  const actYm = data.actuals?.[0]?.ym ?? '';
+  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  // 値上げ幅の基準（比較のもと）。案件一覧と同じ選び方
+  const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
+  const baseName = base === 'past' ? '過去最新単価'
+    : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
+
   /*
     前日比（前回の取込との差）。取込のたびに残している記録と、いま画面に出ている
     値上げ額を比べる。比べる相手は「今日より前でいちばん新しい記録」で、
@@ -980,15 +987,22 @@ export default function Dashboard() {
   /** 今日（日本時間）。今日ぶんの記録は「前回」に選ばない */
   const todayYmd = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
   const trendPrev = trendDays.find((d) => d.takenOn < todayYmd);
+  /** 記録は基準ごとに残している。画面で選んでいる基準の記録があるか */
+  const trendHasBase = trendPrev?.months.some((m) => m.byBase?.[base]?.after != null) ?? false;
   const trendSame = data.scope?.level === 'all'
-    && !FILTER_KEYS.some((k) => k !== 'aDateYm' && k !== 'aDateOp' && get(k))
+    && !FILTER_KEYS.some((k) => k !== 'aDateYm' && k !== 'aDateOp' && k !== 'base' && get(k))
     && (get('aDateYm') || '') === (trendPrev?.aDateYm ?? '')
-    && (get('aDateOp') || 'from') === 'from';
+    && (get('aDateOp') || 'from') === 'from'
+    && trendHasBase;
+  const baseLabel = BASE_OPTIONS.find((o) => o.key === base)?.label ?? '';
   const trendNote = !trendPrev
     ? '前回の取込の記録がまだありません（次の取込から出ます）'
-    : !trendSame
-      ? '絞り込み中は出せません（記録は全社・絞り込みなしの合計のため、「解除」で出ます）'
-      : `${dayLabel(trendPrev.takenOn)}（前回の取込）の値上げ額と比べています`;
+    : trendSame
+      ? `${dayLabel(trendPrev.takenOn)}（前回の取込）の値上げ額と比べています（基準は${baseLabel}）`
+      : !trendHasBase
+        ? `${dayLabel(trendPrev.takenOn)}の記録に「${baseLabel}」を基準にした値がありません`
+          + '（この基準を残すようになる前の記録です。次の取込から出ます）'
+        : '絞り込み中は出せません（記録は全社・絞り込みなしの合計のため、「解除」で出ます）';
   /** 見出しに添える比較先の日付（「8/21」）。比べられないときは空 */
   const trendLabel = trendPrev && trendSame ? dayLabel(trendPrev.takenOn) : '';
   /**
@@ -998,16 +1012,12 @@ export default function Dashboard() {
   const trendOf = (i: number, up: number, byDays: boolean): number | null => {
     if (!trendSame || !trendPrev) return null;
     const prev = trendPrev.months.find((x) => x.ym === plan[i]?.ym);
-    if (!prev) return null;
+    // 画面で選んでいる基準と同じ基準の記録どうしで比べる
+    const was = prev?.byBase?.[base]?.after;
+    if (was == null) return null;
     const rate = plan[i]?.rate > 0 ? plan[i].rate : 1;
-    return up - prev.after * (byDays ? 1 : 1 / rate);
+    return up - was * (byDays ? 1 : 1 / rate);
   };
-  const actYm = data.actuals?.[0]?.ym ?? '';
-  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
-  // 値上げ幅の基準（比較のもと）。案件一覧と同じ選び方
-  const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
-  const baseName = base === 'past' ? '過去最新単価'
-    : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
   // 過去最新単価は「いつまでの受注か」を添える（取込のたびに動くのでデータから取る）
   const pastMax = meta?.pastMax ?? '';
   const pastUntil = base === 'past' && /^\d{4}-\d{2}/.test(pastMax)
