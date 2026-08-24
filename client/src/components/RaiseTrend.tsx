@@ -17,6 +17,11 @@ export interface RaiseDay {
   months: {
     ym: string; days: number | null; baseDays: number | null; planAmt: number;
     after: number; before: number; cntAfter: number; cntBefore: number;
+    /**
+     * 値上げ幅の「基準」ごとの値。画面で選んだ基準と同じものと比べるために持つ。
+     * この仕組みより前の記録は master（マスタ単価）しか無く、他は null。
+     */
+    byBase?: Record<string, { after: number | null; before: number | null }>;
   }[];
 }
 
