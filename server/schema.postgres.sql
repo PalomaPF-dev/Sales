@@ -422,6 +422,8 @@ CREATE TABLE IF NOT EXISTS master_price_history (
 -- 値上げ額の合計（全社・絞り込みなし）を残す。あとから
 -- 「前回の取込からいくら動いたか」をたどれるようにするためのもの。
 -- 同じ日に何度取り込んだときは、最後の取込の値で上書きする。
+-- 計画の月はデータの日付が月をまたぐたびに1つ先へずれるため、
+-- ダッシュボードの「過ぎた月」の行もこの記録から出している。
 CREATE TABLE IF NOT EXISTS raise_history (
   taken_on     TEXT NOT NULL,   -- 取込日（YYYY-MM-DD）
   plan_ym      TEXT NOT NULL,   -- 計画の月（YYYY-MM）

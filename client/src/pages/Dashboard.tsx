@@ -117,6 +117,40 @@ interface DashboardRes {
   };
   /** 値上げ額の推移（取込ごと・全社の合計）。新しい取込が先頭 */
   raiseHistory?: RaiseDay[];
+  /** 過ぎた月（計画の月から外れた月）。古い月から順。出せないときは空 */
+  pastMonths?: PastMonth[];
+  /** 過ぎた月を出せないときの理由（絞り込み中など）。出せるときは空 */
+  pastNote?: string;
+}
+
+/**
+ * 過ぎた月（計画の月から外れた月）1つぶん。
+ *
+ * 計画の月は取込のたびに1つ先へずれるため、月が変わると前の月が表から消える
+ * （9/1の取込で8月の計画が抜けた）。取込のたびに残している記録から、
+ * その月が計画だったころの合計をそのまま持ってきて、表に残せるようにする。
+ * 金額は記録した時点の全社の合計（日量換算後）。
+ */
+interface PastMonth {
+  ym: string;
+  /** いつの取込の記録か（その月が計画に入っていた最後の取込） */
+  takenOn: string;
+  days: number | null;
+  baseDays: number | null;
+  /** 実績の月に対する倍率（日量換算）。分からない月は1 */
+  rate: number;
+  actYm: string | null;
+  deals: number;
+  /** 現状額（実績の月の金額そのもの。換算前） */
+  baseAmt: number;
+  /** 画面の承認日に合った値上げ額（日量換算後） */
+  raise: number;
+  /** 承認日の前後の内訳（同じく日量換算後） */
+  after: number;
+  before: number;
+  cntAfter: number;
+  cntBefore: number;
+  aDateYm: string | null;
 }
 
 /**
@@ -568,7 +602,7 @@ type ActualRow = NonNullable<DashboardRes['actuals']>[number];
  * （換算は掛け算だけなので、割り戻すと換算前の数字にきちんと戻る）。
  */
 function SummaryCard({
-  title, noteId, byDays, plan, t, act, gain, months, actYm, actLabel, baseName,
+  title, noteId, byDays, plan, past, pastNote, t, act, gain, months, actYm, actLabel, baseName,
   split, trend, trendCount, trendNote, trendLabel, children,
 }: {
   title: string;
@@ -576,6 +610,10 @@ function SummaryCard({
   noteId: string;
   byDays: boolean;
   plan: PlanMonth[];
+  /** 過ぎた月（計画から外れた月）。記録から拾ったもので、計画の手前に並べる */
+  past: PastMonth[];
+  /** 過ぎた月を出せないときの理由（説明に添える） */
+  pastNote: string;
   t?: AbRow;
   act?: ActualRow;
   /** 売上改善額（プラスとマイナスの合計）。実績が無ければ null */
@@ -601,8 +639,14 @@ function SummaryCard({
   // 換算なしの側は倍率で割り戻す。倍率の分からない月は1（そのまま）
   const rateOf = (i: number) => (plan[i]?.rate > 0 ? plan[i].rate : 1);
   const adj = (i: number) => (byDays ? 1 : 1 / rateOf(i));
+  // 承認日の内訳。計画の月は集計の値をここで換算し、過ぎた月は行を作るときに
+  // 換算済みなので、そのまま（倍率1）にする
+  const spAdj = (i: number) => (i >= 0 ? adj(i) : 1);
   const splitYm = split?.ym ?? '';
   const hasTrend = Boolean(trendLabel);
+  /** 承認日の前後の内訳。計画の月は集計から、過ぎた月は記録から入れる */
+  type SplitCell = { after: number; before: number; cntAfter: number; cntBefore: number };
+  const noSplit = null as SplitCell | null;
 
   const rows = [
     // 値上げ前当初。当月の金額（合計）から売上改善額を引いたもの。値上げのスタート地点
@@ -611,6 +655,7 @@ function SummaryCard({
       deals: num(t?.deals), base: null as number | null,
       amt: num(t?.base_amt) - gain, plan: -1,
       up: null as number | null, same: null as number | null,
+      sp: noSplit, takenOn: '',
     }] : []),
     // 実績。取り込んだ当月の金額そのもの（全品目）。値上げ前当初との差が売上改善額
     {
@@ -619,13 +664,36 @@ function SummaryCard({
       base: (gain == null ? null : num(t?.base_amt) - gain) as number | null,
       amt: num(t?.base_amt), plan: -1,
       up: gain == null ? null : num(act?.up), same: gain == null ? null : num(act?.same),
+      sp: noSplit, takenOn: '',
     },
     // マスタ分。値決めどおりに出た分（土台との差が見積ぶんなど）
     ...(num(t?.mp_amt) > 0 ? [{
       key: 'mp', ym: `${actYm || '当月'}（マスタ）`, kind: '参考' as const,
       deals: num(t?.deals), base: num(t?.base_amt) as number | null, amt: num(t?.mp_amt),
       plan: -1, up: null as number | null, same: num(t?.mp_same) as number | null,
+      sp: noSplit, takenOn: '',
     }] : []),
+    // 過ぎた月（計画の月から外れた月）。取込のたびに残している記録から出す。
+    // 計画の月は毎月1つ先へずれるので、これが無いと前の月が表から消えてしまう。
+    // 記録は日量換算後の額なので、換算なしの表では倍率で割り戻して土俵をそろえる
+    ...past.map((m) => {
+      const rate = m.rate > 0 ? m.rate : 1;
+      const k = byDays ? 1 : 1 / rate;
+      return {
+        key: `past-${m.ym}`,
+        ym: `${m.ym}${byDays && m.days ? `（${m.days}稼働日）` : ''}`,
+        kind: '記録' as const,
+        deals: m.deals,
+        // 比較のもとは計画の月と同じ考え方（換算した側は同じ倍率を掛ける）
+        base: m.baseAmt * (byDays ? rate : 1) as number | null,
+        amt: m.baseAmt * rate * k + m.raise * k,
+        plan: -1,
+        up: null as number | null, same: null as number | null,
+        sp: { after: m.after * k, before: m.before * k,
+          cntAfter: m.cntAfter, cntBefore: m.cntBefore } as SplitCell | null,
+        takenOn: m.takenOn,
+      };
+    }),
     // 計画（マスタ登録単価）。月ごとに1行
     ...([[0, num(t?.a0_amt)], [1, num(t?.a1_amt)],
       [2, num(t?.a2_amt)], [3, num(t?.a3_amt)]] as [number, number][])
@@ -638,6 +706,7 @@ function SummaryCard({
         // 比較のもとは実績（当月の金額）。換算した側は同じ倍率を掛けて土俵を揃える
         base: num(t?.base_amt) * (byDays ? rateOf(i) : 1) as number | null,
         amt: amt * adj(i), plan: i, up: null, same: null,
+        sp: noSplit, takenOn: '',
       })),
   ];
 
@@ -658,6 +727,13 @@ function SummaryCard({
               （案件一覧の「値上げ額（月）合計」と同じ数字です）。</>}
         <strong>参考</strong>の行は、そのうち値決めどおりに出た分（金額（マスタ））で、
         実績との差が見積ぶんなどにあたります。
+        {past.length > 0 && <>　<strong>記録</strong>の行は
+          <strong>過ぎた月</strong>（計画の月から外れた月）です。計画の月は取込のたびに
+          1つ先へずれるため（データの日付が月をまたぐと前の月が外れます）、その月が計画に入っていた
+          <strong>最後の取込の記録</strong>をそのまま残しています。
+          あとから取り込み直しても動かない、その時点の数字です
+          （全社・絞り込みなしの合計）。</>}
+        {pastNote && <>　{pastNote}。</>}
         {splitYm && <>　<strong>うち承認日</strong>の2列は、計画の値上げ額を
           マスタ承認日で分けたものです（{splitYm}以降が今回の取り組みで承認された分）。
           承認日の入っていないものはどちらにも入れていません。</>}
@@ -709,8 +785,9 @@ function SummaryCard({
               const up = row.base == null ? null : row.amt - row.base;
               const pct = row.base != null && row.base > 0
                 ? Math.round((up! / row.base) * 1000) / 10 : null;
-              // 承認日の前後の内訳と前日比は、計画の行にだけ出す
-              const sp = row.plan >= 0 ? split?.months?.[row.plan] : undefined;
+              // 承認日の前後の内訳は、計画の行と過ぎた月の行に出す
+              // （過ぎた月は記録に残している内訳を、換算に合わせてそのまま使う）
+              const sp = row.plan >= 0 ? split?.months?.[row.plan] : row.sp ?? undefined;
               const rawDiff = row.plan >= 0 ? trend(row.plan) : null;
               // 1円に満たない差は計算上の端数なので「変わっていない」として扱う
               const diff = rawDiff != null && Math.abs(rawDiff) < 0.5 ? 0 : rawDiff;
@@ -723,10 +800,18 @@ function SummaryCard({
                 : v < 0 ? '#c2410c' : '#15803d');
               return (
                 <tr key={row.key}>
-                  <td><strong>{row.ym}</strong></td>
+                  <td title={row.takenOn ? `${row.takenOn} の取込時点の記録` : undefined}>
+                    <strong>{row.ym}</strong>
+                    {/* 過ぎた月は「いつの記録か」を添える（いまの数字ではないため） */}
+                    {row.takenOn && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                        {dayLabel(row.takenOn)}の取込
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <span className={`badge ${row.kind === '当初' || row.kind === '参考' ? 'gray'
-                      : row.kind === '実績' ? 'green' : 'blue'}`}>
+                      : row.kind === '実績' ? 'green' : row.kind === '記録' ? 'violet' : 'blue'}`}>
                       {row.kind}
                     </span>
                   </td>
@@ -769,11 +854,11 @@ function SummaryCard({
                     <>
                       <td style={{ ...nums, fontWeight: 700, color: color(sp ? sp.after : null) }}
                           title={sp ? `${sp.cntAfter.toLocaleString()}件` : undefined}>
-                        {sp ? money(sp.after * adj(row.plan)) : '—'}
+                        {sp ? money(sp.after * spAdj(row.plan)) : '—'}
                       </td>
                       <td style={{ ...nums, color: 'var(--muted)' }}
                           title={sp ? `${sp.cntBefore.toLocaleString()}件` : undefined}>
-                        {sp ? money(sp.before * adj(row.plan)) : '—'}
+                        {sp ? money(sp.before * spAdj(row.plan)) : '—'}
                       </td>
                     </>
                   )}
@@ -928,6 +1013,13 @@ export default function Dashboard() {
   const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
   const baseName = base === 'past' ? '過去最新単価'
     : base === 'actual' ? `${actLabel}の実単価` : `${actLabel}のマスタ単価`;
+
+  /**
+   * 過ぎた月（計画の月から外れた月）。計画の月は取込のたびに1つ先へずれるため、
+   * データの日付が月をまたぐと、前の月は計画から外れて表から消えてしまう。
+   * その月が計画だったころの記録をサーバーから受け取り、計画の手前に並べる。
+   */
+  const pastMonths = data.pastMonths ?? [];
 
   /*
     前日比（前回の取込との差）。
@@ -1248,7 +1340,8 @@ export default function Dashboard() {
       */}
       <SummaryCard
         title={`まとめ（実績と計画）　稼働日で日量換算${get('aDateYm') ? `　承認日 ${get('aDateYm')} ${get('aDateOp') === 'before' ? 'より前' : '以降'}` : ''}`}
-        noteId="summary" byDays plan={plan} t={t} act={act} gain={gain} months={months}
+        noteId="summary" byDays plan={plan} past={pastMonths} pastNote={data.pastNote ?? ''}
+        t={t} act={act} gain={gain} months={months}
         actYm={actYm} actLabel={actLabel} baseName={baseName}
         split={data.raiseSplit} trend={(i) => trendOf(i, true)}
         trendCount={trendCountOf} trendNote={trendNote} trendLabel={trendLabel}
@@ -1295,7 +1388,8 @@ export default function Dashboard() {
       {hasWorkdays && (
         <SummaryCard
           title={`まとめ（${actLabel}の実績数ベース）　稼働日の換算なし`}
-          noteId="summary-raw" byDays={false} plan={plan} t={t} act={act} gain={gain}
+          noteId="summary-raw" byDays={false} plan={plan} past={pastMonths}
+          pastNote={data.pastNote ?? ''} t={t} act={act} gain={gain}
           months={months} actYm={actYm} actLabel={actLabel} baseName={baseName}
           split={data.raiseSplit} trend={(i) => trendOf(i, false)}
           trendCount={trendCountOf} trendNote={trendNote} trendLabel={trendLabel}

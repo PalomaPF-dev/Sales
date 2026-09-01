@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { dataDateOf, planMonthsFrom } from './planMonths';
 import { api } from './api';
 
 /**
@@ -71,7 +72,9 @@ export interface AggParsed {
   /** 実績として読んだ列の見出し。取込前に「どの列を実績にしたか」を確かめられる */
   histHeads: string[];
   meta: { m0: string; m1: string; m2: string; m3: string; basePeriod: string;
-    hasTarget: boolean; histMonths: string[] };
+    hasTarget: boolean; histMonths: string[]; fileMonths: string[] };
+  /** 月を決めたもとにしたデータの日付（取込日の前日）。取込前の確認に出す */
+  dataDate: string;
 }
 
 /**
@@ -335,11 +338,25 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     return `${y}-${String(mo).padStart(2, '0')}`;
   };
   const m1Ym = serialToYm(first[m1!.at]);
+  // ファイルの見出しから読んだ月。ファイルを作った日をもとに振られていることがあり、
+  // 月初に取り込むと1か月先を指してしまうため、そのままは使わない（下の dataDate 基準を使う）。
+  // 食い違ったときに気づけるよう、読んだ値は残して取込前の確認に出す
+  const fileMonths = [
+    m0 ? (prevYm(m1Ym) || serialToYm(first[m0.at])) : '',
+    m1Ym,
+    serialToYm(first[m2!.at]),
+    serialToYm(first[m3!.at]),
+  ];
+  // 計画の月はデータの日付（取込日の前日）から決める。
+  // 毎日の価格調査は前日の結果なので、9/1に取り込んでも当月は8月のまま
+  const dataDate = dataDateOf();
+  const [pm0, pm1, pm2, pm3] = planMonthsFrom(dataDate);
   const metaBase = {
-    m0: m0 ? (prevYm(m1Ym) || serialToYm(first[m0.at])) : '',
-    m1: m1Ym,
-    m2: serialToYm(first[m2!.at]),
-    m3: serialToYm(first[m3!.at]),
+    m0: pm0 ?? '',
+    m1: pm1 ?? '',
+    m2: pm2 ?? '',
+    m3: pm3 ?? '',
+    fileMonths,
     basePeriod: col.base_price >= 0
       ? (headers[col.base_price].replace(/出荷単価/, '').trim() || headers[col.base_price])
       : '',
@@ -440,6 +457,7 @@ export async function parseAggFile(file: File): Promise<AggParsed> {
     rows, skippedRows, skippedNoCust: noCust, skippedNoModel: noModel,
     histMonths,
     meta: { ...metaBase, histMonths },
+    dataDate,
     hasM0: Boolean(m0),
     hasDates: m3!.date >= 0,
     hasRingi: ringiOf(m3) >= 0,

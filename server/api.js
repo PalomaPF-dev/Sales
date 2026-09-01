@@ -1940,6 +1940,40 @@ function scopeInfo(user) {
 }
 
 /**
+ * 計画の月（当月・翌月・翌々月・3か月後）を、データの日付から決める。
+ *
+ * 毎日の価格調査は「前日の結果」で、ファイルの見出しの日付はファイルを作った日を
+ * もとに振られている。ふだんはどちらも同じ月なので違いは出ないが、月初（1日）に
+ * 取り込むと、中身は前の月の結果なのに見出しだけ新しい月になり、
+ * 前の月が計画の4か月から外れてしまう（9/1の取込で8月が抜けた）。
+ * そのため月はファイルの見出しではなく、データの日付から決める。
+ *
+ * 画面側の client/src/aggImportClient.ts の planMonthsFrom と合わせること。
+ */
+function planMonthsFrom(ymd) {
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(ymd ?? ''));
+  if (!m) return [];
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  return [0, 1, 2, 3].map((n) => {
+    const t = mo - 1 + n;
+    return `${y + Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}`;
+  });
+}
+
+/**
+ * データの日付。毎日の価格調査は前日の結果なので、取込日（未入力なら今日）の1日前。
+ * 画面側の dataDateOf と合わせること。
+ */
+function dataDateOf(takenOn) {
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(String(takenOn ?? ''))
+    ? String(takenOn) : localDate();
+  const d = new Date(`${base}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
  * 翌月（9月計画）を当月（8月計画）で置き換える境目の日。
  * 実績の月（当月の前月）の1日。当月が 2026-08 なら 2026-07-01。
  * この日より前の登録は、今回の値上げより前の古い申請とみなす。
@@ -2158,6 +2192,112 @@ async function raiseHistoryRows(limit = 30) {
     });
   }
   return [...byDay.values()];
+}
+
+/** 過ぎた月をいくつまで残すか。表が縦に伸びすぎないよう新しい方から数える */
+const PAST_MONTH_LIMIT = 12;
+/**
+ * 案件を減らす絞り込み（dealFilters が見ている項目）。
+ * 1つでも入っていると、全社の記録とは違う数字になるため過ぎた月は出せない。
+ */
+const DEAL_FILTER_KEYS = ['ids', 'q', 'equip', 'person', 'customer', 'corp', 'priceType',
+  'branch', 'office', 'category', 'model', 'industry', 'r2State', 'aState', 'act', 'gain',
+  'aDateFilter'];
+/** 値上げ幅の基準ごとの、記録の列名（承認日の以降ぶん／より前ぶん） */
+const RAISE_HIST_COLS = {
+  master: ['raise_after', 'raise_before'],
+  past: ['raise_after_past', 'raise_before_past'],
+  actual: ['raise_after_actual', 'raise_before_actual'],
+};
+
+/**
+ * 過ぎた月（計画の月から外れた月）の記録。
+ *
+ * 計画の月は「当月・翌月・翌々月・3か月後」の4つで、取込のたびに1つ先へずれる。
+ * そのため月が変わると、前の月がダッシュボードから消えてしまう
+ * （データの日付が9月に入った時点で、8月の計画が表から抜ける）。
+ * 取込のたびに残している記録（raise_history）には、その月が計画だったころの
+ * 合計がそのまま残っているので、そこから拾って過ぎた月も表に残す。
+ *
+ * 記録は「全社・絞り込みなし」で取ったものなので、画面がその条件と違うときは
+ * 数字を出さず、なぜ出せないか（note）だけを返す（前日比と同じ決まり）。
+ */
+async function pastPlanMonths(query, user, planYms) {
+  const current = planYms.filter((ym) => /^\d{4}-\d{2}$/.test(String(ym))).sort();
+  if (!current.length) return { months: [], note: '' };
+  let rows = [];
+  try {
+    // 月ごとに「その月が計画に入っていた、いちばん新しい取込」を1件だけ取る
+    rows = await db.all(`
+      SELECT h.* FROM raise_history h
+       WHERE h.plan_ym < ?
+         AND h.taken_on = (SELECT MAX(x.taken_on) FROM raise_history x
+                            WHERE x.plan_ym = h.plan_ym)
+       ORDER BY h.plan_ym DESC
+       LIMIT ?`, [current[0], PAST_MONTH_LIMIT]);
+  } catch { return { months: [], note: '' }; }   // 履歴の表が無い旧DBでは出さない
+  if (!rows.length) return { months: [], note: '' };
+  rows.reverse();   // 古い月から順に（表では計画の月の手前に並べる）
+
+  // 記録と同じ条件で見ているときだけ出す。違う条件の数字を並べても意味が無い
+  if (scopeInfo(user).level !== 'all' || DEAL_FILTER_KEYS.some((k) => query[k])) {
+    return {
+      months: [],
+      note: '過ぎた月（計画の月から外れた月）の記録は、絞り込み中は出せません'
+        + '（全社・絞り込みなしの合計で残しているため、「解除」で出ます）',
+    };
+  }
+  const [afterCol, beforeCol] = RAISE_HIST_COLS[baseKey(query)];
+  const baseLabel = BASE_LABELS[baseKey(query)];
+  const wantYm = String(query.aDateYm ?? '');
+  const wantBefore = String(query.aDateOp ?? 'from') === 'before';
+  let note = '';
+  const months = [];
+  for (const r of rows) {
+    const num0 = (v) => (v == null ? null : Number(v));
+    const after = num0(r[afterCol]);
+    const before = num0(r[beforeCol]);
+    if (after == null || before == null) {
+      // 基準ごとに残すようになる前の記録。マスタ単価ぶんしか持っていない
+      note = `過ぎた月（${r.plan_ym}）の記録に「${baseLabel}」を基準にした値がありません`
+        + '（この基準を残すようになる前の記録です）';
+      continue;
+    }
+    // 承認日。記録は取り組みの開始月（a_date_ym）で前後に分けてあるので、
+    // 画面の指定がその月と同じなら片側を、空（全期間）なら両方を足したものを使う。
+    // それ以外の月を指定されているときは、記録から作れないので出せない
+    const split = String(r.a_date_ym ?? '');
+    const raise = !wantYm ? after + before
+      : wantYm === split ? (wantBefore ? before : after)
+        : null;
+    if (raise == null) {
+      note = '過ぎた月（計画の月から外れた月）の記録は、承認日を '
+        + `${split} 以降（既定）か全期間にすると出せます（その区切りで残しているため）`;
+      continue;
+    }
+    const days = Number(r.work_days);
+    const baseDays = Number(r.base_days);
+    months.push({
+      ym: String(r.plan_ym),
+      // いつの取込の記録か。表の吹き出しに出して、数字の出どころを分かるようにする
+      takenOn: String(r.taken_on),
+      days: days > 0 ? days : null,
+      baseDays: baseDays > 0 ? baseDays : null,
+      // 実績の月に対する倍率（日量換算）。分からない月は1（換算なし）
+      rate: days > 0 && baseDays > 0 ? days / baseDays : 1,
+      actYm: r.act_ym ?? null,
+      deals: Number(r.deals ?? 0),
+      baseAmt: Number(r.base_amt ?? 0),
+      // 画面の承認日に合わせた値上げ額（記録した時点の、日量換算後の額）
+      raise,
+      after,
+      before,
+      cntAfter: Number(r.cnt_after ?? 0),
+      cntBefore: Number(r.cnt_before ?? 0),
+      aDateYm: split || null,
+    });
+  }
+  return { months, note: months.length ? '' : note };
 }
 
 /**
@@ -2447,6 +2587,8 @@ async function dashboardData(query, user) {
     up: Number(actMonths?.act_up_1 ?? 0),
     same: Number(actMonths?.act_same_1 ?? 0),
   }].filter((a) => a.deals > 0) : [];
+  // 過ぎた月（計画から外れた月）。記録から拾って、表から消えないようにする
+  const past = await pastPlanMonths(query, user, workdays.months.map((x) => x.ym));
   return {
     scope: scopeInfo(user),
     histTotals,
@@ -2474,6 +2616,10 @@ async function dashboardData(query, user) {
     },
     // 値上げ額の推移（取込ごと・全社の合計）。前回の取込との差を画面で出す
     raiseHistory: await raiseHistoryRows(14),
+    // 過ぎた月（計画の月から外れた月）。データの日付が月をまたぐと前の月が
+    // 計画から外れて表から消えてしまうため、その月の記録を残して出す
+    pastMonths: past.months,
+    pastNote: past.note,
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
     abActYms: actualMeta?.ym ? [actualMeta.ym] : [],
   };
@@ -3814,19 +3960,32 @@ api.post('/agg-import/start', wrap(async (req, res) => {
   await db.run('DELETE FROM agg_staging');
   const meta = req.body?.meta;
   if (meta && typeof meta === 'object') {
+    // 計画の月（当月〜3か月後）は、ファイルの見出しではなくデータの日付から決める。
+    // 毎日の価格調査は前日の結果なので、9/1に取り込んでも当月は8月のまま。
+    // ここをファイル任せにすると、月初の取込で前の月が計画から抜けてしまう
+    const takenOn = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.takenOn ?? ''))
+      ? String(req.body.takenOn) : '';
+    const dataDate = dataDateOf(takenOn);
+    const [pm0, pm1, pm2, pm3] = planMonthsFrom(dataDate);
     await db.run(
       `INSERT INTO settings (key, value) VALUES ('agg_meta', ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       [JSON.stringify({
-        m0: String(meta.m0 ?? ''),
-        m1: String(meta.m1 ?? ''), m2: String(meta.m2 ?? ''), m3: String(meta.m3 ?? ''),
+        m0: pm0 ?? String(meta.m0 ?? ''),
+        m1: pm1 ?? String(meta.m1 ?? ''),
+        m2: pm2 ?? String(meta.m2 ?? ''),
+        m3: pm3 ?? String(meta.m3 ?? ''),
+        // 月を決めたもとにしたデータの日付と、ファイルの見出しから読めた月。
+        // 食い違ったときに、どちらの決まりで出た数字か後から追えるように残す
+        dataDate,
+        fileMonths: Array.isArray(meta.fileMonths)
+          ? meta.fileMonths.map(String).slice(0, 4) : [],
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
         // 値上げ額の履歴に残す取込日（YYYY-MM-DD）。ふだんは空＝今日。
         // 前回のファイルを取り込み直して前日比を埋めたいときだけ指定する
-        takenOn: /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.takenOn ?? ''))
-          ? String(req.body.takenOn) : '',
+        takenOn,
         // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
         // 入れ直すか。毎日の取込はマスタ登録単価を入れ直すためのもので、
         // 交渉の記録は営業担当者がアプリで入れるため、既定では触らない。

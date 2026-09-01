@@ -248,6 +248,8 @@ export function buildDashboardWorkbook(data, opts = {}) {
     ...(byDays ? ['稼働日'] : []),
   ];
   const split = data.raiseSplit;
+  // 過ぎた月（計画から外れた月）。画面のまとめと同じ行を出す
+  const pastMonths = Array.isArray(data.pastMonths) ? data.pastMonths : [];
   const act = data.actuals?.[0];
   const actYm = String(act?.ym ?? '当月');
   // 売上改善額（プラス・マイナスの合計）。金額（合計）から引くと値上げ前当初になる
@@ -270,6 +272,19 @@ export function buildDashboardWorkbook(data, opts = {}) {
         ym: `${actYm}（マスタ）`, kind: '参考', plan: -1,
         deals: n(t.deals), b: base, amt: mpAmt, up: '', same: n(t.mp_same),
       }] : []),
+      // 過ぎた月（計画の月から外れた月）。計画の月は取込のたびに1つ先へずれるため、
+      // その月が計画だったころの記録をそのまま残して出す（画面のまとめと同じ）。
+      // 記録は日量換算後の額なので、換算なしの側は倍率で割り戻す
+      ...pastMonths.map((m) => {
+        const rate = Number(m.rate) > 0 ? Number(m.rate) : 1;
+        const k = byDays ? 1 : 1 / rate;
+        return {
+          ym: `${m.ym}${byDays && m.days ? `（${m.days}稼働日）` : ''}`, kind: '記録', plan: -1,
+          deals: n(m.deals), b: n(m.baseAmt) * (byDays ? rate : 1),
+          amt: n(m.baseAmt) * rate * k + n(m.raise) * k, up: '', same: '',
+          sp: { after: n(m.after) * k, before: n(m.before) * k },
+        };
+      }),
       // 計画。比較のもとは実績（当月の金額）＝画面のまとめと同じ。
       // 値上げ前当初と比べると売上改善額まで混ざり、承認日の内訳と合わなくなる。
       // 換算した側は比較のもとにも同じ倍率を掛けて土俵を揃える
@@ -289,14 +304,16 @@ export function buildDashboardWorkbook(data, opts = {}) {
     for (const r of summaryRows(byDays)) {
       const hasBase = r.b !== '' && r.b != null;
       const up = hasBase ? r.amt - r.b : '';
-      const sp = r.plan >= 0 ? split?.months?.[r.plan] : null;
+      // 承認日の内訳。計画の月は集計から、過ぎた月は記録から（換算済み）
+      const sp = r.plan >= 0 ? split?.months?.[r.plan] : r.sp ?? null;
+      const spAdj = r.plan >= 0 ? adj(r.plan) : 1;
       aoa.push([
         r.ym, r.kind, r.deals, r.up, r.same,
         hasBase ? round(r.b / months) : '', round(r.amt / months),
         hasBase ? round(up / months) : '',
         ...(split ? [
-          sp ? round(n(sp.after) * adj(r.plan) / months) : '',
-          sp ? round(n(sp.before) * adj(r.plan) / months) : '',
+          sp ? round(n(sp.after) * spAdj / months) : '',
+          sp ? round(n(sp.before) * spAdj / months) : '',
         ] : []),
         hasBase && r.b > 0 ? round((up / r.b) * 100, 1) / 100 : '',
         ...(byDays ? [r.plan >= 0 ? (wdMonths[r.plan]?.days ?? '') : ''] : []),
