@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Card } from './ui';
 import type { AggParsed, AggResult } from '../aggImportClient';
+import { dataDateOf, planMonthsFrom } from '../planMonths';
 
 // Excelの読み書きの部品は大きい（数百KB）。最初の画面表示に含めると
 // ログインまで遅くなるため、ファイルを選んだ時にだけ読み込む。
@@ -53,6 +54,13 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
       setBusy(false);
     }
   };
+
+  // 計画の月（当月〜3か月後）は「データの日付＝取込日の前日」から決める。
+  // 取込日を入れ直すと月も変わるので、取込前にここで出して確かめられるようにする
+  const planDate = dataDateOf(takenOn);
+  const planMonths = planMonthsFrom(planDate);
+  // ファイルの見出しから読めた月。決まりと食い違うときに気づけるように添える
+  const fileMonths = (parsed?.p.meta.fileMonths ?? []).filter(Boolean);
 
   const run = async () => {
     if (!parsed) return;
@@ -117,8 +125,12 @@ export default function AggImportCard({ onDone }: { onDone?: () => void }) {
           <>
             <span style={{ fontSize: 13 }}>
               {parsed.p.rows.length.toLocaleString()}行
-              （{[parsed.p.meta.m0, parsed.p.meta.m1, parsed.p.meta.m2, parsed.p.meta.m3]
-                .filter(Boolean).join('・')}
+              （<span title={'計画の月は「データの日付」（取込日の前日）から決めています。'
+                + '毎日の価格調査は前日の結果なので、月初に取り込んでも前の月が抜けません。'
+                + `\nデータの日付: ${planDate}`
+                + (fileMonths.length ? `\nファイルの見出しから読めた月: ${fileMonths.join('・')}` : '')}>
+                {planMonths.join('・')}
+              </span>
               {parsed.p.meta.basePeriod ? ` ／ 出荷単価 ${parsed.p.meta.basePeriod}` : ''}）
               {parsed.p.hasDates ? ' ・ 承認日あり' : ' ・ 承認日なし（登録日の列がありません）'}
               {parsed.p.hasRingi ? ' ・ 稟議Noあり' : ''}

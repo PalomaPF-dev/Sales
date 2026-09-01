@@ -1940,6 +1940,40 @@ function scopeInfo(user) {
 }
 
 /**
+ * 計画の月（当月・翌月・翌々月・3か月後）を、データの日付から決める。
+ *
+ * 毎日の価格調査は「前日の結果」で、ファイルの見出しの日付はファイルを作った日を
+ * もとに振られている。ふだんはどちらも同じ月なので違いは出ないが、月初（1日）に
+ * 取り込むと、中身は前の月の結果なのに見出しだけ新しい月になり、
+ * 前の月が計画の4か月から外れてしまう（9/1の取込で8月が抜けた）。
+ * そのため月はファイルの見出しではなく、データの日付から決める。
+ *
+ * 画面側の client/src/aggImportClient.ts の planMonthsFrom と合わせること。
+ */
+function planMonthsFrom(ymd) {
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(ymd ?? ''));
+  if (!m) return [];
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  return [0, 1, 2, 3].map((n) => {
+    const t = mo - 1 + n;
+    return `${y + Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}`;
+  });
+}
+
+/**
+ * データの日付。毎日の価格調査は前日の結果なので、取込日（未入力なら今日）の1日前。
+ * 画面側の dataDateOf と合わせること。
+ */
+function dataDateOf(takenOn) {
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(String(takenOn ?? ''))
+    ? String(takenOn) : localDate();
+  const d = new Date(`${base}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
  * 翌月（9月計画）を当月（8月計画）で置き換える境目の日。
  * 実績の月（当月の前月）の1日。当月が 2026-08 なら 2026-07-01。
  * この日より前の登録は、今回の値上げより前の古い申請とみなす。
@@ -2181,7 +2215,7 @@ const RAISE_HIST_COLS = {
  *
  * 計画の月は「当月・翌月・翌々月・3か月後」の4つで、取込のたびに1つ先へずれる。
  * そのため月が変わると、前の月がダッシュボードから消えてしまう
- * （9/1に取り込んだ時点で、8月の計画が表から抜けた）。
+ * （データの日付が9月に入った時点で、8月の計画が表から抜ける）。
  * 取込のたびに残している記録（raise_history）には、その月が計画だったころの
  * 合計がそのまま残っているので、そこから拾って過ぎた月も表に残す。
  *
@@ -2582,8 +2616,8 @@ async function dashboardData(query, user) {
     },
     // 値上げ額の推移（取込ごと・全社の合計）。前回の取込との差を画面で出す
     raiseHistory: await raiseHistoryRows(14),
-    // 過ぎた月（計画の月から外れた月）。9/1の取込で8月が計画から外れたように、
-    // 月が変わると表から消えてしまうため、その月が計画だったころの記録を残して出す
+    // 過ぎた月（計画の月から外れた月）。データの日付が月をまたぐと前の月が
+    // 計画から外れて表から消えてしまうため、その月の記録を残して出す
     pastMonths: past.months,
     pastNote: past.note,
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
@@ -3926,19 +3960,32 @@ api.post('/agg-import/start', wrap(async (req, res) => {
   await db.run('DELETE FROM agg_staging');
   const meta = req.body?.meta;
   if (meta && typeof meta === 'object') {
+    // 計画の月（当月〜3か月後）は、ファイルの見出しではなくデータの日付から決める。
+    // 毎日の価格調査は前日の結果なので、9/1に取り込んでも当月は8月のまま。
+    // ここをファイル任せにすると、月初の取込で前の月が計画から抜けてしまう
+    const takenOn = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.takenOn ?? ''))
+      ? String(req.body.takenOn) : '';
+    const dataDate = dataDateOf(takenOn);
+    const [pm0, pm1, pm2, pm3] = planMonthsFrom(dataDate);
     await db.run(
       `INSERT INTO settings (key, value) VALUES ('agg_meta', ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       [JSON.stringify({
-        m0: String(meta.m0 ?? ''),
-        m1: String(meta.m1 ?? ''), m2: String(meta.m2 ?? ''), m3: String(meta.m3 ?? ''),
+        m0: pm0 ?? String(meta.m0 ?? ''),
+        m1: pm1 ?? String(meta.m1 ?? ''),
+        m2: pm2 ?? String(meta.m2 ?? ''),
+        m3: pm3 ?? String(meta.m3 ?? ''),
+        // 月を決めたもとにしたデータの日付と、ファイルの見出しから読めた月。
+        // 食い違ったときに、どちらの決まりで出た数字か後から追えるように残す
+        dataDate,
+        fileMonths: Array.isArray(meta.fileMonths)
+          ? meta.fileMonths.map(String).slice(0, 4) : [],
         basePeriod: String(meta.basePeriod ?? ''), filename,
         // 目標単価の列があるファイルか。あるときは取込でファイルの内容を正とする
         hasTarget: meta.hasTarget === true,
         // 値上げ額の履歴に残す取込日（YYYY-MM-DD）。ふだんは空＝今日。
         // 前回のファイルを取り込み直して前日比を埋めたいときだけ指定する
-        takenOn: /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.takenOn ?? ''))
-          ? String(req.body.takenOn) : '',
+        takenOn,
         // 値上げ交渉の記録（商談結果・最終確定日・最終確定単価）をファイルの値で
         // 入れ直すか。毎日の取込はマスタ登録単価を入れ直すためのもので、
         // 交渉の記録は営業担当者がアプリで入れるため、既定では触らない。
