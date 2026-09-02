@@ -163,6 +163,55 @@ function round(v, digits = 0) {
 }
 
 /**
+ * 案件一覧の「合計」シートの中身（見出しと行の配列）を作る。
+ *
+ * 一覧のExcelには行しか入っておらず、値上げ額の合計は書き出したファイルからは
+ * 出せない（承認日の条件で計上するものを選び、実績数を掛けているため、
+ * 列を足しても画面の数字にならない）。画面の上に出しているのと同じ合計を
+ * 別シートで添えて、どの条件で出した合計なのかも一緒に残す。
+ *
+ * サーバーでファイルを作る出力と、件数が多いときのブラウザ組み立ての
+ * 両方がこれを使う（どちらの出し方でも同じシートになる）。
+ */
+export function buildTotalsSheet(totals, opts = {}) {
+  const n = (v) => Number(v ?? 0);
+  const t = totals ?? {};
+  const m = (k, fallback) => ymLabel(opts.aggMeta?.[k], fallback);
+  const actYm = String(opts.actualMeta?.ym ?? '');
+  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  const gp = n(t.gain_plus);
+  const gm = n(t.gain_minus);
+
+  const aoa = [['項目', '内容']];
+  // サーバーはUTCで動くため、日本時間に直した日付を出す
+  aoa.push(['出力日', new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)]);
+  for (const [label, value] of opts.filters ?? []) aoa.push([label, value]);
+  if ((opts.filters ?? []).length === 0) aoa.push(['絞り込み', 'なし（全件）']);
+  aoa.push([]);
+  aoa.push(['件数', n(t.count)]);
+  aoa.push(['完了', n(t.r2_done)]);
+  aoa.push([]);
+  // 売上改善額（過去最新単価 → 実績の月のマスタ単価）。画面の上と同じ
+  aoa.push([`売上改善額 合計（${actLabel}）`, round(gp + gm)]);
+  aoa.push(['　うち 上がった品目（プラス）', round(gp)]);
+  aoa.push(['　うち 下がった品目（マイナス）', round(gm)]);
+  aoa.push([]);
+  // 値上げ額（1か月あたり）。値上げ幅（A基準 − 基準の単価）× 実績の月の実績数
+  aoa.push(['値上げ額（月）合計', `値上げ幅 ×${actLabel}の実績数。稼働日の換算はしていません`]);
+  for (const [i, key] of ['m0', 'm1', 'm2', 'm3'].entries()) {
+    const label = m(key, ['当月', '翌月', '翌々月', '3か月後'][i]);
+    const v = t[`raise_m${i}`];
+    aoa.push([`　${label}`, v == null ? '' : round(v)]);
+  }
+  return aoa;
+}
+
+/** 「合計」シートの列幅。サーバー側とブラウザ側で同じにする */
+export const TOTALS_SHEET_WIDTHS = [34, 30];
+/** 「合計」シートの名前 */
+export const TOTALS_SHEET_NAME = '合計';
+
+/**
  * ダッシュボードの表をExcelにする。画面と同じ数字・同じ並びで、
  * 「まとめ」「器具区分別」「支店別」「法人別」をシートに分ける。
  *
@@ -504,6 +553,15 @@ export function buildWorkbook(rows, priceTypes = [], opts = {}) {
   ws['!freeze'] = { xSplit: 3, ySplit: 1 };
 
   const wb = XLSX.utils.book_new();
+  // 合計（画面の上に出しているのと同じ数字）。先に置いて最初に目に入るようにする
+  if (opts.totals) {
+    const tws = XLSX.utils.aoa_to_sheet(
+      buildTotalsSheet(opts.totals, {
+        aggMeta: opts.aggMeta, actualMeta: opts.actualMeta, filters: opts.filters,
+      }));
+    tws['!cols'] = TOTALS_SHEET_WIDTHS.map((wch) => ({ wch }));
+    XLSX.utils.book_append_sheet(wb, tws, TOTALS_SHEET_NAME);
+  }
   XLSX.utils.book_append_sheet(wb, ws, '値上げ管理表');
   // compression を有効にしないとxlsxが無圧縮で書き出され、
   // 2万行規模でファイルが数十MBに膨らむ（サーバーレスの応答上限を超える）

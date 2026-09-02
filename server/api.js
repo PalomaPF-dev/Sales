@@ -14,7 +14,10 @@ import {
   COOKIE_NAME, createSession, resolveSession, destroySession, destroyUserSessions,
   readCookie, setSessionCookie, clearSessionCookie,
 } from './session.js';
-import { buildExportTable, buildWorkbook, buildDashboardWorkbook } from './export.js';
+import {
+  buildExportTable, buildWorkbook, buildDashboardWorkbook,
+  buildTotalsSheet, TOTALS_SHEET_NAME, TOTALS_SHEET_WIDTHS,
+} from './export.js';
 import {
   deleteAttachment, fetchAttachment, fileBucket, isFileStoreConfigured, putAttachment,
 } from './fileStore.js';
@@ -2703,6 +2706,42 @@ function dashboardFilterLabels(q) {
 }
 
 /**
+ * 案件一覧のExcelの「合計」シートに残す絞り込みの一覧。
+ * どの条件で出した合計なのかが、ファイルだけで分かるようにする。
+ */
+function dealsFilterLabels(q) {
+  const items = [];
+  if (String(q.q ?? '').trim()) items.push(['検索', String(q.q).trim()]);
+  for (const [key, label] of [
+    ['industry', '業種'], ['corp', '法人'], ['customer', '得意先'],
+    ['branch', '支店'], ['office', '営業所'], ['person', '担当者'],
+    ['equip', '器具区分'], ['category', 'カテゴリー名（大）'], ['model', '品目階層名'],
+  ]) {
+    if (q[key]) items.push([label, String(q[key])]);
+  }
+  const PICKS = {
+    aState: { has: 'マスタ登録単価あり', none: 'マスタ登録単価なし' },
+    act: { has: '売上高（当月）あり', none: '売上高（当月）なし' },
+    r2State: { open: '未入力', agreed: '合意済', done: '完了' },
+    gain: { plus: '上がった品目', minus: '下がった品目', same: '変わらず', none: '比較なし' },
+  };
+  for (const [key, label] of [
+    ['aState', 'マスタ登録単価'], ['act', '売上高（当月）'],
+    ['r2State', '交渉の進み具合'], ['gain', '売上改善額'],
+  ]) {
+    const v = PICKS[key][String(q[key] ?? '')];
+    if (v) items.push([label, v]);
+  }
+  if (q.aDateYm) {
+    items.push(['承認日（合計の対象）',
+      `${q.aDateYm} ${q.aDateOp === 'before' ? 'より前' : '以降'}`]);
+  }
+  // どの単価と比べた値上げ幅なのかは、書き出したファイルだけでは分からないため必ず残す
+  items.push(['基準（比較のもと）', BASE_LABELS[baseKey(q)]]);
+  return items;
+}
+
+/**
  * 想定B基準の割合を案件に当てるためのJOIN。
  *
  * 法人×器具区分の設定があればそれを、無ければ法人全体の設定を、
@@ -3172,19 +3211,18 @@ async function histMonthsFromHistory() {
   return months;
 }
 
-api.get('/deals', wrap(async (req, res) => {
-  const { where, params } = dealFilters(req.query, req.user);
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const size = Math.min(200, Number(req.query.size) || 50);
-  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+/**
+ * 案件一覧の合計。画面の上に出している数字と、Excelの「合計」シートで同じものを使う。
+ *
+ * 件数と完了件数のほかに、値上げ額（1か月あたり）の合計を月ごとに出す。
+ * 値上げ幅は「その月のA基準 − 基準の単価」で、値上げ額はそれに実績の月の実績数を掛けたもの。
+ * 基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
+ * 基準の単価が無い品目・実績数が無い品目は変動なし（0）として扱う。
+ */
+function dealsTotals(query, where, params, aggMeta, actualMeta) {
   // 承認日の条件（ダッシュボードと同じ判定）。合計の計上に使う
-  const approvedCond = aDateCond(req.query);
-  const [totals, rows] = await Promise.all([
-    // 件数と完了件数のほかに、値上げ額（1か月あたり）の合計も月ごとに返す。
-    // 値上げ幅は「その月のA基準 − 基準の単価」× 当月の実績数。
-    // 基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
-    // 基準の単価が無い品目・当月の実績数が無い品目は変動なし（0）として扱う。
-    db.get(`
+  const approvedCond = aDateCond(query);
+  return db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
              SUM(CASE WHEN past_price > 0 AND ${MASTER_PRICE} IS NOT NULL
@@ -3201,9 +3239,18 @@ api.get('/deals', wrap(async (req, res) => {
                // 承認日の絞り込みは、ダッシュボードと同じく「値上げ額を計上するか」に効かせる。
                // 案件は全部そのまま出したうえで、合計だけ条件に合うものを足す。
                return `
-             SUM(${raiseAmtSql(a, req.query, approvedCond)}) AS raise_m${n}`;
+             SUM(${raiseAmtSql(a, query, approvedCond)}) AS raise_m${n}`;
              }).join(',')}
-      FROM deal_calc ${where}`, params),
+      FROM deal_calc ${where}`, params);
+}
+
+api.get('/deals', wrap(async (req, res) => {
+  const { where, params } = dealFilters(req.query, req.user);
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const size = Math.min(200, Number(req.query.size) || 50);
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  const [totals, rows] = await Promise.all([
+    dealsTotals(req.query, where, params, aggMeta, actualMeta),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
     // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
     // （LATERAL join はSQLiteが解釈できない）。
@@ -3305,18 +3352,21 @@ api.get('/deals/export', wrap(async (req, res) => {
     });
   }
   const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
-  const [rows, priceTypes] = await Promise.all([
+  const [rows, priceTypes, totals] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
       FROM deal_calc ${where}
       ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
+    // 画面の上に出しているのと同じ合計。「合計」シートに添える
+    dealsTotals(req.query, where, params, aggMeta, actualMeta),
   ]);
   // 実績原価は本社・管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = canSeeAllInfo(req.user.role);
   const buffer = buildWorkbook(rows, priceTypes,
-    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query) });
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query),
+      totals, filters: dealsFilterLabels(req.query) });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.set('Content-Disposition', contentDisposition(`値上げ管理表_${stamp}.xlsx`, `price-list_${stamp}.xlsx`));
@@ -3343,7 +3393,7 @@ api.get('/deals/export-rows', wrap(async (req, res) => {
   const sinceId = Number(req.query.sinceId) || 0;
   const cond = where ? `${where} AND id > ?` : 'WHERE id > ?';
   const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
-  const [rows, totalRow] = await Promise.all([
+  const [rows, totalRow, totals] = await Promise.all([
     db.all(`
       SELECT deal_calc.*,
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
@@ -3351,6 +3401,8 @@ api.get('/deals/export-rows', wrap(async (req, res) => {
       ORDER BY id LIMIT ?`, [...params, sinceId, EXPORT_CHUNK_ROWS]),
     // 全体の件数は最初の1回だけ数える（進み具合の表示用）
     sinceId === 0 ? db.get(`SELECT COUNT(*) AS c FROM deal_calc ${where}`, params) : null,
+    // 合計も最初の1回だけ。10万件の集計を分割のたびに回さない
+    sinceId === 0 ? dealsTotals(req.query, where, params, aggMeta, actualMeta) : null,
   ]);
   const withCost = canSeeAllInfo(req.user.role);
   const table = buildExportTable(rows,
@@ -3358,7 +3410,16 @@ api.get('/deals/export-rows', wrap(async (req, res) => {
   res.json({
     rows: table.rows,
     // 見出しなどの形は最初の1回だけ返す（毎回返しても害はないが応答を小さく保つ）
-    ...(sinceId === 0 ? { header: table.header, widths: table.widths, total: Number(totalRow?.c ?? 0) } : {}),
+    ...(sinceId === 0 ? {
+      header: table.header,
+      widths: table.widths,
+      total: Number(totalRow?.c ?? 0),
+      // 「合計」シートの中身。サーバーで作る出力と同じものをブラウザ側でも置く
+      totalsSheet: buildTotalsSheet(totals,
+        { aggMeta, actualMeta, filters: dealsFilterLabels(req.query) }),
+      totalsWidths: TOTALS_SHEET_WIDTHS,
+      totalsName: TOTALS_SHEET_NAME,
+    } : {}),
     // 次のページはこのIDより後から。これ以上無ければ null
     nextId: rows.length === EXPORT_CHUNK_ROWS ? rows[rows.length - 1].id : null,
   });

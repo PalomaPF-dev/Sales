@@ -14,6 +14,10 @@ interface Chunk {
   header?: string[];
   widths?: number[];
   total?: number;
+  /** 「合計」シートの中身（見出しと行）。最初の応答にだけ入る */
+  totalsSheet?: (string | number)[][];
+  totalsWidths?: number[];
+  totalsName?: string;
   nextId: number | null;
 }
 
@@ -26,6 +30,10 @@ export async function exportLargeExcel(
   let widths: number[] = [];
   let total = 0;
   let sinceId = 0;
+  // 合計（画面の上に出しているのと同じ数字）。サーバーが最初の応答で作って渡す
+  let totalsSheet: (string | number)[][] | null = null;
+  let totalsWidths: number[] = [];
+  let totalsName = '合計';
   // 数千行ずつ取り出す。応答の nextId が無くなったら終わり
   for (;;) {
     const qs = new URLSearchParams(queryString);
@@ -36,7 +44,14 @@ export async function exportLargeExcel(
       throw new Error(body?.error ?? `出力の取得に失敗しました（${res.status}）`);
     }
     const chunk: Chunk = await res.json();
-    if (chunk.header) { header = chunk.header; widths = chunk.widths ?? []; total = chunk.total ?? 0; }
+    if (chunk.header) {
+      header = chunk.header;
+      widths = chunk.widths ?? [];
+      total = chunk.total ?? 0;
+      totalsSheet = chunk.totalsSheet ?? null;
+      totalsWidths = chunk.totalsWidths ?? [];
+      totalsName = chunk.totalsName || '合計';
+    }
     all.push(...chunk.rows);
     onProgress(all.length, total);
     if (!chunk.nextId) break;
@@ -48,6 +63,12 @@ export async function exportLargeExcel(
   ws['!cols'] = widths.map((wch) => ({ wch }));
   ws['!freeze'] = { xSplit: 3, ySplit: 1 };
   const wb = XLSX.utils.book_new();
+  // 合計を先に置く（サーバーで作る出力と同じ並び）
+  if (totalsSheet) {
+    const tws = XLSX.utils.aoa_to_sheet(totalsSheet);
+    tws['!cols'] = totalsWidths.map((wch) => ({ wch }));
+    XLSX.utils.book_append_sheet(wb, tws, totalsName);
+  }
   XLSX.utils.book_append_sheet(wb, ws, '値上げ管理表');
   const buf: ArrayBuffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: true });
 
