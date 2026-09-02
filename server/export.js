@@ -29,7 +29,7 @@ const STATE_LABELS = { open: '未入力', agreed: '合意済', done: '完了' };
  * A基準の見出しは取り込んだ月（2026-09 など）にする。
  * 実績原価は本社・管理者・開発者のときだけ足す（社外秘に準ずる扱い）。
  */
-function buildColumns({ months, withCost, aggMeta, actualMeta, base }) {
+function buildColumns({ months, withCost, aggMeta, actualMeta, base, aDate }) {
   const m = (k, fallback) => ymLabel(aggMeta?.[k], fallback);
   const m0 = m('m0', '当月');
   const m1 = m('m1', '翌月');
@@ -83,6 +83,38 @@ function buildColumns({ months, withCost, aggMeta, actualMeta, base }) {
     return round(a - b);
   };
 
+  /**
+   * その行が値上げ額の合計に入るか（承認日の条件）。画面の一覧の合計と同じ判定で、
+   * 基準は3か月後の承認日。承認日の入っていない行はどちらにも入れない。
+   * 欄が空（全期間）のときは全部が対象。
+   */
+  const aDateYm = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(aDate?.ym ?? '')) ? String(aDate.ym) : '';
+  const aDateFirst = aDateYm ? `${aDateYm}-01` : '';
+  const aDateBefore = String(aDate?.op ?? '') === 'before';
+  const counted = (r) => {
+    if (!aDateFirst) return true;
+    const d = String(r.a_date_m3 ?? '').slice(0, 10);
+    if (!d) return false;
+    return aDateBefore ? d < aDateFirst : d >= aDateFirst;
+  };
+
+  /**
+   * 値上げ額（1か月あたり）＝ 値上げ幅 × 実績の月の実績数。
+   *
+   * 画面の一覧の上に出している合計と同じ決まりで出す。
+   * 未申請（A基準が0以下）・基準の単価が無い・実績数が無い・承認日の条件から
+   * 外れる、のいずれかなら 0（空欄にしない）。
+   * こうしておくと、この列をExcelで合計すると画面の合計とぴったり一致する。
+   * server/api.js の raiseAmtSql と同じ決まりにすること。
+   */
+  const amount = (key) => (r) => {
+    const a = Number(aPrice(r, key));
+    const b = basePrice(r);
+    const qty = Number(monthlyQty(r));
+    if (!(a > 0) || b == null || !(qty > 0) || !counted(r)) return 0;
+    return round((a - b) * qty);
+  };
+
   const cols = [
     ['案件ID', (r) => r.id],
     ['法人コード', (r) => r.corp_code],
@@ -130,13 +162,13 @@ function buildColumns({ months, withCost, aggMeta, actualMeta, base }) {
     [`値上げ幅 ${m1}（対 ${baseName}）`, diff('a_price_m1')],
     [`値上げ幅 ${m2}（対 ${baseName}）`, diff('a_price_m2')],
     [`値上げ幅 ${m3}（対 ${baseName}）`, diff('a_price_m3')],
-    [`値上げ額（月あたり）${m3}`, (r) => {
-      const a = Number(r.a_price_m3);
-      const b = basePrice(r);
-      const qty = Number(monthlyQty(r));
-      if (!(a > 0) || b == null || !(qty > 0)) return '';
-      return round((a - b) * qty);
-    }],
+    // 値上げ額（1か月あたり）。列をそのまま合計すると、画面の一覧の上に出ている
+    // 「値上げ額（月）合計」および「合計」シートの数字とぴったり一致する
+    ['合計の対象（承認日）', (r) => (counted(r) ? '○' : '')],
+    [`値上げ額（月）${m0}`, amount('a_price_m0')],
+    [`値上げ額（月）${m1}`, amount('a_price_m1')],
+    [`値上げ額（月）${m2}`, amount('a_price_m2')],
+    [`値上げ額（月）${m3}`, amount('a_price_m3')],
 
     // 交渉（営業担当者が入力する）。商談結果は記号のまま出す
     // （〇=合意 / □=広域待ち / △=否決 / ×=本社へ相談）
@@ -161,6 +193,63 @@ function round(v, digits = 0) {
   const p = 10 ** digits;
   return Math.round(n * p) / p;
 }
+
+/**
+ * 案件一覧の「合計」シートの中身（見出しと行の配列）を作る。
+ *
+ * 一覧のExcelには行しか入っておらず、値上げ額の合計は書き出したファイルからは
+ * 出せない（承認日の条件で計上するものを選び、実績数を掛けているため、
+ * 列を足しても画面の数字にならない）。画面の上に出しているのと同じ合計を
+ * 別シートで添えて、どの条件で出した合計なのかも一緒に残す。
+ *
+ * サーバーでファイルを作る出力と、件数が多いときのブラウザ組み立ての
+ * 両方がこれを使う（どちらの出し方でも同じシートになる）。
+ */
+export function buildTotalsSheet(totals, opts = {}) {
+  const n = (v) => Number(v ?? 0);
+  const t = totals ?? {};
+  const m = (k, fallback) => ymLabel(opts.aggMeta?.[k], fallback);
+  const actYm = String(opts.actualMeta?.ym ?? '');
+  const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  const gp = n(t.gain_plus);
+  const gm = n(t.gain_minus);
+
+  const aoa = [['項目', '内容']];
+  // サーバーはUTCで動くため、日本時間に直した日付を出す
+  aoa.push(['出力日', new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)]);
+  for (const [label, value] of opts.filters ?? []) aoa.push([label, value]);
+  if ((opts.filters ?? []).length === 0) aoa.push(['絞り込み', 'なし（全件）']);
+  aoa.push([]);
+  aoa.push(['件数', n(t.count)]);
+  aoa.push(['完了', n(t.r2_done)]);
+  aoa.push([]);
+  // 売上改善額（過去最新単価 → 実績の月のマスタ単価）。画面の上と同じ
+  aoa.push([`売上改善額 合計（${actLabel}）`, round(gp + gm)]);
+  aoa.push(['　うち 上がった品目（プラス）', round(gp)]);
+  aoa.push(['　うち 下がった品目（マイナス）', round(gm)]);
+  aoa.push([]);
+  // 値上げ額（1か月あたり）。値上げ幅（A基準 − 基準の単価）× 実績の月の実績数
+  aoa.push(['値上げ額（月）合計', `値上げ幅 ×${actLabel}の実績数。稼働日の換算はしていません`]);
+  for (const [i, key] of ['m0', 'm1', 'm2', 'm3'].entries()) {
+    const label = m(key, ['当月', '翌月', '翌々月', '3か月後'][i]);
+    const v = t[`raise_m${i}`];
+    aoa.push([`　${label}`, v == null ? '' : round(v)]);
+  }
+  aoa.push([]);
+  // 行を足して確かめられるように、どの列を合計すればよいかを書いておく
+  aoa.push(['照合のしかた',
+    '「値上げ管理表」シートの「値上げ額（月）◯◯」の列をそのまま合計すると、'
+    + '上の同じ月の金額と一致します']);
+  aoa.push(['', '対象から外れる行は空欄ではなく 0 が入っています'
+    + '（未申請・基準の単価なし・実績数なし・承認日が条件外）。'
+    + 'どの行が対象かは「合計の対象（承認日）」の列で分かります']);
+  return aoa;
+}
+
+/** 「合計」シートの列幅。サーバー側とブラウザ側で同じにする */
+export const TOTALS_SHEET_WIDTHS = [34, 30];
+/** 「合計」シートの名前 */
+export const TOTALS_SHEET_NAME = '合計';
 
 /**
  * ダッシュボードの表をExcelにする。画面と同じ数字・同じ並びで、
@@ -483,6 +572,7 @@ export function buildExportTable(rows, opts = {}) {
     aggMeta: opts.aggMeta,
     actualMeta: opts.actualMeta,
     base: opts.base,
+    aDate: opts.aDate,
   });
   return {
     header: columns.map(([label]) => label),
@@ -504,6 +594,15 @@ export function buildWorkbook(rows, priceTypes = [], opts = {}) {
   ws['!freeze'] = { xSplit: 3, ySplit: 1 };
 
   const wb = XLSX.utils.book_new();
+  // 合計（画面の上に出しているのと同じ数字）。先に置いて最初に目に入るようにする
+  if (opts.totals) {
+    const tws = XLSX.utils.aoa_to_sheet(
+      buildTotalsSheet(opts.totals, {
+        aggMeta: opts.aggMeta, actualMeta: opts.actualMeta, filters: opts.filters,
+      }));
+    tws['!cols'] = TOTALS_SHEET_WIDTHS.map((wch) => ({ wch }));
+    XLSX.utils.book_append_sheet(wb, tws, TOTALS_SHEET_NAME);
+  }
   XLSX.utils.book_append_sheet(wb, ws, '値上げ管理表');
   // compression を有効にしないとxlsxが無圧縮で書き出され、
   // 2万行規模でファイルが数十MBに膨らむ（サーバーレスの応答上限を超える）

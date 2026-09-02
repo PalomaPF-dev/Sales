@@ -954,7 +954,10 @@ export default function Deals() {
           )}
           <button className="btn dark sm" style={{ marginLeft: 6 }} onClick={exportExcel}
                   disabled={Boolean(exporting)}
-                  title="絞り込んだ一覧をExcelにします。件数が多いときは数分かかります">
+                  title={'絞り込んだ一覧をExcelにします。'
+                    + '「合計」シートに、いまここに出ている合計（件数・完了・売上改善額・'
+                    + '値上げ額（月）合計）と絞り込み条件も入ります。'
+                    + '件数が多いときは数分かかります'}>
             {exporting || 'Excel出力'}
           </button>
         </div>
