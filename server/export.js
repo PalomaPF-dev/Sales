@@ -52,10 +52,13 @@ function buildColumns({ months, withCost, aggMeta, actualMeta, base }) {
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
 
   /**
-   * 翌月（9月計画）は、承認日が「実績の月の1日」より前か未記入なら
-   * 当月（8月計画）をそのままスライドして扱う（画面の一覧と同じ決まり）。
+   * 翌月の計画は、承認日が「実績の月（売上高を取り込んだ月）の1日」より前か
+   * 未記入なら、当月の計画をそのままスライドして扱う（画面の一覧と同じ決まり）。
+   * 売上高がまだ入っていないときだけ、当月の前月で代用する。
+   * server/api.js の slideFromDate と同じ決まりにすること。
    */
   const slideFrom = (() => {
+    if (/^\d{4}-\d{2}$/.test(actYm)) return `${actYm}-01`;
     const v = String(aggMeta?.m0 ?? '');
     if (!/^\d{4}-\d{2}$/.test(v)) return null;
     const y = Number(v.slice(0, 4));

@@ -1974,11 +1974,23 @@ function dataDateOf(takenOn) {
 }
 
 /**
- * 翌月（9月計画）を当月（8月計画）で置き換える境目の日。
- * 実績の月（当月の前月）の1日。当月が 2026-08 なら 2026-07-01。
+ * 翌月の計画を当月の計画で置き換える境目の日。
  * この日より前の登録は、今回の値上げより前の古い申請とみなす。
+ *
+ * 境目は「実績の月」（売上高を取り込んだ月）の1日。
+ * 数量も比較のもと（現状額）も実績の月のものを使っているので、
+ * 「古いかどうか」の線もそこに合わせないと、画面の中で基準がばらつく。
+ *
+ * 売上高がまだ1度も入っていないときだけ、当月の前月で代用する
+ * （実績の月が分からないため。売上高が入れば必ず実績の月が使われる）。
+ *
+ * 売上高（7月）を取り込んだまま当月が9月へ進むと、この2つは食い違う。
+ * 実績の月に合わせておけば、売上高を更新するまで境目が動かない
+ * （7月に承認された翌月の単価が、月が変わっただけで「古い」に変わらない）。
  */
-function slideFromDate(aggMeta) {
+function slideFromDate(aggMeta, actualMeta) {
+  const actYm = String(actualMeta?.ym ?? '');
+  if (/^\d{4}-\d{2}$/.test(actYm)) return `${actYm}-01`;
   const m0 = String(aggMeta?.m0 ?? '');
   if (!/^\d{4}-\d{2}$/.test(m0)) return null;
   const y = Number(m0.slice(0, 4));
@@ -2024,10 +2036,10 @@ function aPriceSql(n, slideFrom, prefix = '') {
  * ダッシュボード全体（/dashboard）と、カードの中だけで絞り込み直す
  * /dashboard/avg-prices の両方がこれを使う。
  */
-function avgPriceAgg(query, aggMeta) {
+function avgPriceAgg(query, aggMeta, actualMeta) {
   const f = (c) => `CAST(${c} AS FLOAT)`;
   const approved = aDateCond(query);
-  const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta));
+  const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta, actualMeta));
   // 比較のもと（過去最新単価／マスタ単価／実単価）。画面の「基準」で選ぶ
   const base = basePriceSql(query);
   const qty = f('master_qty');
@@ -2086,7 +2098,7 @@ async function recordRaiseHistory(source, filename, takenOnRaw) {
     const f = (c) => `CAST(${c} AS FLOAT)`;
     // 現状額（実績の月の金額そのもの）。ダッシュボードの「現状額（合計）」と同じ
     const effAmt = `COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)`;
-    const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta));
+    const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta, actualMeta));
     // 承認日の前後。承認日の無いA基準は、どちらにも入れない（画面と同じ決まり）
     const first = `${RAISE_START_YM}-01`;
     const sides = { after: `a_date_m3 >= '${first}'`, before: `a_date_m3 < '${first}'` };
@@ -2381,7 +2393,7 @@ async function dashboardData(query, user) {
   // 土台（実績の金額）を崩さずに計画額を出せる。
   const approved = aDateCond(query);
   // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（一覧の表示と同じ）
-  const slideFrom = slideFromDate(aggMeta);
+  const slideFrom = slideFromDate(aggMeta, actualMeta);
   const aPrice = (n) => aPriceSql(n, slideFrom);
   // 値上げ幅の基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
   // 数量は当月の実績数に揃えてあり、基準の単価が無い品目・実績数が無い品目は
@@ -2489,7 +2501,7 @@ async function dashboardData(query, user) {
   // 申請の入った件数（単価>0）と値上げ額の合計（(A基準−実績)×数量）を出す。
   // 承認日などの絞り込み（dealFilters）はここにも効く。
   const planned = (n) => `${aPrice(n)} > 0${approved ? ` AND ${approved}` : ''}`;
-  const avgAgg = avgPriceAgg(query, aggMeta);
+  const avgAgg = avgPriceAgg(query, aggMeta, actualMeta);
 
   // 承認日の前後で分けた値上げ額の内訳。
   // 画面の「承認日」で選んだ年月（未指定なら取り組みの開始月）を境目に、
@@ -2643,8 +2655,8 @@ const AVG_GROUPS = { equip: 'equip_name', branch: 'branch', corp: 'corp_name' };
 api.get('/dashboard/avg-prices', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
   const { where, params } = dealFilters(req.query, req.user);
-  const { aggMeta } = await loadImportMeta();
-  const agg = avgPriceAgg(req.query, aggMeta);
+  const { aggMeta, actualMeta } = await loadImportMeta();
+  const agg = avgPriceAgg(req.query, aggMeta, actualMeta);
   // 内訳（器具区分別・支店別・法人別）。まとめ方は画面のタブで選ぶ。
   // 全体の合計は内訳を足して作るので、走査は1回で済む
   const col = AVG_GROUPS[String(req.query.group ?? '')] ?? null;
@@ -3164,7 +3176,7 @@ api.get('/deals', wrap(async (req, res) => {
   const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
-  const { months, masterMonths: mMonths, aggMeta } = await loadImportMeta();
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
   // 承認日の条件（ダッシュボードと同じ判定）。合計の計上に使う
   const approvedCond = aDateCond(req.query);
   const [totals, rows] = await Promise.all([
@@ -3185,7 +3197,7 @@ api.get('/deals', wrap(async (req, res) => {
                            * (${planMonthlyQty()}) ELSE 0 END) AS gain_minus,
              ${[0, 1, 2, 3].map((n) => {
                // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（表示と同じ）
-               const a = aPriceSql(n, slideFromDate(aggMeta));
+               const a = aPriceSql(n, slideFromDate(aggMeta, actualMeta));
                // 承認日の絞り込みは、ダッシュボードと同じく「値上げ額を計上するか」に効かせる。
                // 案件は全部そのまま出したうえで、合計だけ条件に合うものを足す。
                return `
