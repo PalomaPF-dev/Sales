@@ -1891,9 +1891,27 @@ api.get('/meta', wrap(async (req, res) => {
 // ---- 閲覧範囲（役割ごとに見えるデータを絞る） ----
 
 /**
+ * 支店名の書き方のゆれを吸収するための、突き合わせる候補。
+ *
+ * 名簿（利用者）は「大阪支店」、価格調査の取込は「大阪」と、
+ * 末尾の「支店」の有無が揃っていない。素の一致で比べると
+ * どの営業担当者にも案件が1件も出なくなるため、両方の書き方を候補にする。
+ * 索引（idx_deals_branch）を使えるよう、関数で加工せず候補の一致で比べる。
+ *
+ * どちらを正とするかは決めない（名簿・取込のどちらの書き方でも通る）。
+ */
+function branchMatches(branch) {
+  const raw = String(branch ?? '').trim();
+  if (!raw) return [];
+  const bare = raw.replace(/支店$/, '').trim();
+  if (!bare) return [raw];
+  return [...new Set([raw, bare, `${bare}支店`])];
+}
+
+/**
  * 権限ごとの閲覧範囲を、案件テーブルに対する条件として返す。
  *
- *   営業担当者          … 自分の支店のみ
+ *   営業担当者          … 自分の支店のみ（支店の中の営業所はすべて見える）
  *   支店長・広域担当    … 全支店
  *   本社（planning）    … 全社（目標値の設定もできる）
  *   管理者・開発者      … 全社
@@ -1916,11 +1934,15 @@ function scopeConditions(user, alias = '') {
   // 閲覧専用（共通ID）。見るだけの権限なので、支店にかかわらず全社を見る
   if (isViewerRole(user.role)) return { where: [], params: [] };
 
-  // 営業担当者（既定）。自分の支店のみ
-  if (!user.branch) {
+  // 営業担当者（既定）。自分の支店のみ（支店の中の営業所はすべて）
+  const cands = branchMatches(user.branch);
+  if (!cands.length) {
     return { where: ['1 = 0'], params: [], missing: '支店' };
   }
-  return { where: [`${p}branch = ?`], params: [user.branch] };
+  return {
+    where: [`${p}branch IN (${cands.map(() => '?').join(',')})`],
+    params: cands,
+  };
 }
 
 /** 画面に出すための範囲の説明。未設定のときは理由も返す */
@@ -2020,7 +2042,7 @@ function aPriceSql(n, slideFrom, prefix = '') {
 
 /**
  * 値上げの進み具合をまとめて返す。
- * 表示できる範囲は案件一覧と同じ（営業担当者は自分の営業所だけ）。
+ * 表示できる範囲は案件一覧と同じ（営業担当者は自分の支店だけ）。
  *
  * 単価だけの管理表なので金額は扱わず、件数と割合で進捗を示す。
  */
@@ -3010,11 +3032,18 @@ function dealFilters(q, user) {
   for (const [key, col] of [
     ['equip', 'equip_name'], ['person', 'sales_person'],
     ['customer', 'customer_code'], ['corp', 'corp_code'], ['priceType', 'price_type_code'],
-    ['branch', 'branch'], ['office', 'office'],
+    ['office', 'office'],
     ['category', 'category_name'], ['model', 'model_name'],
     ['industry', 'industry'],
   ]) {
     if (q[key]) { where.push(`${col} = ?`); params.push(q[key]); }
+  }
+  // 支店は「大阪」「大阪支店」のどちらの書き方でも同じ支店として絞り込む
+  // （画面の選択肢は案件の書き方だが、名簿の書き方で来ることもあるため）
+  if (q.branch) {
+    const cands = branchMatches(q.branch);
+    where.push(`branch IN (${cands.map(() => '?').join(',')})`);
+    params.push(...cands);
   }
   // 交渉の進み具合（未入力 / 合意済 / 完了）。ビューの r2_state と同じ条件で絞る
   for (const [key, col] of [['r2State', 'r2_state']]) {
@@ -3805,7 +3834,7 @@ api.get('/corps', wrap(async (req, res) => {
 
 /**
  * 範囲内に案件がある法人だけを返す。
- * 自分の営業所が取引していない法人は、交渉情報も履歴も見せない。
+ * 自分の支店が取引していない法人は、交渉情報も履歴も見せない。
  */
 async function findCorpInScope(code, user) {
   const scope = scopeConditions(user);

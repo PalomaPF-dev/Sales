@@ -15,6 +15,20 @@ export const FILTER_KEYS = ['industry', 'q', 'equip', 'category', 'model', 'pers
 export const RAISE_START_YM = '2026-05';
 
 /**
+ * 支店名が同じ支店を指しているか。
+ *
+ * 名簿（利用者）は「大阪支店」、価格調査の取込は「大阪」と、末尾の「支店」の
+ * 有無が揃っていない。素の一致で比べると自分の支店を選べないため、
+ * 「支店」を外して比べる。サーバー側の branchMatches と同じ考え方。
+ */
+export function sameBranch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (v: string | null | undefined) =>
+    String(v ?? '').trim().replace(/支店$/, '').trim();
+  const x = norm(a);
+  return Boolean(x) && x === norm(b);
+}
+
+/**
  * 値上げ幅の「基準」（比較のもと）。
  * マスタ登録単価（A基準）とこの単価との差が値上げ幅で、
  * それに当月の実績数を掛けたものが値上げ額になる。
