@@ -3366,6 +3366,7 @@ api.get('/deals/export', wrap(async (req, res) => {
   const withCost = canSeeAllInfo(req.user.role);
   const buffer = buildWorkbook(rows, priceTypes,
     { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query),
+      aDate: { ym: req.query.aDateYm, op: req.query.aDateOp },
       totals, filters: dealsFilterLabels(req.query) });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -3406,7 +3407,8 @@ api.get('/deals/export-rows', wrap(async (req, res) => {
   ]);
   const withCost = canSeeAllInfo(req.user.role);
   const table = buildExportTable(rows,
-    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query) });
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query),
+      aDate: { ym: req.query.aDateYm, op: req.query.aDateOp } });
   res.json({
     rows: table.rows,
     // 見出しなどの形は最初の1回だけ返す（毎回返しても害はないが応答を小さく保つ）
