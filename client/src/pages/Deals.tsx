@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
-import { narrowByParent } from '../filterOptions';
+import { narrowByParent, sameBranch } from '../filterOptions';
 import { NEGO_LABELS } from '../types';
 import type { Deal, Meta, RoundState } from '../types';
 import SearchBox from '../components/SearchBox';
@@ -283,7 +283,10 @@ export default function Deals() {
       // （広域担当・本社・管理者は全社のまま。支店長も絞り込みを外せば全支店が見える）
       if (!params.get('branch') && me.branch
           && ['sales', 'branch_manager'].includes(me.role)) {
-        if (m.branches.some((b) => b.name === me.branch)) setParam('branch', me.branch);
+        // 選択肢は案件の書き方（「大阪」）、名簿は「大阪支店」のことがあるので
+        // 「支店」の有無を無視して探し、選択肢の側の値で絞り込む
+        const mine = m.branches.find((b) => sameBranch(b.name, me.branch));
+        if (mine) setParam('branch', mine.name);
       }
     }).catch((e) => setMsg({ kind: 'error', text: e.message }));
   }, []);
