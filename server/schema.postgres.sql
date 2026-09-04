@@ -424,6 +424,9 @@ CREATE TABLE IF NOT EXISTS master_price_history (
 -- 「どの月の実績で比べるか」を選べるように、取込のたびにその月ぶんを残す。
 --
 -- 値は案件へ入ったものをそのまま写す（案件の数字とずれないようにするため）。
+--
+-- 主キーが id ではないので、server/db.js の TABLES_WITHOUT_ID にも入れてある
+-- （入れ忘れると、PostgreSQLでだけ INSERT に RETURNING id が付いて失敗する）。
 CREATE TABLE IF NOT EXISTS deal_actuals (
   ent_cd           TEXT NOT NULL,   -- 得意先（法人）コード
   model_code       TEXT NOT NULL,   -- 商品コード
