@@ -291,7 +291,8 @@ export default function AvgPrices() {
   const models = narrowByParent(meta?.models,
     [['equip', get('equip')], ['category', get('category')]]);
 
-  const actYm = meta?.actualMeta?.ym ?? '';
+  // 実績の月。画面で選んでいればその月、選んでいなければ最後に取り込んだ月
+  const actYm = get('actYm') || meta?.actualMeta?.ym || '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
   const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
   const baseName = base === 'past' ? '過去最新単価'
@@ -443,6 +444,21 @@ export default function AvgPrices() {
 
         {/* 3段目。何と比べ、どの範囲を数えるか */}
         <div className="frow">
+          {/* 実績の月。取り込んだ月ぶんが月別に残っているので、比べたい月を選べる */}
+          {(meta?.actualMonths?.length ?? 0) > 1 && (
+            <label className="fld"
+                   title={'どの月の売上高（実績）で比べるかを選びます。'
+                     + '数量と単価がその月に切り替わります'}>
+              実績の月
+              <select value={get('actYm')} onChange={(e) => setParam('actYm', e.target.value)}>
+                {meta?.actualMonths?.map((m, i) => (
+                  <option key={m.ym} value={i === 0 ? '' : m.ym}>
+                    {`${Number(m.ym.slice(5, 7))}月`}{i === 0 ? '（最新）' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="fld" title="各月の計画と比べる単価を選びます">
             基準<small style={{ fontWeight: 400 }}>（比較のもと）</small>
             <select value={base}

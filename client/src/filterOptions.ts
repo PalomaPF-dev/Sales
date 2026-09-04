@@ -3,7 +3,8 @@
  * （同じ条件のまま画面を行き来できるようにするため）。サーバー側の判定も同じ。
  */
 export const FILTER_KEYS = ['industry', 'q', 'equip', 'category', 'model', 'person', 'customer',
-  'corp', 'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base'] as const;
+  'corp', 'branch', 'office', 'aState', 'act', 'aDateYm', 'aDateOp', 'gain', 'base',
+  'actYm'] as const;
 
 /**
  * 承認日の既定。今回の値上げの取り組みが始まった月。

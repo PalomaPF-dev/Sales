@@ -1873,6 +1873,8 @@ api.get('/meta', wrap(async (req, res) => {
     aggMeta,
     histMeta,
     actualMeta,
+    // 実績として選べる月（月別に残してあるもの）。新しい順。切替の選択肢に使う
+    actualMonths: await actualMonths(),
     pastMax: pastRange?.max ?? null,
     exportMaxRows: EXPORT_MAX_ROWS,
     // 弾ごとの進み具合。案件一覧の絞り込みに使う
@@ -1999,6 +2001,64 @@ function dataDateOf(takenOn) {
 }
 
 /**
+ * 実績の月の切り替え。
+ *
+ * 案件（deals）は最後に取り込んだ月の実績しか持たないが、月別の実績
+ * （deal_actuals）に過去の月も残してある。画面で別の月を選んだときは、
+ * そちらを結合して実績の列を差し替える。
+ *
+ * 既定（＝案件に入っている月）のときは何も足さない。これまでどおりの
+ * SQLがそのまま走るので、いつも見ている数字は1円も変わらない。
+ *
+ * 年月は「YYYY-MM」だけを通すので、そのまま埋め込んでよい（承認日の条件と同じ）。
+ */
+/** 月を切り替えたときに差し替わる実績の列（案件にも同じ名前の列がある） */
+const ACTUAL_COLS = ['master_avg_price', 'master_price', 'master_qty', 'master_amount',
+  'plan_qty', 'plan_amount', 'past_price', 'past_date'];
+const NO_ACT = { ym: '', join: '', prefix: '', col: (c) => c, switched: false };
+function actualSource(query, actualMeta, alias = 'deal_calc') {
+  const cur = /^\d{4}-\d{2}$/.test(String(actualMeta?.ym ?? '')) ? String(actualMeta.ym) : '';
+  const want = /^\d{4}-\d{2}$/.test(String(query?.actYm ?? '')) ? String(query.actYm) : '';
+  if (!want || want === cur) return { ...NO_ACT, ym: cur };
+  // 突き合わせのキー（得意先・商品コード）は案件にも同じ名前の列があるため、
+  // 別名にしてから結合する。そのままだと WHERE の中の model_code が
+  // どちらの表のものか決まらず、SQLがエラーになる。
+  // 実績の列（ACTUAL_COLS）はわざと同じ名前のままにしてある。
+  // うっかり av. を付け忘れたときに、静かに違う月の値を返さずエラーになるほうが安全。
+  return {
+    ym: want,
+    join: `LEFT JOIN (SELECT ent_cd AS av_ent, model_code AS av_model, ${ACTUAL_COLS.join(', ')}
+                        FROM deal_actuals WHERE ym = '${want}') av
+             ON av.av_ent = ${alias}.hist_ent_cd AND av.av_model = ${alias}.model_code`,
+    prefix: 'av.',
+    col: (c) => `av.${c}`,
+    switched: true,
+  };
+}
+
+/**
+ * 一覧の行に返す実績の列を、選んだ月のもので上書きするSELECT句。
+ * 画面もExcelも同じ列名（master_qty など）で受け取れるので、
+ * 出す側は月が切り替わったことを意識しなくてよい。
+ * 選んでいないときは空文字（deal_calc.* の値がそのまま出る）。
+ */
+function actOverride(act) {
+  if (!act.switched) return '';
+  return `${ACTUAL_COLS.map((c) => `av.${c} AS ${c}`).join(', ')},`;
+}
+
+/** 実績として選べる月（月別に残してあるもの）。新しい順 */
+async function actualMonths() {
+  try {
+    const rows = await db.all(
+      'SELECT ym, COUNT(*) AS deals FROM deal_actuals GROUP BY ym ORDER BY ym DESC');
+    return rows.map((r) => ({ ym: String(r.ym), deals: Number(r.deals) }));
+  } catch {
+    return [];   // 月別の表が無い旧DBでは切り替えを出さない
+  }
+}
+
+/**
  * 翌月の計画を当月の計画で置き換える境目の日。
  * この日より前の登録は、今回の値上げより前の古い申請とみなす。
  *
@@ -2064,10 +2124,12 @@ function aPriceSql(n, slideFrom, prefix = '') {
 function avgPriceAgg(query, aggMeta, actualMeta) {
   const f = (c) => `CAST(${c} AS FLOAT)`;
   const approved = aDateCond(query);
-  const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta, actualMeta));
+  // 実績の月。画面で選んだ月があればそちらの実績を使う（ダッシュボードと同じ）
+  const act = actualSource(query, actualMeta);
+  const aPrice = (n) => aPriceSql(n, slideFromDate(aggMeta, { ym: act.ym }));
   // 比較のもと（過去最新単価／マスタ単価／実単価）。画面の「基準」で選ぶ
-  const base = basePriceSql(query);
-  const qty = f('master_qty');
+  const base = basePriceSql(query, act.prefix);
+  const qty = f(act.col('master_qty'));
   // 対象は「基準の単価があり、当月の実績数がある品目」。月ごとに変えず、
   // どの月も同じ品目・同じ数量で比べる（基準の平均が1つに定まる）。
   const target = `${base} > 0 AND ${qty} > 0${approved ? ` AND ${approved}` : ''}`;
@@ -2367,8 +2429,13 @@ api.get('/raise-history', wrap(async (req, res) => {
 }));
 
 async function dashboardData(query, user) {
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  // 実績の月。画面で選んだ月があればそちらの実績（deal_actuals）へ差し替える。
+  // 既定（案件に入っている月）のときは結合を足さず、これまでどおりのSQLが走る
+  const act = actualSource(query, actualMeta);
   // 絞り込みは案件一覧と同じものを受ける。閲覧範囲もここに含まれる。
-  const { where, params: p } = dealFilters(query, user);
+  // 実績で絞る条件（当月実績の有無・売上改善額の向き）は選んだ月のもので判定する
+  const { where, params: p } = dealFilters(query, user, act);
   const andWhere = (cond) => {
     if (!cond) return where;
     return where ? `${where} AND ${cond}` : `WHERE ${cond}`;
@@ -2387,25 +2454,26 @@ async function dashboardData(query, user) {
   // まとまりごとに丸めがズレる。倍精度に上げてから足す
   // （FLOAT は PostgreSQL では倍精度、SQLite では通常の実数）。
   const f = (c) => `CAST(${c} AS FLOAT)`;
-  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  /** 実績の列（選んだ月のもの） */
+  const A = (c) => f(act.col(c));
 
   // 実績の基準。マスタ登録の単価を優先し、無い品目は出荷実績で補う（案件一覧と同じ）。
   // マスタ登録の売上数は月平均（÷3）×対象月数（months）で期間ぶんに換算して揃える。
   // こうすると「合計して ÷months で月あたりを出す」これまでの作りのまま正しい値になる。
   // 実単価（実績の正）。当月の金額 ÷ 数量で、見積ぶんが混ざるとマスタ単価より下がる
-  const effPrice = f('master_avg_price');
-  const effQty = f('master_qty');
+  const effPrice = A('master_avg_price');
+  const effQty = A('master_qty');
   // マスタ単価（値決めの単価）。A基準（今後の計画）はこれと比べる。
   // マスタ単価の無い品目（古い取込など）は実単価で代用する
-  const mPrice = `COALESCE(${f('master_price')}, ${f('master_avg_price')})`;
+  const mPrice = `COALESCE(${A('master_price')}, ${A('master_avg_price')})`;
   // 現状額は当月の金額そのもの（単価×数量で戻すと端数がずれ、実績の合計と合わなくなる）
-  const effAmt = `COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)`;
+  const effAmt = `COALESCE(${A('master_amount')}, ${A('master_avg_price')} * ${A('master_qty')}, 0)`;
 
   // マスタ分（値決めどおりに出た分）の数量と金額。A基準はここに対して当てる。
   // 合計には見積ぶんも入っており、そこへ値上げを当てると計画が過大になる。
   // 種別の分かれていない古い取込では合計と同じ値になる。
-  const planQty = `COALESCE(${f('plan_qty')}, ${f('master_qty')}, 0)`;
-  const planAmt = `COALESCE(${f('plan_amount')}, ${effAmt})`;
+  const planQty = `COALESCE(${A('plan_qty')}, ${A('master_qty')}, 0)`;
+  const planAmt = `COALESCE(${A('plan_amount')}, ${effAmt})`;
   // 計画額の土台は 7月金額（合計）そのもの。値上げ幅（値決めどうしの差）を
   // ここへ足す形にすることで、実績の金額と同じ土俵でA基準と比べられる。
   const planBase = effAmt;
@@ -2418,20 +2486,20 @@ async function dashboardData(query, user) {
   // 土台（実績の金額）を崩さずに計画額を出せる。
   const approved = aDateCond(query);
   // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（一覧の表示と同じ）
-  const slideFrom = slideFromDate(aggMeta, actualMeta);
+  const slideFrom = slideFromDate(aggMeta, { ym: act.ym });
   const aPrice = (n) => aPriceSql(n, slideFrom);
   // 値上げ幅の基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
   // 数量は当月の実績数に揃えてあり、基準の単価が無い品目・実績数が無い品目は
   // 変動なし（0）になる。0なので金額に足しても土台の金額を消してしまわない
-  const basePrice = basePriceSql(query);
-  const raiseQty = raiseQtySql();
-  const aGain = (n) => raiseAmtSql(aPrice(n), query, approved);
+  const basePrice = basePriceSql(query, act.prefix);
+  const raiseQty = raiseQtySql(act.prefix);
+  const aGain = (n) => raiseAmtSql(aPrice(n), query, approved, act.prefix);
 
   // 稼働日での日量換算。数量は売上高（実績の月）のものをそのまま使っているため、
   // 月ごとの稼働日の違いをそのままにすると、稼働日の少ない月の計画が大きく出る。
   // 実績の月を稼働日で割って日量に直し、計画の月の稼働日を掛け直す。
   // 稼働日の分からない月は倍率1（換算しない）。
-  const workdays = workdayPlan(actualMeta?.ym ?? '',
+  const workdays = workdayPlan(act.ym,
     [0, 1, 2, 3].map((n) => aggMeta?.[`m${n}`] ?? ''));
   // SQLiteでは整数どうしの割り算が整数になるため、小数で書く
   const dayRate = (n) => {
@@ -2464,7 +2532,7 @@ async function dashboardData(query, user) {
   // （4月からの推移を、まとめの表と同じ粒度で見られるようにする）。
   // 走査は既存の集計と同じ1回のままで、足し算だけが増える。
   // 価格調査を取り込んでいれば実績（過去→当月）を出す
-  const actSlot = actualMeta?.ym ? 1 : 0;
+  const actSlot = act.ym ? 1 : 0;
   // 実績は「過去最新単価（値上げ前）→ 当月のマスタ単価」。どちらも値決めの単価なので
   // そのまま比べられる（ファイルの「売上改善額」と同じ見方）。
   // 単価は円単位なので、0.5円未満のズレは「単価同じ」とみなす。
@@ -2474,22 +2542,22 @@ async function dashboardData(query, user) {
   // 見積ぶんも含めた、実際の売上としての値上がりを表す。
   // 参考として、値決め分だけで見た場合（金額（マスタ）とマスタ分の数量）と、
   // 単価どうしで見た場合（マスタ単価 × マスタ分の数量）も一緒に返す。
-  const hasPast = 'past_price > 0';
+  const hasPast = `${act.col('past_price')} > 0`;
   // 上がった／単価同じ の判別と、単価で戻した参考の金額は、
   // 当月の単価が出る品目だけが対象（返品だけの品目などは単価が出ない）
   const hasBoth = `${hasPast} AND (${mPrice}) IS NOT NULL`;
-  const actUp = `${hasBoth} AND (${mPrice}) - ${f('past_price')} >= 0.5`;
-  const actSame = `${hasBoth} AND ABS((${mPrice}) - ${f('past_price')}) < 0.5`;
+  const actUp = `${hasBoth} AND (${mPrice}) - ${A('past_price')} >= 0.5`;
+  const actSame = `${hasBoth} AND ABS((${mPrice}) - ${A('past_price')}) < 0.5`;
   // 売上改善額 =（当月のマスタ単価 − 過去最新単価）× マスタ分の数量。
   // 上がった品目（プラス）と下がった品目（マイナス）に分けて足す。
   // 7月金額（合計）からこの改善額を引いたものが「値上げ前当初」の金額になる。
-  const actDown = `${hasBoth} AND (${mPrice}) - ${f('past_price')} <= -0.5`;
-  const gainExpr = `((${mPrice}) - ${f('past_price')}) * (${planQty})`;
+  const actDown = `${hasBoth} AND (${mPrice}) - ${A('past_price')} <= -0.5`;
+  const gainExpr = `((${mPrice}) - ${A('past_price')}) * (${planQty})`;
   const actAgg = `
     SUM(CASE WHEN ${hasPast} THEN ${effAmt} END) AS act_amt_1,
-    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${effQty}) END) AS act_base_1,
+    SUM(CASE WHEN ${hasPast} THEN ${A('past_price')} * (${effQty}) END) AS act_base_1,
     SUM(CASE WHEN ${hasPast} THEN ${planAmt} END) AS act_mst_1,
-    SUM(CASE WHEN ${hasPast} THEN ${f('past_price')} * (${planQty}) END) AS act_mstbase_1,
+    SUM(CASE WHEN ${hasPast} THEN ${A('past_price')} * (${planQty}) END) AS act_mstbase_1,
     SUM(CASE WHEN ${hasBoth} THEN (${mPrice}) * (${planQty}) END) AS act_mp_1,
     SUM(CASE WHEN ${actUp} THEN ${gainExpr} ELSE 0 END) AS gain_plus_1,
     SUM(CASE WHEN ${actDown} THEN ${gainExpr} ELSE 0 END) AS gain_minus_1,
@@ -2501,8 +2569,9 @@ async function dashboardData(query, user) {
 
   // マスタ分（値決めどおりに出た分）の金額と数量。A基準の比較のもとになる。
   // 合計（土台）との差が、見積などで値決めどおりに出なかった分にあたる。
-  const mpBelow = `master_qty > 0 AND master_price > 0 AND ${effPrice} - (${mPrice}) <= -0.5`;
-  const mpSame = `master_qty > 0 AND master_price > 0 AND ABS(${effPrice} - (${mPrice})) < 0.5`;
+  const mpHas = `${act.col('master_qty')} > 0 AND ${act.col('master_price')} > 0`;
+  const mpBelow = `${mpHas} AND ${effPrice} - (${mPrice}) <= -0.5`;
+  const mpSame = `${mpHas} AND ABS(${effPrice} - (${mPrice})) < 0.5`;
   const ab = `
     COUNT(*) AS deals,
     SUM(${effQty}) AS qty,
@@ -2542,7 +2611,7 @@ async function dashboardData(query, user) {
   };
   const splitAgg = [0, 1, 2, 3].flatMap((n) =>
     Object.entries(splitSides).flatMap(([key, cond]) => [
-      `SUM(${raiseAmtSql(aPrice(n), query, cond)}${dayRate(n)}) AS raise_${key}_m${n}`,
+      `SUM(${raiseAmtSql(aPrice(n), query, cond, act.prefix)}${dayRate(n)}) AS raise_${key}_m${n}`,
       `SUM(CASE WHEN ${aPrice(n)} > 0 AND ${cond} THEN 1 ELSE 0 END) AS cnt_${key}_m${n}`,
     ])).join(',');
 
@@ -2559,7 +2628,7 @@ async function dashboardData(query, user) {
   // （承認日・A基準の有無）は掛けない。マスタ登録件数の母数もこれを使う。
   const pureQuery = { ...query };
   delete pureQuery.aState;
-  const pure = dealFilters(pureQuery, user);
+  const pure = dealFilters(pureQuery, user, act);
 
   // 価格調査の実績。過去最新単価（値上げ前）から当月までに実際いくら上がったか。
   const actAmt = actAgg;
@@ -2568,18 +2637,18 @@ async function dashboardData(query, user) {
     // 品目件数・数量と、月ごとの実単価は同じ絞り込みなので1文にまとめる
     // （案件は10万件あり、走査の回数がそのまま待ち時間になるため）
     db.get(`SELECT COUNT(*) AS deals, SUM(${effQty}) AS qty, ${actAmt}
-            FROM deal_calc ${pure.where}`, pure.params),
+            FROM deal_calc ${act.join} ${pure.where}`, pure.params),
     // マスタ登録の件数（A基準の入った件数）はすべての絞り込みが効く
     db.get(`SELECT ${monthAgg}, ${avgAgg}, ${splitAgg},
               SUM(CASE WHEN ${planned(3)} THEN 1 ELSE 0 END) AS covered
-            FROM deal_calc ${planJoin} ${where}`, p),
-    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
+            FROM deal_calc ${planJoin} ${act.join} ${where}`, p),
+    db.all(`SELECT equip_name AS name, ${ab} FROM deal_calc ${planJoin} ${act.join} ${andWhere(abCond)}
              GROUP BY equip_name ORDER BY SUM(${effAmt}) DESC`, p),
-    db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
+    db.all(`SELECT branch AS name, ${ab} FROM deal_calc ${planJoin} ${act.join} ${andWhere(abCond)}
              GROUP BY branch`, p),
     // 法人はすべて返す（画面でタブに分けて出すため）。
     // まとまりの数は法人グループの数（千件に満たない）なので、上限は付けない
-    db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${andWhere(abCond)}
+    db.all(`SELECT corp_name AS name, ${ab} FROM deal_calc ${planJoin} ${act.join} ${andWhere(abCond)}
              GROUP BY corp_name ORDER BY SUM(${effAmt}) DESC`, p),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
@@ -2605,8 +2674,8 @@ async function dashboardData(query, user) {
   // 現状額（base）は、その月に実績のある案件だけを同じ数量で足したもの。
   // 実績のある案件だけで比べないと、値上げ額が実態より大きく（小さく）出てしまう。
   // 実績は1つ（過去最新単価 → 当月）。計画（A基準）と同じ形で並べられるようにする
-  const actuals = actualMeta?.ym ? [{
-    ym: actualMeta.ym,
+  const actuals = act.ym ? [{
+    ym: act.ym,
     // 金額（合計）のうち、過去最新単価のある品目ぶんの合計と、その比較のもと
     amount: Number(actMonths?.act_amt_1 ?? 0),
     base: Number(actMonths?.act_base_1 ?? 0),
@@ -2658,7 +2727,7 @@ async function dashboardData(query, user) {
     pastMonths: past.months,
     pastNote: past.note,
     // 集計表（器具区分別など）に出している実績の月の並び。未取込なら空
-    abActYms: actualMeta?.ym ? [actualMeta.ym] : [],
+    abActYms: act.ym ? [act.ym] : [],
   };
 }
 
@@ -2679,17 +2748,20 @@ const AVG_GROUPS = { equip: 'equip_name', branch: 'branch', corp: 'corp_name' };
 
 api.get('/dashboard/avg-prices', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
-  const { where, params } = dealFilters(req.query, req.user);
   const { aggMeta, actualMeta } = await loadImportMeta();
+  // 実績の月。選んだ月があれば月別の実績を結合する（集計側と同じ）
+  const act = actualSource(req.query, actualMeta);
+  const { where, params } = dealFilters(req.query, req.user, act);
   const agg = avgPriceAgg(req.query, aggMeta, actualMeta);
   // 内訳（器具区分別・支店別・法人別）。まとめ方は画面のタブで選ぶ。
   // 全体の合計は内訳を足して作るので、走査は1回で済む
   const col = AVG_GROUPS[String(req.query.group ?? '')] ?? null;
   const [total, rows] = await Promise.all([
-    db.get(`SELECT ${agg} FROM deal_calc ${where}`, params),
+    db.get(`SELECT ${agg} FROM deal_calc ${act.join} ${where}`, params),
     col
-      ? db.all(`SELECT ${col} AS name, ${agg} FROM deal_calc ${where}
-                 GROUP BY ${col} ORDER BY SUM(COALESCE(CAST(master_qty AS FLOAT), 0)) DESC`, params)
+      ? db.all(`SELECT ${col} AS name, ${agg} FROM deal_calc ${act.join} ${where}
+                 GROUP BY ${col}
+                 ORDER BY SUM(COALESCE(CAST(${act.col('master_qty')} AS FLOAT), 0)) DESC`, params)
       : Promise.resolve([]),
   ]);
   // 支店は都道府県順（選択肢と同じ並び）
@@ -2948,15 +3020,18 @@ const DEFAULT_ORDER = 'corp_name, customer_name, equip_name, model_name, id';
  * 未入力の行は末尾に寄せる。SQLiteはNULLを先頭、PostgreSQLは末尾に置くため、
  * 「NULLかどうか」を先に並べて、どちらのDBでも同じ見え方にする。
  */
-function dealOrder(q, mon = null) {
+function dealOrder(q, mon = null, act = NO_ACT) {
   let col = SORTABLE.get(String(q.sort ?? ''));
   if (!col) return DEFAULT_ORDER;
   // 実績の列は、表示と同じ「マスタ登録の1~3月実績を優先した値」で並べる。
   // 数量は期間の長さが行ごとに違うため、月平均に直して比べる。
   if (mon) {
-    if (col === 'hist_avg_price') col = EFF_PRICE;
-    if (col === 'hist_qty') col = `(${effMonthlyQty()})`;
+    if (col === 'hist_avg_price') col = act.col(EFF_PRICE);
+    if (col === 'hist_qty') col = `(${effMonthlyQty(act.prefix)})`;
   }
+  // 実績の月を切り替えているときは、その月の列で並べる
+  // （結合した表と案件の両方に同じ名前の列があるため、どちらかを指す必要がある）
+  if (ACTUAL_COLS.includes(col)) col = act.col(col);
   const dir = String(q.dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   return `CASE WHEN ${col} IS NULL THEN 1 ELSE 0 END, ${col} ${dir}, id`;
 }
@@ -3006,7 +3081,7 @@ const SEARCH_COLS = [
   'branch', 'office', 'sales_person',
 ];
 
-function dealFilters(q, user) {
+function dealFilters(q, user, act = NO_ACT) {
   const where = [];
   const params = [];
   if (q.ids) {
@@ -3056,14 +3131,18 @@ function dealFilters(q, user) {
   // 当月実績（価格調査）との突合。当月実績をベースにマスタ登録（A基準）を重ねるため、
   // マスタ登録にだけあって突合で当たらなかった品目は当月の数量（master_qty）が入らない。
   // その品目は「当月実績無し」として絞り込める
-  if (q.act === 'has') where.push('master_qty IS NOT NULL');
-  else if (q.act === 'none') where.push('master_qty IS NULL');
+  // 実績の月を切り替えているときは、その月の実績で判定する（見えている数字と揃える）
+  if (q.act === 'has') where.push(`${act.col('master_qty')} IS NOT NULL`);
+  else if (q.act === 'none') where.push(`${act.col('master_qty')} IS NULL`);
 
   // 売上改善額の向き。過去最新単価と当月のマスタ単価を比べて、
   // 上がった品目（プラス）・下がった品目（マイナス）・変わらない品目に分ける。
   // ダッシュボードの内訳から、その中身をこの一覧で開けるようにするための絞り込み。
-  const gainHas = `past_price > 0 AND ${MASTER_PRICE} IS NOT NULL`;
-  const gainDiff = `(${MASTER_PRICE} - CAST(past_price AS FLOAT))`;
+  // 実績（過去最新単価・マスタ単価）は、選んでいる実績の月のものを見る
+  const gainMp = `COALESCE(CAST(${act.col('master_price')} AS FLOAT),
+                           CAST(${act.col('master_avg_price')} AS FLOAT))`;
+  const gainHas = `${act.col('past_price')} > 0 AND ${gainMp} IS NOT NULL`;
+  const gainDiff = `(${gainMp} - CAST(${act.col('past_price')} AS FLOAT))`;
   if (q.gain === 'plus') where.push(`${gainHas} AND ${gainDiff} >= 0.5`);
   else if (q.gain === 'minus') where.push(`${gainHas} AND ${gainDiff} <= -0.5`);
   else if (q.gain === 'same') where.push(`${gainHas} AND ABS(${gainDiff}) < 0.5`);
@@ -3187,9 +3266,10 @@ async function loadImportMeta() {
 const EFF_PRICE = 'master_avg_price';
 /** マスタ単価（値決めの単価）。A基準はこれと比べる。無ければ実単価で代用する */
 const MASTER_PRICE = 'COALESCE(CAST(master_price AS FLOAT), CAST(master_avg_price AS FLOAT))';
-const effMonthlyQty = () => 'COALESCE(CAST(master_qty AS FLOAT), 0)';
+const effMonthlyQty = (prefix = '') => `COALESCE(CAST(${prefix}master_qty AS FLOAT), 0)`;
 /** マスタ分（値決めどおりに出た分）の数量。A基準の値上げ額はこれに対して出す */
-const planMonthlyQty = () => 'COALESCE(CAST(plan_qty AS FLOAT), CAST(master_qty AS FLOAT), 0)';
+const planMonthlyQty = (prefix = '') =>
+  `COALESCE(CAST(${prefix}plan_qty AS FLOAT), CAST(${prefix}master_qty AS FLOAT), 0)`;
 
 /**
  * 値上げ幅の「基準」（比較のもと）。画面の「基準」で選ぶ。
@@ -3251,46 +3331,52 @@ async function histMonthsFromHistory() {
 function dealsTotals(query, where, params, aggMeta, actualMeta) {
   // 承認日の条件（ダッシュボードと同じ判定）。合計の計上に使う
   const approvedCond = aDateCond(query);
+  // 実績の月。画面で選んだ月があればそちらの実績を使う（ダッシュボードと同じ）
+  const act = actualSource(query, actualMeta);
+  const MP = `COALESCE(CAST(${act.col('master_price')} AS FLOAT),
+                       CAST(${act.col('master_avg_price')} AS FLOAT))`;
   return db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
-             SUM(CASE WHEN past_price > 0 AND ${MASTER_PRICE} IS NOT NULL
-                       AND ${MASTER_PRICE} - CAST(past_price AS FLOAT) >= 0.5
-                      THEN (${MASTER_PRICE} - CAST(past_price AS FLOAT))
-                           * (${planMonthlyQty()}) ELSE 0 END) AS gain_plus,
-             SUM(CASE WHEN past_price > 0 AND ${MASTER_PRICE} IS NOT NULL
-                       AND ${MASTER_PRICE} - CAST(past_price AS FLOAT) <= -0.5
-                      THEN (${MASTER_PRICE} - CAST(past_price AS FLOAT))
-                           * (${planMonthlyQty()}) ELSE 0 END) AS gain_minus,
+             SUM(CASE WHEN ${act.col('past_price')} > 0 AND ${MP} IS NOT NULL
+                       AND ${MP} - CAST(${act.col('past_price')} AS FLOAT) >= 0.5
+                      THEN (${MP} - CAST(${act.col('past_price')} AS FLOAT))
+                           * (${planMonthlyQty(act.prefix)}) ELSE 0 END) AS gain_plus,
+             SUM(CASE WHEN ${act.col('past_price')} > 0 AND ${MP} IS NOT NULL
+                       AND ${MP} - CAST(${act.col('past_price')} AS FLOAT) <= -0.5
+                      THEN (${MP} - CAST(${act.col('past_price')} AS FLOAT))
+                           * (${planMonthlyQty(act.prefix)}) ELSE 0 END) AS gain_minus,
              ${[0, 1, 2, 3].map((n) => {
                // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（表示と同じ）
-               const a = aPriceSql(n, slideFromDate(aggMeta, actualMeta));
+               const a = aPriceSql(n, slideFromDate(aggMeta, { ym: act.ym }));
                // 承認日の絞り込みは、ダッシュボードと同じく「値上げ額を計上するか」に効かせる。
                // 案件は全部そのまま出したうえで、合計だけ条件に合うものを足す。
                return `
-             SUM(${raiseAmtSql(a, query, approvedCond)}) AS raise_m${n}`;
+             SUM(${raiseAmtSql(a, query, approvedCond, act.prefix)}) AS raise_m${n}`;
              }).join(',')}
-      FROM deal_calc ${where}`, params);
+      FROM deal_calc ${act.join} ${where}`, params);
 }
 
 api.get('/deals', wrap(async (req, res) => {
-  const { where, params } = dealFilters(req.query, req.user);
   const page = Math.max(1, Number(req.query.page) || 1);
   const size = Math.min(200, Number(req.query.size) || 50);
   const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  // 実績の月。選んだ月があれば、行に出す実績も合計もその月のものにする
+  const act = actualSource(req.query, actualMeta);
+  const { where, params } = dealFilters(req.query, req.user, act);
   const [totals, rows] = await Promise.all([
     dealsTotals(req.query, where, params, aggMeta, actualMeta),
     // 交渉は法人単位で進むため、法人の交渉情報と直近の履歴を添える。
     // 相関サブクエリにしてあるのは、SQLite/PostgreSQLの双方で同じSQLが通るようにするため
     // （LATERAL join はSQLiteが解釈できない）。
     db.all(`
-      SELECT deal_calc.*,
+      SELECT deal_calc.*, ${actOverride(act)}
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status,
         (SELECT c.contact_date FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_contact_date,
         (SELECT c.note FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_note,
         (SELECT COUNT(*) FROM negotiation_logs l WHERE l.corp_code = deal_calc.corp_code) AS corp_log_count
-      FROM deal_calc ${where}
-      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}
+      FROM deal_calc ${act.join} ${where}
+      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths }, act)}
       LIMIT ? OFFSET ?`, [...params, size, (page - 1) * size]),
   ]);
   attachStandardMatch(rows, await loadStandardIndex());
@@ -3371,8 +3457,11 @@ api.get('/suggest', wrap(async (req, res) => {
 }));
 
 api.get('/deals/export', wrap(async (req, res) => {
-  const { where, params } = dealFilters(req.query, req.user);
-  const { c } = await db.get(`SELECT COUNT(*) AS c FROM deal_calc ${where}`, params);
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  // 実績の月。選んだ月があれば、行に出す実績も合計もその月のものにする
+  const act = actualSource(req.query, actualMeta);
+  const { where, params } = dealFilters(req.query, req.user, act);
+  const { c } = await db.get(`SELECT COUNT(*) AS c FROM deal_calc ${act.join} ${where}`, params);
   if (Number(c) > EXPORT_MAX_ROWS) {
     return res.status(413).json({
       error: `対象が${Number(c).toLocaleString()}件あります。`
@@ -3380,13 +3469,12 @@ api.get('/deals/export', wrap(async (req, res) => {
         + '器具区分・担当者・得意先などで絞り込んでから実行してください',
     });
   }
-  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
   const [rows, priceTypes, totals] = await Promise.all([
     db.all(`
-      SELECT deal_calc.*,
+      SELECT deal_calc.*, ${actOverride(act)}
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
-      FROM deal_calc ${where}
-      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths })}`, params),
+      FROM deal_calc ${act.join} ${where}
+      ORDER BY ${dealOrder(req.query, { hm: months, mm: mMonths }, act)}`, params),
     db.all('SELECT * FROM price_types ORDER BY code'),
     // 画面の上に出しているのと同じ合計。「合計」シートに添える
     dealsTotals(req.query, where, params, aggMeta, actualMeta),
@@ -3394,7 +3482,8 @@ api.get('/deals/export', wrap(async (req, res) => {
   // 実績原価は本社・管理者・開発者のときだけ列に出す（社外秘に準ずる扱い）
   const withCost = canSeeAllInfo(req.user.role);
   const buffer = buildWorkbook(rows, priceTypes,
-    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query),
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta: { ym: act.ym },
+      base: baseKey(req.query),
       aDate: { ym: req.query.aDateYm, op: req.query.aDateOp },
       totals, filters: dealsFilterLabels(req.query) });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -3419,24 +3508,26 @@ api.get('/deals/export', wrap(async (req, res) => {
 const EXPORT_CHUNK_ROWS = 4000;
 api.get('/deals/export-rows', wrap(async (req, res) => {
   if (!requireLogin(req, res)) return;
-  const { where, params } = dealFilters(req.query, req.user);
+  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
+  const act = actualSource(req.query, actualMeta);
+  const { where, params } = dealFilters(req.query, req.user, act);
   const sinceId = Number(req.query.sinceId) || 0;
   const cond = where ? `${where} AND id > ?` : 'WHERE id > ?';
-  const { months, masterMonths: mMonths, aggMeta, actualMeta } = await loadImportMeta();
   const [rows, totalRow, totals] = await Promise.all([
     db.all(`
-      SELECT deal_calc.*,
+      SELECT deal_calc.*, ${actOverride(act)}
         (SELECT c.status FROM corp_negotiations c WHERE c.corp_code = deal_calc.corp_code) AS corp_status
-      FROM deal_calc ${cond}
+      FROM deal_calc ${act.join} ${cond}
       ORDER BY id LIMIT ?`, [...params, sinceId, EXPORT_CHUNK_ROWS]),
     // 全体の件数は最初の1回だけ数える（進み具合の表示用）
-    sinceId === 0 ? db.get(`SELECT COUNT(*) AS c FROM deal_calc ${where}`, params) : null,
+    sinceId === 0 ? db.get(`SELECT COUNT(*) AS c FROM deal_calc ${act.join} ${where}`, params) : null,
     // 合計も最初の1回だけ。10万件の集計を分割のたびに回さない
     sinceId === 0 ? dealsTotals(req.query, where, params, aggMeta, actualMeta) : null,
   ]);
   const withCost = canSeeAllInfo(req.user.role);
   const table = buildExportTable(rows,
-    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta, base: baseKey(req.query),
+    { months, masterMonths: mMonths, withCost, aggMeta, actualMeta: { ym: act.ym },
+      base: baseKey(req.query),
       aDate: { ym: req.query.aDateYm, op: req.query.aDateOp } });
   res.json({
     rows: table.rows,
@@ -3447,7 +3538,7 @@ api.get('/deals/export-rows', wrap(async (req, res) => {
       total: Number(totalRow?.c ?? 0),
       // 「合計」シートの中身。サーバーで作る出力と同じものをブラウザ側でも置く
       totalsSheet: buildTotalsSheet(totals,
-        { aggMeta, actualMeta, filters: dealsFilterLabels(req.query) }),
+        { aggMeta, actualMeta: { ym: act.ym }, filters: dealsFilterLabels(req.query) }),
       totalsWidths: TOTALS_SHEET_WIDTHS,
       totalsName: TOTALS_SHEET_NAME,
     } : {}),
