@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { api } from './api.js';
 import { basicAuth, securityHeaders } from './auth.js';
-import { db, initDb, pgHint, pgTarget } from './db.js';
+import { db, initDb, migrationFailures, pgHint, pgTarget } from './db.js';
 import { isFileStoreConfigured } from './fileStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,8 +23,12 @@ export function createApp({ serveStatic = true } = {}) {
     try {
       await initDb();
       const row = await db.get('SELECT COUNT(*) AS deals FROM deals');
+      // 起動時の移行がうまくいかなかったときに、ログを見なくても分かるようにする。
+      // 失敗したままだとデータの取りこぼしにつながるため、状態を ng にする
+      const failures = migrationFailures();
       res.json({
-        status: 'ok',
+        status: failures.length ? 'migration_failed' : 'ok',
+        migration: failures.length ? failures : undefined,
         db: db.kind,
         deals: Number(row.deals),
         authProtected: Boolean(process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASS),
