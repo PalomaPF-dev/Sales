@@ -4651,9 +4651,39 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     batch ? [batch, stamp] : [stamp]
   );
 
-  // マスタ単価の実績（月別履歴）。この月のマスタ単価をその月の枠へ記録する
+  // 実績の月別保存。案件は1か月分の実績しか持てず、次の月を取り込むと
+  // 上書きで消えてしまうため、取り込んだ月ぶんをここへ残しておく
+  // （あとから「どの月の実績で比べるか」を選べるようにするため）。
+  // 値は案件へ入ったものをそのまま写す。案件の数字とずれないようにするためで、
+  // 取込元（act_staging）から作り直すと丸めの位置が変わることがある。
   const { actualMeta } = await loadImportMeta();
   const actYm = /^\d{4}-\d{2}$/.test(String(actualMeta?.ym ?? '')) ? actualMeta.ym : null;
+  if (actYm) {
+    // 今回の取込に入った案件だけを写す（印が無い古い取込では実績のある行を対象にする）
+    const only = batch
+      ? { cond: 'd.hist_batch = ?', params: [batch] }
+      : { cond: '(d.master_qty IS NOT NULL OR d.master_amount IS NOT NULL'
+          + ' OR d.master_avg_price IS NOT NULL)', params: [] };
+    await db.run(`
+      INSERT INTO deal_actuals (ent_cd, model_code, ym, master_avg_price, master_price,
+        master_qty, master_amount, plan_qty, plan_amount, past_price, past_date, updated_at)
+      SELECT d.hist_ent_cd, d.model_code, ?, d.master_avg_price, d.master_price,
+             d.master_qty, d.master_amount, d.plan_qty, d.plan_amount,
+             d.past_price, d.past_date, ?
+        FROM deals d
+       WHERE d.hist_ent_cd IS NOT NULL AND d.hist_ent_cd <> ''
+         AND d.model_code IS NOT NULL AND d.model_code <> ''
+         AND ${only.cond}
+      ON CONFLICT (ent_cd, model_code, ym) DO UPDATE SET
+        master_avg_price = excluded.master_avg_price, master_price = excluded.master_price,
+        master_qty = excluded.master_qty, master_amount = excluded.master_amount,
+        plan_qty = excluded.plan_qty, plan_amount = excluded.plan_amount,
+        past_price = excluded.past_price, past_date = excluded.past_date,
+        updated_at = excluded.updated_at`,
+      [actYm, stamp, ...only.params]);
+  }
+
+  // マスタ単価の実績（月別履歴）。この月のマスタ単価をその月の枠へ記録する
   if (actYm) {
     await db.run(`
       INSERT INTO master_price_history (ent_cd, model_code, ym, price, source, updated_at)

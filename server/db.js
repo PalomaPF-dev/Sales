@@ -532,7 +532,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-08-29-raise-history-bases';
+const SCHEMA_VERSION = '2026-09-04-deal-actuals';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
@@ -958,6 +958,37 @@ async function migrate() {
     }
   } catch (e) {
     console.warn(`マイグレーション警告: 完了を引き継げませんでした → ${e.message}`);
+  }
+
+  // 実績の月別保存を入れる前に取り込んだ分を、いまの案件データから写す。
+  // 案件は1か月分の実績しか持てないため、これをやらずに次の月を取り込むと
+  // 前の月の実績（数量・金額・単価）が上書きで失われる。
+  // まだ1件も無いときだけ動く（一度写したら以降は取込のたびに残る）。
+  try {
+    const { c } = await db.get('SELECT COUNT(*) AS c FROM deal_actuals');
+    if (Number(c) === 0) {
+      const row = await db.get("SELECT value FROM settings WHERE key = 'actual_meta'");
+      let ym = '';
+      try { ym = String(JSON.parse(row?.value ?? '{}')?.ym ?? ''); } catch { ym = ''; }
+      if (/^\d{4}-\d{2}$/.test(ym)) {
+        const stamp = new Date().toISOString();
+        const r = await db.run(`
+          INSERT INTO deal_actuals (ent_cd, model_code, ym, master_avg_price, master_price,
+            master_qty, master_amount, plan_qty, plan_amount, past_price, past_date, updated_at)
+          SELECT d.hist_ent_cd, d.model_code, ?, d.master_avg_price, d.master_price,
+                 d.master_qty, d.master_amount, d.plan_qty, d.plan_amount,
+                 d.past_price, d.past_date, ?
+            FROM deals d
+           WHERE d.hist_ent_cd IS NOT NULL AND d.hist_ent_cd <> ''
+             AND d.model_code IS NOT NULL AND d.model_code <> ''
+             AND (d.master_qty IS NOT NULL OR d.master_amount IS NOT NULL
+                  OR d.master_avg_price IS NOT NULL)
+          ON CONFLICT (ent_cd, model_code, ym) DO NOTHING`, [ym, stamp]);
+        console.log(`実績の月別保存: ${ym} の実績 ${Number(r?.changes ?? 0)}件を移しました`);
+      }
+    }
+  } catch (e) {
+    console.warn(`マイグレーション警告: 実績を月別へ移せませんでした → ${e.message}`);
   }
 
   // 申請ワークフローの廃止にともない使わなくなったテーブルを片付ける。

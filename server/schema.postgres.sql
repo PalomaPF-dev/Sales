@@ -417,6 +417,30 @@ CREATE TABLE IF NOT EXISTS master_price_history (
   PRIMARY KEY (ent_cd, model_code, ym)
 );
 
+-- 売上高（月次）の実績を月ごとに残す。得意先×商品×月ごとに1行。
+--
+-- 案件（deals）は1か月分の実績（数量・金額・単価）しか持てないため、
+-- 8月を取り込むと7月が上書きで消えてしまう。あとから
+-- 「どの月の実績で比べるか」を選べるように、取込のたびにその月ぶんを残す。
+--
+-- 値は案件へ入ったものをそのまま写す（案件の数字とずれないようにするため）。
+CREATE TABLE IF NOT EXISTS deal_actuals (
+  ent_cd           TEXT NOT NULL,   -- 得意先（法人）コード
+  model_code       TEXT NOT NULL,   -- 商品コード
+  ym               TEXT NOT NULL,   -- 実績の月（YYYY-MM）
+  master_avg_price DOUBLE PRECISION,            -- 実単価（金額÷数量）
+  master_price     DOUBLE PRECISION,            -- マスタ単価（値決めの単価）
+  master_qty       DOUBLE PRECISION,            -- 数量（合計）
+  master_amount    DOUBLE PRECISION,            -- 金額（合計）
+  plan_qty         DOUBLE PRECISION,            -- マスタ分（値決めどおりに出た分）の数量
+  plan_amount      DOUBLE PRECISION,            -- 同 金額
+  past_price       DOUBLE PRECISION,            -- 過去最新単価（値上げ前）
+  past_date        TEXT,            -- 過去最新受注日
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (ent_cd, model_code, ym)
+);
+CREATE INDEX IF NOT EXISTS idx_deal_actuals_ym ON deal_actuals(ym);
+
 -- 値上げ額の推移（取込ごとの記録）。取込日 × 計画の月 ごとに1行。
 -- 価格調査（毎日更新）・売上高（月次）を取り込むたびに、その時点の
 -- 値上げ額の合計（全社・絞り込みなし）を残す。あとから
