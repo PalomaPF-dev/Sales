@@ -4,7 +4,7 @@ import SearchBox from '../components/SearchBox';
 import { api } from '../api';
 import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../filterOptions';
 import { Card, NoteFold, num, nums } from '../components/ui';
-import { dayLabel } from '../components/RaiseTrend';
+import { dayLabel, ymLabel } from '../components/RaiseTrend';
 import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
@@ -1259,6 +1259,22 @@ export default function Dashboard() {
             ))}
           </select>
         </label>
+        {/* 実績の月。取り込んだ月ぶんが月別に残っているので、比べたい月を選べる。
+            数量・現状額・売上改善額・稼働日の起点がすべてその月に切り替わる */}
+        {(meta?.actualMonths?.length ?? 0) > 1 && (
+          <label className="fld"
+                 title={'どの月の売上高（実績）で比べるかを選びます。'
+                   + '数量・現状額・売上改善額と、稼働日の日量換算の起点がその月に切り替わります'}>
+            実績の月<small style={{ fontWeight: 400 }}>（比較のもと）</small>
+            <select value={get('actYm')} onChange={(e) => setParam('actYm', e.target.value)}>
+              {meta?.actualMonths?.map((m, i) => (
+                <option key={m.ym} value={i === 0 ? '' : m.ym}>
+                  {ymLabel(m.ym)}{i === 0 ? '（最新）' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="fld">
           マスタ登録単価
           <select value={get('aState')} onChange={(e) => setParam('aState', e.target.value)}>

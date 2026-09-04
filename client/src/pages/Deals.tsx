@@ -482,7 +482,8 @@ export default function Deals() {
 
   // 現状は価格調査の当月実績（単価・数量）。過去最新単価と比べると、
   // 値上げ前からいくら上がったかが分かる。
-  const actYm = meta?.actualMeta?.ym ?? '';
+  // 実績の月。画面で選んでいればその月、選んでいなければ最後に取り込んだ月
+  const actYm = get('actYm') || meta?.actualMeta?.ym || '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
   /** 当月の実単価（金額÷数量）。見積ぶんが混ざるとマスタ単価より下がる。実績の正 */
   const effPrice = (d: Deal) => d.master_avg_price ?? null;
@@ -829,6 +830,22 @@ export default function Deals() {
             ))}
           </select>
         </label>
+        {/* 実績の月。取り込んだ月ぶんが月別に残っているので、比べたい月を選べる。
+            数量・金額・実単価・過去最新単価と、上の合計がその月に切り替わる */}
+        {(meta?.actualMonths?.length ?? 0) > 1 && (
+          <label className="fld"
+                 title={'どの月の売上高（実績）で見るかを選びます。'
+                   + '数量・金額・実単価・過去最新単価と、上の合計がその月に切り替わります'}>
+            実績の月
+            <select value={get('actYm')} onChange={(e) => setParam('actYm', e.target.value)}>
+              {meta?.actualMonths?.map((m, i) => (
+                <option key={m.ym} value={i === 0 ? '' : m.ym}>
+                  {ymText(m.ym)}{i === 0 ? '（最新）' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="fld">
           マスタ登録単価
           <select value={get('aState')} onChange={(e) => setParam('aState', e.target.value)}>
