@@ -240,7 +240,7 @@ function toPgPlaceholders(sql) {
 const TABLES_WITHOUT_ID = new Set([
   'settings', 'price_types', 'corp_negotiations',
   'corp_map', 'agg_staging', 'act_staging', 'corp_plans',
-  'master_price_history', 'raise_history', 'announcement_reads',
+  'master_price_history', 'raise_history', 'announcement_reads', 'deal_actuals',
 ]);
 
 /** SQLiteの方言をPostgreSQLへ寄せる */
