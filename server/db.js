@@ -562,7 +562,15 @@ export async function initDb() {
     await db.exec(schema);
     await migrate();
     await seedMasters();
-    // 次回以降の起動で重い確認を省くための印
+    // 次回以降の起動で重い確認を省くための印。
+    // ただし移行に失敗しているときは残さない。残すと次の起動で確認も移行も
+    // まるごと省かれ、直したコードを配信してもやり直されなくなる
+    const failures = migrationFailures();
+    if (failures.length) {
+      console.warn(`移行に失敗しているため、スキーマ版を記録しません`
+        + `（次の起動でやり直します）: ${failures.join(' / ')}`);
+      return;
+    }
     try {
       await db.run(
         `INSERT INTO settings (key, value) VALUES ('schema_version', ?)
@@ -906,8 +914,41 @@ async function beforeSchema() {
   }
 }
 
+/**
+ * 移行のうち「失敗したままにしてはいけないもの」で、しくじった数。
+ *
+ * スキーマ版を記録すると、次の起動からは確認も移行もまるごと省かれる。
+ * 失敗したのに版を記録すると、二度とやり直されず、直したコードを
+ * 配信しても動かない（実際に、実績の月別保存でこれが起きた）。
+ * 1つでも失敗していたら版を記録せず、次の起動でやり直す。
+ */
+let criticalMigrationFailures = [];
+
+/**
+ * 失敗したら版を記録してはいけない移行を包む。
+ *
+ * 何度走らせても同じ結果になる（やり直しても壊れない）ものだけをここに入れること。
+ * 直らない失敗が続くと毎回の起動でスキーマの確認が走り、初回表示が遅くなるが、
+ * データを取りこぼしたまま先へ進むよりは良い、という判断。
+ */
+async function criticalStep(what, fn) {
+  try {
+    await fn();
+  } catch (e) {
+    criticalMigrationFailures.push(`${what}: ${e.message}`);
+    console.warn(`マイグレーション失敗（スキーマ版を記録せず、次の起動でやり直します）`
+      + `: ${what} → ${e.message}`);
+  }
+}
+
+/** 移行に失敗したまま先へ進んでいないか。監視（/api/health）に出す */
+export function migrationFailures() {
+  return criticalMigrationFailures;
+}
+
 /** スキーマ適用後のデータ移行と後片付け */
 async function migrate() {
+  criticalMigrationFailures = [];
   // 認証機能より前から居るユーザーはログインIDを持たないため補完する。
   // これが無いとログインもパスワード設定もできない状態になる。
   try {
@@ -964,32 +1005,40 @@ async function migrate() {
   // 案件は1か月分の実績しか持てないため、これをやらずに次の月を取り込むと
   // 前の月の実績（数量・金額・単価）が上書きで失われる。
   // まだ1件も無いときだけ動く（一度写したら以降は取込のたびに残る）。
-  try {
+  await criticalStep('実績を月別へ移す', async () => {
     const { c } = await db.get('SELECT COUNT(*) AS c FROM deal_actuals');
-    if (Number(c) === 0) {
-      const row = await db.get("SELECT value FROM settings WHERE key = 'actual_meta'");
-      let ym = '';
-      try { ym = String(JSON.parse(row?.value ?? '{}')?.ym ?? ''); } catch { ym = ''; }
-      if (/^\d{4}-\d{2}$/.test(ym)) {
-        const stamp = new Date().toISOString();
-        const r = await db.run(`
-          INSERT INTO deal_actuals (ent_cd, model_code, ym, master_avg_price, master_price,
-            master_qty, master_amount, plan_qty, plan_amount, past_price, past_date, updated_at)
-          SELECT d.hist_ent_cd, d.model_code, ?, d.master_avg_price, d.master_price,
-                 d.master_qty, d.master_amount, d.plan_qty, d.plan_amount,
-                 d.past_price, d.past_date, ?
-            FROM deals d
-           WHERE d.hist_ent_cd IS NOT NULL AND d.hist_ent_cd <> ''
-             AND d.model_code IS NOT NULL AND d.model_code <> ''
-             AND (d.master_qty IS NOT NULL OR d.master_amount IS NOT NULL
-                  OR d.master_avg_price IS NOT NULL)
-          ON CONFLICT (ent_cd, model_code, ym) DO NOTHING`, [ym, stamp]);
-        console.log(`実績の月別保存: ${ym} の実績 ${Number(r?.changes ?? 0)}件を移しました`);
-      }
+    if (Number(c) > 0) return;   // 済み
+    const row = await db.get("SELECT value FROM settings WHERE key = 'actual_meta'");
+    let ym = '';
+    try { ym = String(JSON.parse(row?.value ?? '{}')?.ym ?? ''); } catch { ym = ''; }
+    if (!/^\d{4}-\d{2}$/.test(ym)) return;   // 売上高をまだ1度も取り込んでいない
+    const stamp = new Date().toISOString();
+    const r = await db.run(`
+      INSERT INTO deal_actuals (ent_cd, model_code, ym, master_avg_price, master_price,
+        master_qty, master_amount, plan_qty, plan_amount, past_price, past_date, updated_at)
+      SELECT d.hist_ent_cd, d.model_code, ?, d.master_avg_price, d.master_price,
+             d.master_qty, d.master_amount, d.plan_qty, d.plan_amount,
+             d.past_price, d.past_date, ?
+        FROM deals d
+       WHERE d.hist_ent_cd IS NOT NULL AND d.hist_ent_cd <> ''
+         AND d.model_code IS NOT NULL AND d.model_code <> ''
+         AND (d.master_qty IS NOT NULL OR d.master_amount IS NOT NULL
+              OR d.master_avg_price IS NOT NULL)
+      ON CONFLICT (ent_cd, model_code, ym) DO NOTHING`, [ym, stamp]);
+    const moved = Number(r?.changes ?? 0);
+    // 移すべき行があったのに1件も入らなかったときは、成功として先へ進めない。
+    // 版を記録してしまうと二度とやり直されないため、失敗として扱う
+    const { c: expected } = await db.get(`
+      SELECT COUNT(*) AS c FROM deals d
+       WHERE d.hist_ent_cd IS NOT NULL AND d.hist_ent_cd <> ''
+         AND d.model_code IS NOT NULL AND d.model_code <> ''
+         AND (d.master_qty IS NOT NULL OR d.master_amount IS NOT NULL
+              OR d.master_avg_price IS NOT NULL)`);
+    if (Number(expected) > 0 && moved === 0) {
+      throw new Error(`移す対象が${Number(expected)}件あるのに1件も入りませんでした`);
     }
-  } catch (e) {
-    console.warn(`マイグレーション警告: 実績を月別へ移せませんでした → ${e.message}`);
-  }
+    console.log(`実績の月別保存: ${ym} の実績 ${moved}件を移しました`);
+  });
 
   // 申請ワークフローの廃止にともない使わなくなったテーブルを片付ける。
   // 残しておくと、次にスキーマを読む人がまだ使われていると誤解する。
