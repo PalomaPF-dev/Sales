@@ -6,6 +6,8 @@ import { BASE_OPTIONS, FILTER_KEYS, RAISE_START_YM, narrowByParent } from '../fi
 import { Card, NoteFold, num, nums } from '../components/ui';
 import { dayLabel, ymLabel } from '../components/RaiseTrend';
 import type { RaiseDay } from '../components/RaiseTrend';
+import SalesProgressCard from '../components/SalesProgressCard';
+import { asOfLabel } from '../types';
 import type { Meta } from '../types';
 import { useIsMobile } from '../view';
 
@@ -103,6 +105,8 @@ interface DashboardRes {
    */
   workdays?: {
     baseYm: string; baseDays: number | null;
+    /** 実績が月の途中までの累計（日次取込）のとき、いつまでか。月まるごとなら null */
+    asOf?: string | null;
     months: { ym: string; days: number | null; rate: number }[];
   };
   /**
@@ -167,12 +171,16 @@ const VIEWS = [
  * 金額はサーバーで倍率を掛けたうえで返ってくるので、画面では
  * 比較のもと（現状額）に同じ倍率を掛けて同じ土俵に揃える。
  */
-interface PlanMonth { ym: string; days: number | null; rate: number; baseYm: string; baseDays: number | null }
+interface PlanMonth {
+  ym: string; days: number | null; rate: number; baseYm: string; baseDays: number | null;
+  /** 実績が月の途中までの累計のとき、いつまでか（日次取込）。月まるごとなら null */
+  asOf?: string | null;
+}
 
 /** 稼働日の説明（見出し・マスに添える吹き出し） */
 const planNote = (p?: PlanMonth) => (p?.days && p.baseDays
   ? `。${p.ym} は ${p.days}稼働日。`
-    + `${p.baseYm}（${p.baseDays}稼働日）の日量へ直して ${p.days}日ぶんに換算しています`
+    + `${p.baseYm}（${p.asOf ? `${dayLabel(p.asOf)}時点までの` : ''}${p.baseDays}稼働日）の日量へ直して ${p.days}日ぶんに換算しています`
   : '');
 
 /** 値上げ額の内訳。器具区分別・支店別・法人別をそれぞれ別のカードで出す */
@@ -1003,12 +1011,15 @@ export default function Dashboard() {
     rate: Number(wd?.months?.[i]?.rate) > 0 ? Number(wd!.months[i].rate) : 1,
     baseYm: wd?.baseYm || '',
     baseDays: wd?.baseDays ?? null,
+    asOf: wd?.asOf ?? null,
   }));
   /** 稼働日での換算が効いているか（実績の月と計画の月の日数が分かっているか） */
   const hasWorkdays = Boolean(wd?.baseDays) && plan.some((x) => x.days);
 
   const actYm = data.actuals?.[0]?.ym ?? '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  // 実績が月の途中までの累計（日次取込）か。見ている月が案件に入っている月のときだけ
+  const partialAsOf = actYm && actYm === meta?.actualMeta?.ym ? asOfLabel(meta?.actualMeta) : '';
   // 値上げ幅の基準（比較のもと）。案件一覧と同じ選び方
   const base = BASE_OPTIONS.find((o) => o.key === get('base'))?.key ?? 'master';
   const baseName = base === 'past' ? '過去最新単価'
@@ -1121,12 +1132,18 @@ export default function Dashboard() {
       <p className="page-sub">
         <strong>値上げ額</strong>は、<strong>{baseName}{pastUntil}</strong>から、
         マスタ承認日 <strong>{aDateText}</strong>のアップ額を、計画の月ごとに示します。
-        実績数は<strong>{actLabel}</strong>（価格調査の取込月）。
+        実績数は<strong>{actLabel}</strong>（価格調査の取込月）
+        {partialAsOf && (
+          <>
+            。<strong>{actLabel}の実績は {partialAsOf} 時点の当月累計</strong>（日次取込）で、
+            月末に月次を取り込むと確定します
+          </>
+        )}。
         金額はすべて<strong>1か月あたり</strong>です。
         {hasWorkdays && (
           <>
             {' '}計画の月は<strong>稼働日で日量換算</strong>しています
-            （{actLabel}の{wd?.baseDays}稼働日を1日あたりに直し、
+            （{actLabel}の{partialAsOf ? `${partialAsOf}時点までの` : ''}{wd?.baseDays}稼働日を1日あたりに直し、
             {plan.filter((x) => x.days).map((x) => `${Number(x.ym.slice(5, 7))}月${x.days}日`).join('・')}
             を掛けています）。
           </>
@@ -1147,7 +1164,7 @@ export default function Dashboard() {
           <>
             {' '}数量は{actLabel}の実績数をそのまま使うため、計画の各月は
             <strong>稼働日で日量に直して換算</strong>しています
-            （{actLabel} {wd?.baseDays}稼働日 ＝ 1か月ぶん）。
+            （{actLabel} {partialAsOf ? `${partialAsOf}時点までの` : ''}{wd?.baseDays}稼働日 ＝ {partialAsOf ? 'その日までの累計' : '1か月ぶん'}）。
             比べる相手の<strong>現状額も同じ稼働日ぶん</strong>に揃えているので、
             値上げ率は換算の前後で変わりません
             （案件一覧の「値上げ額（月）合計」は換算前の{actLabel}ぶんです）。
@@ -1411,6 +1428,9 @@ export default function Dashboard() {
           trendCount={trendCountOf} trendNote={trendNote} trendLabel={trendLabel}
         />
       )}
+
+      {/* 売上高（当月）の進捗。日次の取込があるときだけ出る（記録が無ければ何も出ない） */}
+      <SalesProgressCard />
 
       {/*
         承認日の前後の内訳は、まとめの表の「うち承認日」の列に出している。

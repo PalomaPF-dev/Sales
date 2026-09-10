@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, yen } from '../api';
 import { narrowByParent, sameBranch } from '../filterOptions';
-import { NEGO_LABELS } from '../types';
+import { NEGO_LABELS, asOfLabel } from '../types';
 import type { Deal, Meta, RoundState } from '../types';
 import SearchBox from '../components/SearchBox';
 import HScroll from '../components/HScroll';
@@ -485,6 +485,8 @@ export default function Deals() {
   // 実績の月。画面で選んでいればその月、選んでいなければ最後に取り込んだ月
   const actYm = get('actYm') || meta?.actualMeta?.ym || '';
   const actLabel = actYm ? `${Number(actYm.slice(5, 7))}月` : '当月';
+  // 実績が月の途中までの累計（日次取込）か。案件に入っている月を見ているときだけ
+  const partialAsOf = actYm && actYm === meta?.actualMeta?.ym ? asOfLabel(meta?.actualMeta) : '';
   /** 当月の実単価（金額÷数量）。見積ぶんが混ざるとマスタ単価より下がる。実績の正 */
   const effPrice = (d: Deal) => d.master_avg_price ?? null;
   /** 当月の数量（実績数）。値上げ額はこの数量に対して出す */
@@ -693,6 +695,12 @@ export default function Deals() {
         <strong>売上高（{actLabel}）</strong>はこのベースへ単価・数量を突合して重なり、
         突合で当たらなかった品目は<strong>{actLabel}実績無し</strong>として載ります（数量の欄に出ます）。
         売上高にだけある行も案件として残るため、売上高の合計は必ずファイルと一致します。
+        {partialAsOf && (
+          <>
+            <strong>{actLabel}の実績は {partialAsOf} 時点の当月累計</strong>（日次取込）で、
+            月末に月次を取り込むと確定します。
+          </>
+        )}
         <strong>マスタ登録単価</strong>は、4月からの<strong>月別実績</strong>（当月は取込前日まで）と、
         当月（本日時点）からの<strong>計画</strong>（申請単価。下段は承認日）を並べます。
         見出しの<strong>◀ 実績／計画 ▶</strong>で表示する月を1か月ずつずらせます（既定は当月の計画から）。
