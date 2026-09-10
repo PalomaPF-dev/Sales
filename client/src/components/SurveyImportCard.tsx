@@ -138,6 +138,9 @@ export default function SurveyImportCard({ mode = 'monthly', anchorYm, onDone }:
               {!result.progress.final && result.progress.elapsedDays != null && (
                 ` ・ 稼働日 ${result.progress.elapsedDays}${result.progress.workDays ? ` / ${result.progress.workDays}` : ''}日`
               )}
+              {result.progress.gainAmount != null && (
+                <> ・ 売上改善額（マスタ） <strong>{yen(result.progress.gainAmount)}</strong></>
+              )}
               。下の「売上高（当月）の進捗」に記録しました
             </>
           )}
@@ -146,7 +149,11 @@ export default function SurveyImportCard({ mode = 'monthly', anchorYm, onDone }:
       {daily ? (
         <p className="pt-note" style={{ marginTop: 0 }}>
           <strong>当月の累計</strong>（月初からその日までの合計）の売上高ファイルを
-          <strong>毎日</strong>取り込みます。形式は月次と同じ（「9月数量」「9月単価」の列）で、
+          <strong>毎日</strong>取り込みます。売上高（価格実績）のファイル
+          （「対象年月」「数量（合計）」「単価（マスタ）」「売上改善額（マスタ）」の列）をそのまま使えます
+          （月次と同じ「9月数量」形式のファイルでも取り込めます）。
+          <strong>売上改善額（マスタ）</strong>はファイルの値をそのまま取り込み、
+          画面の売上改善額はこの値で出します。
           取り込むたびに<strong>その月の実績がその日までの累計に置き換わり</strong>、
           月の中でいくら積み上がってきたかが下の「売上高（当月）の進捗」に残ります。
           月末に<strong>②月次（確定）</strong>を取り込むと、同じ月の数字がそのまま確定の総額に置き換わります
@@ -212,6 +219,10 @@ export default function SurveyImportCard({ mode = 'monthly', anchorYm, onDone }:
               {parsed.p.hasCorpGroup
                 ? ' ・ 企業グループ名を法人として取り込みます'
                 : ' ・ 企業グループ名の列が無いため、得意先を法人として扱います'}
+              {parsed.p.hasGain
+                ? ' ・ 売上改善額（マスタ）はファイルの値をそのまま使います'
+                : ' ・ 売上改善額の列が無いため、（マスタ単価 − 過去最新単価）× マスタ分の数量 で出します'}
+              {parsed.p.monthFrom === 'target_ym' && ' ・ 月は「対象年月」の列から読みました'}
               {parsed.p.skippedRows > 0 && ` ・ 読めない行 ${parsed.p.skippedRows}件`}
             </span>
             {monthMismatch && (

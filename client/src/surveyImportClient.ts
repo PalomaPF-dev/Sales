@@ -40,6 +40,7 @@ export interface SurveyRow {
   plan_amount: unknown;    // マスタ分の金額（A基準の比較のもと）
   past_price: unknown;     // 過去最新単価（値上げ前）
   past_date: string | null;// 過去最新受注日（過去最新売上日）
+  gain_amount: unknown;    // 売上改善額（マスタ）。日次（価格実績）のファイルの値をそのまま送る
 }
 
 export interface SurveyParsed {
@@ -51,6 +52,9 @@ export interface SurveyParsed {
   hasPast: boolean;        // 過去最新単価の列があるか
   hasMasterPrice: boolean; // マスタ単価の列があるか（新しい形式のファイル）
   hasCorpGroup: boolean;   // 企業グループ名の列があるか（法人として使う）
+  hasGain: boolean;        // 売上改善額（マスタ）の列があるか（日次・価格実績のファイル）
+  /** 月をどこから読んだか。「対象年月」の列（日次・価格実績）か、「9月数量」の見出しか */
+  monthFrom: 'target_ym' | 'header';
 }
 
 /** 見出しの表記ゆれを吸収する（全角数字・全角かっこ・空白） */
@@ -161,11 +165,14 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
 
-  // 「7月数量」「7月単価」から当月を決める（月は見出しから読む）。
-  // 新しい形式は「7月数量(マスタ)」「7月数量(合計)」のように種別が付く。
-  // 数量・金額は合計、単価はマスタを使う（無ければ種別なしの列）。
+  // 当月の列の見つけ方は2通りある。
+  //   月次: 「7月数量」「7月数量(合計)」のように見出しに月が付く（月は見出しから読む）
+  //   日次（価格実績）: 「数量(合計)」「単価(マスタ)」のように月が付かず、
+  //          月は「対象年月」の列（202609）に入っている
+  // どちらも 数量・金額は合計、単価はマスタを使う（無ければ種別なしの列）。
+  const targetYmAt = find('対象年月');
   const findMonth = (kind: string, suffix: string) =>
-    headers.findIndex((h) => new RegExp(`^\\d{1,2}月${kind}${suffix}$`).test(h));
+    headers.findIndex((h) => new RegExp(`^(\\d{1,2}月)?${kind}${suffix}$`).test(h));
   const pick = (kind: string, ...suffixes: string[]) => {
     for (const sfx of suffixes) {
       const i = findMonth(kind, sfx);
@@ -183,12 +190,18 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   const planQtyAt = pick('数量', '\\(マスタ\\)', '');
   const planAmountAt = pick('金額', '\\(マスタ\\)', '');
   if (qtyAt < 0 || mPriceAt < 0) {
-    throw new Error('「7月数量」「7月単価」のような当月の列がありません。'
-      + '価格調査（当月実績）のファイルをお使いください');
+    throw new Error('「7月数量」「7月単価」（または「数量(合計)」「単価(マスタ)」と「対象年月」）'
+      + 'のような当月の列がありません。売上高（価格実績）のファイルをお使いください');
   }
-  const month = Number(/^(\d{1,2})月/.exec(headers[qtyAt])![1]);
+  const headMonth = /^(\d{1,2})月/.exec(headers[qtyAt]);
+  if (!headMonth && targetYmAt < 0) {
+    throw new Error('当月が分かりません。見出しの「9月数量」か「対象年月」の列が必要です');
+  }
   // マスタ単価の列に種別が付いていれば新しい形式
   const hasMasterPrice = findMonth('単価', '\\(マスタ\\)') >= 0;
+  // 売上改善額（マスタ）。日次（価格実績）のファイルにある。値決めの元で出した金額なので
+  // そのまま取り込み、画面の売上改善額はこの値を正とする
+  const gainAt = headers.findIndex((h) => h.includes('売上改善額') && !h.includes('率'));
 
   const col = {
     得意先コード: find('得意先コード'),
@@ -218,7 +231,8 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     // 器種名（型式。FH-E2422SAWL のような品番）。
     // 価格調査のファイルでは「商品名」の列がこれにあたる
     product_name: find('商品名'),
-    spec: find('規格'),
+    // 規格（LP・P など）。日次（価格実績）のファイルでは「ガス種」の列
+    spec: find('規格') >= 0 ? find('規格') : find('ガス種'),
     equip_name: find('器具区分名'),
     category_name: findLike('カテゴリー名'),
     list_price: find('標準単価'),
@@ -231,6 +245,15 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     return Number.isFinite(n) ? n : 0;
   };
 
+  /** 「対象年月」の値（202609 / 2026-09 / 2026/09）→「2026-09」 */
+  const toYm = (v: unknown): string | null => {
+    const m = /^(\d{4})[/-]?(\d{1,2})$/.exec(String(v ?? '').trim());
+    if (!m) return null;
+    const mo = Number(m[2]);
+    return mo >= 1 && mo <= 12 ? `${m[1]}-${String(mo).padStart(2, '0')}` : null;
+  };
+  const targetYms = new Map<string, number>();
+
   const rows: SurveyRow[] = [];
   let skippedRows = 0;
   for (let i = 1; i < grid.length; i++) {
@@ -238,6 +261,10 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     const cust = String(r[col.得意先コード] ?? '').trim();
     const model = String(r[col.商品コード] ?? '').trim();
     if (!cust || !model) { if (r.some((v) => v != null)) skippedRows++; continue; }
+    if (targetYmAt >= 0) {
+      const ty = toYm(r[targetYmAt]);
+      if (ty) targetYms.set(ty, (targetYms.get(ty) ?? 0) + 1);
+    }
     rows.push({
       customer_code: cust,
       customer_name: txt(r, at.customer_name),
@@ -265,19 +292,37 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       plan_amount: planAmountAt >= 0 ? r[planAmountAt] : null,
       past_price: pastPriceAt >= 0 ? r[pastPriceAt] : null,
       past_date: pastDateAt >= 0 ? toYmd(r[pastDateAt]) : null,
+      gain_amount: gainAt >= 0 ? r[gainAt] : null,
     });
   }
   if (!rows.length) throw new Error('取り込める行がありません');
 
-  const year = resolveYear(month, anchorYm);
+  // 当月。「対象年月」の列があればそれを正とする（年も分かる）。
+  // 月が混ざっているファイルは、どの月として取り込むか決められないので止める
+  let ym: string;
+  let monthFrom: SurveyParsed['monthFrom'];
+  if (targetYms.size > 0) {
+    if (targetYms.size > 1) {
+      const list = [...targetYms.entries()].map(([k, c]) => `${k}（${c.toLocaleString()}行）`).join('・');
+      throw new Error(`「対象年月」に複数の月が混ざっています: ${list}。1つの月のファイルにしてください`);
+    }
+    ym = [...targetYms.keys()][0];
+    monthFrom = 'target_ym';
+  } else {
+    const month = Number(headMonth![1]);
+    ym = `${resolveYear(month, anchorYm)}-${String(month).padStart(2, '0')}`;
+    monthFrom = 'header';
+  }
   return {
     rows,
     skippedRows,
-    ym: `${year}-${String(month).padStart(2, '0')}`,
-    monthLabel: `${month}月`,
+    ym,
+    monthLabel: `${Number(ym.slice(5, 7))}月`,
     hasPast: pastPriceAt >= 0,
     hasMasterPrice,
     hasCorpGroup: at.corp_group >= 0,
+    hasGain: gainAt >= 0,
+    monthFrom,
   };
 }
 
@@ -294,6 +339,7 @@ export interface SurveyProgress {
   amount: number;
   planQty: number;
   planAmount: number;
+  gainAmount: number | null;   // 売上改善額（マスタ）の合計（ファイルに列があるときだけ）
 }
 
 export interface SurveyResult {
@@ -338,7 +384,8 @@ export async function sendSurveyImport(
   for (const chunk of splitRows(parsed.rows)) {
     const r = await api<{ matched: number; unmatched: number }>('/survey-import/chunk', {
       method: 'POST',
-      body: JSON.stringify({ rows: chunk }),
+      // 売上改善額の列があるファイルでは、空欄の行も「改善額なし」としてそのまま扱ってもらう
+      body: JSON.stringify({ rows: chunk, gainFromFile: parsed.hasGain }),
     });
     matched += r.matched;
     unmatched += r.unmatched;

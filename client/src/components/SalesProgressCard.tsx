@@ -16,6 +16,8 @@ interface ProgressRow {
   amount: number;
   planQty: number;
   planAmount: number;
+  /** 売上改善額（マスタ）の合計。ファイルに列があった取込だけ（無い取込は null） */
+  gainAmount: number | null;
   filename: string | null;
   takenAt: string;
 }
@@ -27,7 +29,8 @@ interface ProgressRes {
   } | null;
   rows: ProgressRow[];
   /** 月ごとの総額（月別の実績の合計）。日次の記録が無い月も総額はここから分かる */
-  totals: { ym: string; deals: number; qty: number; amount: number; workDays: number | null }[];
+  totals: { ym: string; deals: number; qty: number; amount: number; gainAmount: number | null;
+    workDays: number | null }[];
 }
 
 /** 「2026-09」の1つ前の月 */
@@ -83,6 +86,8 @@ export default function SalesProgressCard({ reloadKey = 0, showEmpty = false, ti
   }
   const rows = data.rows.filter((x) => x.ym === ym);   // 新しい日付が先頭
   const latest = rows[0];
+  // 売上改善額の列は、その月の記録に1つでも値があるときだけ出す
+  const hasGain = rows.some((x) => x.gainAmount != null);
   // 比べる相手は前の月の総額。前の月が無いときは、それより前で一番新しい月
   const prev = data.totals.find((t) => t.ym === prevYm(ym))
     ?? data.totals.find((t) => t.ym < ym);
@@ -112,6 +117,8 @@ export default function SalesProgressCard({ reloadKey = 0, showEmpty = false, ti
         <strong>③日次（当月の累計）</strong>の取込のたびに、その時点の<strong>当月の合計</strong>
         （件数・数量・金額）をデータの日付ごとに残しています。
         <strong>前回比</strong>は1つ前の日付の記録との差（＝その間に積み上がった分）。
+        <strong>売上改善額</strong>はファイルの「売上改善額（マスタ）」の合計です
+        （列の無い取込では出ません）。
         <strong>日量</strong>は金額をその日までの稼働日で割ったもの、
         <strong>月末見込</strong>はその日量でその月の稼働日ぶん行ったときの金額です。
         <strong>前月比</strong>は前の月の総額（月別の実績の合計）に対する割合で、
@@ -136,6 +143,10 @@ export default function SalesProgressCard({ reloadKey = 0, showEmpty = false, ti
             {latest.final ? ' 総額（確定）' : ` ${dayLabel(latest.asOf)}時点の累計`}：
             金額 <strong>{yen(latest.amount)}</strong>
             ・数量 {int(latest.qty)}・{int(latest.deals)}件
+            {latest.gainAmount != null && (
+              <>・売上改善額 <strong style={{ color: latest.gainAmount < 0 ? '#c2410c' : '#15803d' }}>
+                {latest.gainAmount < 0 ? '−' : '＋'}{yen(Math.abs(latest.gainAmount))}</strong></>
+            )}
             {!latest.final && latest.elapsedDays != null && (
               <>
                 ・稼働日 {latest.elapsedDays}{latest.workDays ? ` / ${latest.workDays}` : ''}日
@@ -162,6 +173,11 @@ export default function SalesProgressCard({ reloadKey = 0, showEmpty = false, ti
               <th style={nums}>件数<br /><small>/ 前回比</small></th>
               <th style={nums}>数量<br /><small>/ 前回比</small></th>
               <th style={nums}>金額（合計）<br /><small>/ 前回比</small></th>
+              {hasGain && (
+                <th style={nums} title="ファイルの「売上改善額（マスタ）」の合計">
+                  売上改善額<br /><small>/ 前回比</small>
+                </th>
+              )}
               <th style={nums} title="金額 ÷ その日までの稼働日">日量</th>
               <th style={nums} title="日量 × その月の稼働日">月末見込</th>
               {prev && <th style={nums} title={`${ymLabel(prev.ym)}の総額 ${yen(prev.amount)} に対する割合`}>
@@ -202,6 +218,16 @@ export default function SalesProgressCard({ reloadKey = 0, showEmpty = false, ti
                     {yen(r.amount)}
                     {diffCell(before ? r.amount - before.amount : null, yen)}
                   </td>
+                  {hasGain && (
+                    <td style={nums}>
+                      {r.gainAmount == null ? '—'
+                        : <span style={{ color: r.gainAmount < 0 ? '#c2410c' : undefined }}>
+                            {r.gainAmount < 0 ? '−' : ''}{yen(Math.abs(r.gainAmount))}
+                          </span>}
+                      {diffCell(before && r.gainAmount != null && before.gainAmount != null
+                        ? r.gainAmount - before.gainAmount : null, yen)}
+                    </td>
+                  )}
                   <td style={nums}>{d == null ? '—' : yen(d)}</td>
                   <td style={nums}>{fc == null ? '—' : yen(fc)}</td>
                   {prev && <td style={nums}>{pct(r.amount, prev.amount)}</td>}
