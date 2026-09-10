@@ -133,6 +133,12 @@ CREATE TABLE IF NOT EXISTS deals (
   plan_amount     REAL,
   past_price      REAL,   -- 過去最新単価（値上げ前。価格調査の比較用）
   past_date       TEXT,   -- 過去最新受注日（過去最新単価が出た日）
+  -- 売上改善額（マスタ）。売上高（日次・価格実績）のファイルに載っている値をそのまま持つ。
+  -- gain_src=1 はその列のあるファイルから入った印で、このとき gain_amount が空なら
+  -- 「改善額なし」（ファイルでも空欄）。印の無い取込では
+  -- （マスタ単価 − 過去最新単価）× マスタ分の数量 で出す
+  gain_amount     DOUBLE PRECISION,
+  gain_src        INTEGER,
   act_price_1  REAL,   -- 価格調査の実単価（1番目の月。月の並びは settings の actual_meta）
   act_price_2  REAL,   -- 価格調査の実単価（2番目の月。月の並びは settings の actual_meta）
   act_price_3  REAL,   -- 価格調査の実単価（3番目の月。月の並びは settings の actual_meta）
@@ -291,6 +297,10 @@ CREATE TABLE IF NOT EXISTS act_staging (
   equip_name    TEXT,
   category_name TEXT,
   top_qty       REAL,
+  -- 売上改善額（マスタ）の合計・値の入っていた行数・ファイルにその列があったか
+  gain_sum      REAL NOT NULL DEFAULT 0,
+  gain_rows     INTEGER NOT NULL DEFAULT 0,
+  gain_has      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (ent_cd, model_code)
 );
 
@@ -433,6 +443,8 @@ CREATE TABLE IF NOT EXISTS deal_actuals (
   plan_amount      REAL,            -- 同 金額
   past_price       REAL,            -- 過去最新単価（値上げ前）
   past_date        TEXT,            -- 過去最新受注日
+  gain_amount      REAL,            -- 売上改善額（マスタ）。ファイルの値（無ければ空）
+  gain_src         INTEGER,         -- 1=売上改善額の列のあるファイルから入った
   updated_at       TEXT NOT NULL,
   PRIMARY KEY (ent_cd, model_code, ym)
 );
@@ -459,6 +471,7 @@ CREATE TABLE IF NOT EXISTS sales_progress (
   amount       REAL,            -- 金額（合計）
   plan_qty     REAL,            -- マスタ分の数量
   plan_amount  REAL,            -- マスタ分の金額
+  gain_amount  REAL,            -- 売上改善額（マスタ）の合計（ファイルに列があるときだけ）
   filename     TEXT,            -- 取り込んだファイル名
   taken_at     TEXT NOT NULL,   -- 記録した日時
   PRIMARY KEY (ym, as_of)

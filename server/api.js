@@ -2014,7 +2014,7 @@ function dataDateOf(takenOn) {
  */
 /** 月を切り替えたときに差し替わる実績の列（案件にも同じ名前の列がある） */
 const ACTUAL_COLS = ['master_avg_price', 'master_price', 'master_qty', 'master_amount',
-  'plan_qty', 'plan_amount', 'past_price', 'past_date'];
+  'plan_qty', 'plan_amount', 'past_price', 'past_date', 'gain_amount', 'gain_src'];
 const NO_ACT = { ym: '', join: '', prefix: '', col: (c) => c, switched: false };
 function actualSource(query, actualMeta, alias = 'deal_calc') {
   const cur = /^\d{4}-\d{2}$/.test(String(actualMeta?.ym ?? '')) ? String(actualMeta.ym) : '';
@@ -2553,13 +2553,14 @@ async function dashboardData(query, user) {
   // 上がった／単価同じ の判別と、単価で戻した参考の金額は、
   // 当月の単価が出る品目だけが対象（返品だけの品目などは単価が出ない）
   const hasBoth = `${hasPast} AND (${mPrice}) IS NOT NULL`;
-  const actUp = `${hasBoth} AND (${mPrice}) - ${A('past_price')} >= 0.5`;
-  const actSame = `${hasBoth} AND ABS((${mPrice}) - ${A('past_price')}) < 0.5`;
-  // 売上改善額 =（当月のマスタ単価 − 過去最新単価）× マスタ分の数量。
+  // 売上改善額。売上高（日次・価格実績）のファイルに「売上改善額（マスタ）」の列があれば
+  // その値をそのまま使う（ファイルと同じ数字が出るように）。無い取込では
+  // （当月のマスタ単価 − 過去最新単価）× マスタ分の数量 で出す。
   // 上がった品目（プラス）と下がった品目（マイナス）に分けて足す。
   // 7月金額（合計）からこの改善額を引いたものが「値上げ前当初」の金額になる。
-  const actDown = `${hasBoth} AND (${mPrice}) - ${A('past_price')} <= -0.5`;
-  const gainExpr = `((${mPrice}) - ${A('past_price')}) * (${planQty})`;
+  const g = gainSql({ mPrice, past: A('past_price'), planQty, gain: A('gain_amount'),
+    src: act.col('gain_src'), hasBoth });
+  const { up: actUp, down: actDown, same: actSame, expr: gainExpr } = g;
   const actAgg = `
     SUM(CASE WHEN ${hasPast} THEN ${effAmt} END) AS act_amt_1,
     SUM(CASE WHEN ${hasPast} THEN ${A('past_price')} * (${effQty}) END) AS act_base_1,
@@ -3146,14 +3147,20 @@ function dealFilters(q, user, act = NO_ACT) {
   // 上がった品目（プラス）・下がった品目（マイナス）・変わらない品目に分ける。
   // ダッシュボードの内訳から、その中身をこの一覧で開けるようにするための絞り込み。
   // 実績（過去最新単価・マスタ単価）は、選んでいる実績の月のものを見る
+  // 売上改善額の値がファイルから入っている品目は、その値の向きで分ける（ダッシュボードと同じ）
   const gainMp = `COALESCE(CAST(${act.col('master_price')} AS FLOAT),
                            CAST(${act.col('master_avg_price')} AS FLOAT))`;
   const gainHas = `${act.col('past_price')} > 0 AND ${gainMp} IS NOT NULL`;
-  const gainDiff = `(${gainMp} - CAST(${act.col('past_price')} AS FLOAT))`;
-  if (q.gain === 'plus') where.push(`${gainHas} AND ${gainDiff} >= 0.5`);
-  else if (q.gain === 'minus') where.push(`${gainHas} AND ${gainDiff} <= -0.5`);
-  else if (q.gain === 'same') where.push(`${gainHas} AND ABS(${gainDiff}) < 0.5`);
-  else if (q.gain === 'none') where.push(`NOT (${gainHas})`);
+  const gf = gainSql({
+    mPrice: gainMp, past: `CAST(${act.col('past_price')} AS FLOAT)`,
+    planQty: planMonthlyQty(act.prefix), gain: `CAST(${act.col('gain_amount')} AS FLOAT)`,
+    src: act.col('gain_src'), hasBoth: gainHas,
+  });
+  if (q.gain === 'plus') where.push(gf.up);
+  else if (q.gain === 'minus') where.push(gf.down);
+  else if (q.gain === 'same') where.push(gf.same);
+  // 過去最新単価が空（NULL）の行は比較が NULL になり NOT でも拾えないため、FALSE に落としてから否定する
+  else if (q.gain === 'none') where.push(`NOT COALESCE(${gf.has}, FALSE)`);
 
   // 承認日は案件を減らす絞り込みには使わない（土台の品目はそのまま残す）。
   // ダッシュボードでは aDateCond() で「計画を充てるかどうか」の条件に使い、
@@ -3335,6 +3342,40 @@ async function histMonthsFromHistory() {
  * 基準（過去最新単価／マスタ単価／実単価）は画面の「基準」で選ぶ。
  * 基準の単価が無い品目・実績数が無い品目は変動なし（0）として扱う。
  */
+/**
+ * 売上改善額のSQL（ダッシュボード・案件一覧の合計・絞り込みで共通）。
+ *
+ * 売上高（日次・価格実績）のファイルには「売上改善額（マスタ）」の列があり、
+ * 値決めの元（基幹側）で出した金額なので、その値をそのまま正とする
+ * （端数の丸め方が違うため、単価差から計算し直すと数円ずれる）。
+ * その列のあるファイルから入った品目（gain_src=1）は、値が空欄なら
+ * 「改善額なし」（ファイルでも空欄。過去最新単価の無い品目など）として、
+ * 計算で補わない。列の無い取込（月次の古い形式など）では、これまでどおり
+ * （当月のマスタ単価 − 過去最新単価）× マスタ分の数量 で出す。
+ *
+ * 上がった／下がった／同じ の向きも、ファイルの値があるときはその符号で、
+ * 無いときは単価差（0.5円未満は同じ）で決める。
+ *
+ *   mPrice … 当月のマスタ単価（無ければ実単価）  past … 過去最新単価
+ *   planQty … マスタ分の数量  gain … 案件の gain_amount（実績の月のもの）
+ *   src … 案件の gain_src（1=列のあるファイルから入った）
+ *   hasBoth … 過去最新単価とマスタ単価がそろっている条件
+ */
+function gainSql({ mPrice, past, planQty, gain, src, hasBoth }) {
+  const diff = `((${mPrice}) - ${past})`;
+  const calc = `${diff} * (${planQty})`;
+  const fromFile = `${src} = 1`;
+  return {
+    // 値。ファイル由来なら（空欄は0）、そうでなければ計算値
+    expr: `(CASE WHEN ${fromFile} THEN COALESCE(${gain}, 0) ELSE ${calc} END)`,
+    // 改善額を出せる品目（ファイルに値があるか、単価がそろっているか）
+    has: `(CASE WHEN ${fromFile} THEN ${gain} IS NOT NULL ELSE (${hasBoth}) END)`,
+    up: `(CASE WHEN ${fromFile} THEN ${gain} >= 0.5 ELSE (${hasBoth} AND ${diff} >= 0.5) END)`,
+    down: `(CASE WHEN ${fromFile} THEN ${gain} <= -0.5 ELSE (${hasBoth} AND ${diff} <= -0.5) END)`,
+    same: `(CASE WHEN ${fromFile} THEN ABS(${gain}) < 0.5 ELSE (${hasBoth} AND ABS(${diff}) < 0.5) END)`,
+  };
+}
+
 function dealsTotals(query, where, params, aggMeta, actualMeta) {
   // 承認日の条件（ダッシュボードと同じ判定）。合計の計上に使う
   const approvedCond = aDateCond(query);
@@ -3342,17 +3383,17 @@ function dealsTotals(query, where, params, aggMeta, actualMeta) {
   const act = actualSource(query, actualMeta);
   const MP = `COALESCE(CAST(${act.col('master_price')} AS FLOAT),
                        CAST(${act.col('master_avg_price')} AS FLOAT))`;
+  // 売上改善額（ファイルの値があればそれ。無ければ単価差 × マスタ分の数量）。ダッシュボードと同じ
+  const gf = gainSql({
+    mPrice: MP, past: `CAST(${act.col('past_price')} AS FLOAT)`,
+    planQty: planMonthlyQty(act.prefix), gain: `CAST(${act.col('gain_amount')} AS FLOAT)`,
+    src: act.col('gain_src'), hasBoth: `${act.col('past_price')} > 0 AND ${MP} IS NOT NULL`,
+  });
   return db.get(`
       SELECT COUNT(*) AS count,
              SUM(CASE WHEN r2_done = 1 THEN 1 ELSE 0 END) AS r2_done,
-             SUM(CASE WHEN ${act.col('past_price')} > 0 AND ${MP} IS NOT NULL
-                       AND ${MP} - CAST(${act.col('past_price')} AS FLOAT) >= 0.5
-                      THEN (${MP} - CAST(${act.col('past_price')} AS FLOAT))
-                           * (${planMonthlyQty(act.prefix)}) ELSE 0 END) AS gain_plus,
-             SUM(CASE WHEN ${act.col('past_price')} > 0 AND ${MP} IS NOT NULL
-                       AND ${MP} - CAST(${act.col('past_price')} AS FLOAT) <= -0.5
-                      THEN (${MP} - CAST(${act.col('past_price')} AS FLOAT))
-                           * (${planMonthlyQty(act.prefix)}) ELSE 0 END) AS gain_minus,
+             SUM(CASE WHEN ${gf.up} THEN ${gf.expr} ELSE 0 END) AS gain_plus,
+             SUM(CASE WHEN ${gf.down} THEN ${gf.expr} ELSE 0 END) AS gain_minus,
              ${[0, 1, 2, 3].map((n) => {
                // 翌月は「承認日が古ければ当月をスライド」の決まりを当てはめる（表示と同じ）
                const a = aPriceSql(n, slideFromDate(aggMeta, { ym: act.ym }));
@@ -4641,6 +4682,9 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: '取り込む行がありません' });
   if (rows.length > 4000) return res.status(400).json({ error: '一度に送れるのは4000行までです' });
+  // ファイルに「売上改善額（マスタ）」の列があるか（画面が読み取りのときに判定して送る）。
+  // あるときは、空欄の行も「改善額なし」としてファイルどおりに扱う
+  const gainFromFile = req.body?.gainFromFile === true;
 
   const num = (v) => {
     if (v === null || v === undefined || String(v).trim() === '') return 0;
@@ -4675,7 +4719,7 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
       cust, model, qty: 0, money: 0, amt: 0, wgt: 0, mp_amt: 0, mp_wgt: 0,
       plan_qty: 0, plan_money: 0,
       past_amt: 0, past_wgt: 0, past_date: null,
-      list_amt: 0, list_wgt: 0,
+      list_amt: 0, list_wgt: 0, gain_sum: 0, gain_rows: 0, gain_has: gainFromFile ? 1 : 0,
       customer_name: null, corp_group: null, industry: null,
       delivery_name: null, model_name: null, product_name: null, spec: null,
       equip_name: null, category_name: null, top: Number.NEGATIVE_INFINITY,
@@ -4703,6 +4747,8 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     if (mprice > 0) { a.mp_amt += mprice * w; a.mp_wgt += w; }
     if (past > 0) { a.past_amt += past * w; a.past_wgt += w; }
     if (list > 0) { a.list_amt += list * w; a.list_wgt += w; }
+    // 売上改善額（マスタ）。ファイルの値をそのまま足す（列の無いファイルでは空のまま）
+    if (filled(r.gain_amount)) { a.gain_sum += num(r.gain_amount); a.gain_rows += 1; }
     // 過去最新受注日は、まとまりの中で一番新しい日を残す
     const d = txt(r.past_date);
     if (d && (!a.past_date || d > a.past_date)) a.past_date = d;
@@ -4725,12 +4771,13 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
     a.cust, a.model, a.qty, a.money, a.amt, a.wgt, a.mp_amt, a.mp_wgt,
     a.plan_qty, a.plan_money, a.past_amt, a.past_wgt, a.past_date,
     a.list_amt, a.list_wgt, ...REP.map((k) => a[k]), Number.isFinite(a.top) ? a.top : 0,
+    a.gain_sum, a.gain_rows, a.gain_has,
   ]);
   if (vals.length) {
     const sumCols = ['qty_sum', 'money_sum', 'price_amt', 'price_wgt', 'mp_amt', 'mp_wgt',
       'plan_qty_sum', 'plan_money_sum', 'past_amt', 'past_wgt'];
     const cols = ['ent_cd', 'model_code', ...sumCols, 'past_date',
-      'list_amt', 'list_wgt', ...REP, 'top_qty'];
+      'list_amt', 'list_wgt', ...REP, 'top_qty', 'gain_sum', 'gain_rows', 'gain_has'];
     // 送りが分かれても、数量の一番多い行の内容と、一番新しい受注日が残るようにする。
     // 片方が空欄の項目はもう片方から補う（品目名などを取りこぼさないため）
     const keepTop = (c) =>
@@ -4738,14 +4785,15 @@ api.post('/survey-import/chunk', wrap(async (req, res) => {
          THEN COALESCE(excluded.${c}, act_staging.${c})
          ELSE COALESCE(act_staging.${c}, excluded.${c}) END`;
     // 1文あたりのパラメータ上限（SQLiteは32,766個・PostgreSQLは65,535個）に
-    // 収まるよう、25列×1,200行ずつに分けて書き込む（残し方は分かれても同じ結果）
-    for (let i = 0; i < vals.length; i += 1200) {
-      const part = vals.slice(i, i + 1200);
+    // 収まるよう、28列×1,000行ずつに分けて書き込む（残し方は分かれても同じ結果）
+    for (let i = 0; i < vals.length; i += 1000) {
+      const part = vals.slice(i, i + 1000);
       await db.run(
         `INSERT INTO act_staging (${cols.join(',')})
          VALUES ${part.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}
          ON CONFLICT (ent_cd, model_code) DO UPDATE SET
-           ${[...sumCols, 'list_amt', 'list_wgt'].map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
+           ${[...sumCols, 'list_amt', 'list_wgt', 'gain_sum', 'gain_rows'].map((c) => `${c} = act_staging.${c} + excluded.${c}`).join(', ')},
+           gain_has = CASE WHEN excluded.gain_has = 1 THEN 1 ELSE act_staging.gain_has END,
            past_date = CASE WHEN act_staging.past_date IS NULL OR excluded.past_date > act_staging.past_date
                             THEN excluded.past_date ELSE act_staging.past_date END,
            ${[...REP, 'top_qty'].map(keepTop).join(', ')}`,
@@ -4769,7 +4817,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     'industry', 'delivery_name', 'model_code', 'model_name', 'product_name', 'gas_type',
     'equip_name', 'category_name',
     'list_price', 'master_avg_price', 'master_price', 'master_qty', 'master_amount',
-    'plan_qty', 'plan_amount', 'past_price', 'past_date', 'hist_batch', 'updated_at'];
+    'plan_qty', 'plan_amount', 'past_price', 'past_date', 'gain_amount', 'gain_src',
+    'hist_batch', 'updated_at'];
   // 法人は企業グループ名。グループ名がそのまま法人のコードになる
   // （ファイルにグループのコードが無く、名前が法人を一意に指すため）。
   // グループ名の無いファイルでは、これまでどおり得意先が法人になる。
@@ -4787,6 +4836,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
            s.plan_qty_sum, s.plan_money_sum,
            CASE WHEN s.past_wgt > 0 THEN s.past_amt / s.past_wgt END,
            s.past_date,
+           CASE WHEN s.gain_has = 1 AND s.gain_rows > 0 THEN s.gain_sum END,
+           CASE WHEN s.gain_has = 1 THEN 1 END,
            ${batch ? '?' : 'NULL'}, ?
       FROM act_staging s
      WHERE true`;   // SQLiteは INSERT...SELECT の ON CONFLICT を JOIN の ON と読み違えるため、
@@ -4813,10 +4864,11 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
           + ' OR d.master_avg_price IS NOT NULL)', params: [] };
     await db.run(`
       INSERT INTO deal_actuals (ent_cd, model_code, ym, master_avg_price, master_price,
-        master_qty, master_amount, plan_qty, plan_amount, past_price, past_date, updated_at)
+        master_qty, master_amount, plan_qty, plan_amount, past_price, past_date, gain_amount,
+        gain_src, updated_at)
       SELECT d.hist_ent_cd, d.model_code, ?, d.master_avg_price, d.master_price,
              d.master_qty, d.master_amount, d.plan_qty, d.plan_amount,
-             d.past_price, d.past_date, ?
+             d.past_price, d.past_date, d.gain_amount, d.gain_src, ?
         FROM deals d
        WHERE d.hist_ent_cd IS NOT NULL AND d.hist_ent_cd <> ''
          AND d.model_code IS NOT NULL AND d.model_code <> ''
@@ -4826,6 +4878,7 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
         master_qty = excluded.master_qty, master_amount = excluded.master_amount,
         plan_qty = excluded.plan_qty, plan_amount = excluded.plan_amount,
         past_price = excluded.past_price, past_date = excluded.past_date,
+        gain_amount = excluded.gain_amount, gain_src = excluded.gain_src,
         updated_at = excluded.updated_at`,
       [actYm, stamp, ...only.params]);
     // 同じ月を取り込み直したとき、今回のファイルに無い行は月別の実績からも外す。
@@ -4862,7 +4915,8 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
     await db.run(`
       UPDATE deals SET master_avg_price = NULL, master_price = NULL, master_qty = NULL,
              master_amount = NULL, plan_qty = NULL, plan_amount = NULL,
-             past_price = NULL, past_date = NULL, updated_at = ?
+             past_price = NULL, past_date = NULL, gain_amount = NULL, gain_src = NULL,
+             updated_at = ?
        WHERE hist_batch IS DISTINCT FROM ?
          AND (master_qty IS NOT NULL OR master_avg_price IS NOT NULL OR master_amount IS NOT NULL)`,
       [stamp, batch]);
@@ -4925,27 +4979,31 @@ async function recordSalesProgress(actualMeta, stamp) {
     const row = await db.get(`
       SELECT COUNT(*) AS deals, SUM(${f('master_qty')}) AS qty,
              SUM(COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)) AS amount,
-             SUM(${f('plan_qty')}) AS plan_qty, SUM(${f('plan_amount')}) AS plan_amount
+             SUM(${f('plan_qty')}) AS plan_qty, SUM(${f('plan_amount')}) AS plan_amount,
+             SUM(${f('gain_amount')}) AS gain_amount,
+             SUM(CASE WHEN gain_amount IS NOT NULL THEN 1 ELSE 0 END) AS gain_rows
         FROM deal_actuals WHERE ym = ?`, [ym]);
     const n = (v) => Number(v ?? 0);
     const rec = {
       ym, asOf, final: daily ? 0 : 1, elapsedDays: elapsed ?? null, workDays: workDays ?? null,
       deals: n(row?.deals), qty: n(row?.qty), amount: n(row?.amount),
       planQty: n(row?.plan_qty), planAmount: n(row?.plan_amount),
+      // 売上改善額（マスタ）。ファイルに列があった取込だけ入る（無い取込は空）
+      gainAmount: Number(row?.gain_rows ?? 0) > 0 ? n(row?.gain_amount) : null,
       filename: actualMeta?.filename ?? null, takenAt: stamp,
     };
     await db.run(`
       INSERT INTO sales_progress (ym, as_of, final, elapsed_days, work_days, deals, qty, amount,
-        plan_qty, plan_amount, filename, taken_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        plan_qty, plan_amount, gain_amount, filename, taken_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT (ym, as_of) DO UPDATE SET
         final = excluded.final, elapsed_days = excluded.elapsed_days,
         work_days = excluded.work_days, deals = excluded.deals, qty = excluded.qty,
         amount = excluded.amount, plan_qty = excluded.plan_qty,
-        plan_amount = excluded.plan_amount, filename = excluded.filename,
-        taken_at = excluded.taken_at`,
+        plan_amount = excluded.plan_amount, gain_amount = excluded.gain_amount,
+        filename = excluded.filename, taken_at = excluded.taken_at`,
       [rec.ym, rec.asOf, rec.final, rec.elapsedDays, rec.workDays, rec.deals, rec.qty,
-        rec.amount, rec.planQty, rec.planAmount, rec.filename, rec.takenAt]);
+        rec.amount, rec.planQty, rec.planAmount, rec.gainAmount, rec.filename, rec.takenAt]);
     return rec;
   } catch (e) {
     console.warn(`売上高の進捗を残せませんでした → ${e.message}`);
@@ -4986,7 +5044,9 @@ api.get('/sales-progress', wrap(async (req, res) => {
     const f = (c) => `CAST(${c} AS FLOAT)`;
     totals = await db.all(`
       SELECT ym, COUNT(*) AS deals, SUM(${f('master_qty')}) AS qty,
-             SUM(COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)) AS amount
+             SUM(COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)) AS amount,
+             SUM(${f('gain_amount')}) AS gain_amount,
+             SUM(CASE WHEN gain_amount IS NOT NULL THEN 1 ELSE 0 END) AS gain_rows
         FROM deal_actuals GROUP BY ym ORDER BY ym DESC`);
   } catch {
     /* 進捗の表が無い旧DBでは空で返す */
@@ -5004,10 +5064,12 @@ api.get('/sales-progress', wrap(async (req, res) => {
       workDays: r.work_days == null ? null : Number(r.work_days),
       deals: n(r.deals), qty: n(r.qty), amount: n(r.amount),
       planQty: n(r.plan_qty), planAmount: n(r.plan_amount),
+      gainAmount: r.gain_amount == null ? null : Number(r.gain_amount),
       filename: r.filename ?? null, takenAt: r.taken_at,
     })),
     totals: totals.map((r) => ({
       ym: String(r.ym), deals: n(r.deals), qty: n(r.qty), amount: n(r.amount),
+      gainAmount: Number(r.gain_rows ?? 0) > 0 ? n(r.gain_amount) : null,
       workDays: workdaysOf(String(r.ym)) ?? null,
     })),
   });

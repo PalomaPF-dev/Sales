@@ -722,7 +722,8 @@ function SummaryCard({
     <Card title={title}>
       <NoteFold id={noteId}>
         <strong>当初</strong>は値上げ前の金額で、{actLabel}の金額（合計）から
-        <strong>売上改善額</strong>（＝（{actLabel}のマスタ単価 − 過去最新単価）× マスタ分の数量）を
+        <strong>売上改善額</strong>（売上高ファイルの「売上改善額（マスタ）」。列の無い取込では
+        （{actLabel}のマスタ単価 − 過去最新単価）× マスタ分の数量）を
         引いたものです。上がった品目のプラスと、下がった品目のマイナスを合わせた額を引いています。
         <strong>実績</strong>は{actLabel}の金額（合計）そのもので、当初との差が売上改善額になります。
         <strong>計画</strong>は、この{actLabel}の金額（合計）へ
