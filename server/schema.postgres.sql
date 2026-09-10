@@ -444,6 +444,32 @@ CREATE TABLE IF NOT EXISTS deal_actuals (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_actuals_ym ON deal_actuals(ym);
 
+-- 売上高の取込ごとの進捗（当月の累計）。実績の月 × データの日付 ごとに1行。
+--
+-- 売上高（月次）は月まるごとの実績だが、日次で取り込むと「その日までの当月累計」になる。
+-- 毎日取り込むたびに、その時点の合計（全社・絞り込みなし）を残しておき、
+-- 月の中でいくら積み上がってきたか（前日比・月末の見込み）をたどれるようにする。
+-- 同じ日付へ取り込み直したときは、最後の取込の値で上書きする。
+-- 月次（確定）の取込は final=1 で、日付はその月の末日として残す
+-- （日次の累計がその総額へ積み上がったかを並べて確かめられるように）。
+--
+-- 主キーが id ではないので、server/db.js の TABLES_WITHOUT_ID にも入れてある。
+CREATE TABLE IF NOT EXISTS sales_progress (
+  ym           TEXT NOT NULL,   -- 実績の月（YYYY-MM）
+  as_of        TEXT NOT NULL,   -- データの日付（その日までの当月累計）
+  final        INTEGER NOT NULL DEFAULT 0,  -- 1=月次（確定）の取込
+  elapsed_days INTEGER,         -- その日までの稼働日（日量換算のもと）
+  work_days    INTEGER,         -- その月の稼働日
+  deals        INTEGER,         -- 売上高に載った 得意先×商品 の数
+  qty          DOUBLE PRECISION,            -- 数量（合計）
+  amount       DOUBLE PRECISION,            -- 金額（合計）
+  plan_qty     DOUBLE PRECISION,            -- マスタ分の数量
+  plan_amount  DOUBLE PRECISION,            -- マスタ分の金額
+  filename     TEXT,            -- 取り込んだファイル名
+  taken_at     TEXT NOT NULL,   -- 記録した日時
+  PRIMARY KEY (ym, as_of)
+);
+
 -- 値上げ額の推移（取込ごとの記録）。取込日 × 計画の月 ごとに1行。
 -- 価格調査（毎日更新）・売上高（月次）を取り込むたびに、その時点の
 -- 値上げ額の合計（全社・絞り込みなし）を残す。あとから

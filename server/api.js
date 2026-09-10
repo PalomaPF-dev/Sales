@@ -22,7 +22,7 @@ import {
   deleteAttachment, fetchAttachment, fileBucket, isFileStoreConfigured, putAttachment,
 } from './fileStore.js';
 import { comparePref } from './prefOrder.js';
-import { workdayPlan } from './workdays.js';
+import { workdayPlan, elapsedWorkdays, actualBaseDays, workdaysOf } from './workdays.js';
 import {
   KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
   parseStandardWorkbook, replaceStandardPrices,
@@ -2177,7 +2177,10 @@ async function recordRaiseHistory(source, filename, takenOnRaw) {
     const { aggMeta, actualMeta } = await loadImportMeta();
     const planYms = [0, 1, 2, 3].map((n) => String(aggMeta?.[`m${n}`] ?? ''));
     if (!planYms.some((ym) => /^\d{4}-\d{2}$/.test(ym))) return;   // 計画の月が分からない
-    const workdays = workdayPlan(actualMeta?.ym ?? '', planYms);
+    // 日次（当月の累計）のときは、データの日付までの稼働日で日量に直す（画面と同じ）
+    const workdays = workdayPlan(actualMeta?.ym ?? '', planYms, {
+      baseDays: actualBaseDays(actualMeta, actualMeta?.ym), asOf: actualMeta?.asOf,
+    });
     const dayRate = (n) => {
       const days = workdays.months[n]?.days;
       return workdays.baseDays > 0 && days > 0 ? ` * ${days}.0 / ${workdays.baseDays}.0` : '';
@@ -2499,8 +2502,12 @@ async function dashboardData(query, user) {
   // 月ごとの稼働日の違いをそのままにすると、稼働日の少ない月の計画が大きく出る。
   // 実績の月を稼働日で割って日量に直し、計画の月の稼働日を掛け直す。
   // 稼働日の分からない月は倍率1（換算しない）。
+  // 売上高を日次（当月の累計）で取り込んでいるときは、実績が月の途中までしか無い。
+  // 月まるごとの稼働日で割ると日量が小さく出るので、データの日付までの稼働日で割る
+  // （過去の月へ切り替えたときは、その月はまるごとの実績なので月の稼働日のまま）
   const workdays = workdayPlan(act.ym,
-    [0, 1, 2, 3].map((n) => aggMeta?.[`m${n}`] ?? ''));
+    [0, 1, 2, 3].map((n) => aggMeta?.[`m${n}`] ?? ''),
+    { baseDays: actualBaseDays(actualMeta, act.ym), asOf: actualMeta?.asOf });
   // SQLiteでは整数どうしの割り算が整数になるため、小数で書く
   const dayRate = (n) => {
     const days = workdays.months[n]?.days;
@@ -4565,19 +4572,68 @@ const actCols = (prefix) => Array.from({ length: ACT_SLOTS }, (_, i) => `${prefi
  * そして過去最新単価（値上げ前）を案件に入れる。
  * A基準（マスタ登録）は、この当月単価に重ねて今後の計画として比べる。
  */
+/**
+ * 売上高の取込には2つの取り方がある。
+ *   monthly … 月次（確定）。月まるごとの実績。これまでどおり
+ *   daily   … 日次（当月の累計）。「その日までの当月の合計」のファイルを毎日取り込み、
+ *             月の中で実績が積み上がっていく様子（進捗）を見る。
+ *             月末に月次を取り込めば、同じ月の数字がそのまま確定に置き換わる
+ * どちらも案件の実績（当月の単価・数量・金額）を入れ直す点は同じで、
+ * 日次はそれに加えて「データの日付」と「その日までの稼働日」を持つ。
+ * 稼働日は計画の日量換算のもとになる（月の途中の実績を月まるごとの稼働日で
+ * 割ると、計画が実態より低く出てしまうため）。
+ */
 api.post('/survey-import/start', wrap(async (req, res) => {
   if (!requireRole(req, res, ['admin'])) return;
   const filename = String(req.body?.filename ?? '価格調査.xlsx');
   const ym = String(req.body?.ym ?? '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return res.status(400).json({ error: '当月が分かりません' });
+  const mode = req.body?.mode === 'daily' ? 'daily' : 'monthly';
+  let asOf = null;
+  let elapsedDays = null;
+  if (mode === 'daily') {
+    asOf = String(req.body?.asOf ?? '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+      return res.status(400).json({ error: '日次の取込にはデータの日付（いつまでの累計か）が必要です' });
+    }
+    if (asOf.slice(0, 7) !== ym) {
+      return res.status(400).json({
+        error: `データの日付（${asOf}）がファイルの月（${ym}）と違います。`
+          + '当月の累計のファイルか、日付を確かめてください',
+      });
+    }
+    if (asOf > localDate()) return res.status(400).json({ error: '明日以降の日付では取り込めません' });
+    // その日までの稼働日。指定が無ければ暦から見込む（月の稼働日が分からない月は空）
+    const given = Number(req.body?.elapsedDays);
+    elapsedDays = Number.isFinite(given) && given > 0 ? Math.round(given)
+      : elapsedWorkdays(ym, asOf);
+    const total = workdaysOf(ym);
+    if (elapsedDays != null && total > 0 && elapsedDays > total) {
+      return res.status(400).json({ error: `稼働日は ${ym} の稼働日（${total}日）以内で指定してください` });
+    }
+  }
   await db.run('DELETE FROM act_staging');
   await db.run(
     `INSERT INTO settings (key, value) VALUES ('actual_meta', ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-    [JSON.stringify({ ym, months: [ym], filename, updatedAt: new Date().toISOString() })]
+    [JSON.stringify({
+      ym, months: [ym], filename, mode, asOf, elapsedDays, updatedAt: new Date().toISOString(),
+    })]
   );
   // 今回の取込に含まれない案件を最後に落とすための印
-  res.json({ ok: true, batch: `act-${Date.now()}` });
+  res.json({ ok: true, batch: `act-${Date.now()}`, mode, asOf, elapsedDays });
+}));
+
+/**
+ * 日次の取込の前に、データの日付までの稼働日の見込みを返す。
+ * 画面で確かめて直せるようにするため（営業部の稼働日と暦は合わないことがある）。
+ */
+api.get('/survey-import/workdays', wrap(async (req, res) => {
+  if (!requireRole(req, res, ['admin'])) return;
+  const asOf = String(req.query.asOf ?? '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return res.status(400).json({ error: '日付の形が違います' });
+  const ym = asOf.slice(0, 7);
+  res.json({ ym, asOf, workDays: workdaysOf(ym), elapsedDays: elapsedWorkdays(ym, asOf) });
 }));
 
 api.post('/survey-import/chunk', wrap(async (req, res) => {
@@ -4772,6 +4828,19 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
         past_price = excluded.past_price, past_date = excluded.past_date,
         updated_at = excluded.updated_at`,
       [actYm, stamp, ...only.params]);
+    // 同じ月を取り込み直したとき、今回のファイルに無い行は月別の実績からも外す。
+    // ファイルがその月の全体（月次なら月まるごと、日次ならその日までの累計）なので、
+    // 前の取込にだけあった行を残すと、月の合計がファイルと合わなくなる
+    if (batch) {
+      await db.run(`
+        DELETE FROM deal_actuals
+         WHERE ym = ?
+           AND NOT EXISTS (SELECT 1 FROM deals d
+                            WHERE d.hist_batch = ?
+                              AND d.hist_ent_cd = deal_actuals.ent_cd
+                              AND d.model_code = deal_actuals.model_code)`,
+        [actYm, batch]);
+    }
   }
 
   // マスタ単価の実績（月別履歴）。この月のマスタ単価をその月の枠へ記録する
@@ -4829,7 +4898,119 @@ api.post('/survey-import/finish', wrap(async (req, res) => {
   invalidateMetaCache();
   // 売上高が入れ替わると実績数（値上げ額のもと）も変わるので、ここでも残す
   await recordRaiseHistory('survey', actualMeta?.filename ?? '');
-  res.json({ covered: Number(covered), total: Number(total), groups: Number(groups), removed });
+  // 取込ごとの進捗（その時点の当月の合計）を残す
+  const progress = actYm ? await recordSalesProgress(actualMeta, stamp) : null;
+  res.json({
+    covered: Number(covered), total: Number(total), groups: Number(groups), removed, progress,
+  });
+}));
+
+/**
+ * 売上高の取込1回ぶんの合計（全社・絞り込みなし）を残す。
+ *
+ * 日次（当月の累計）は、データの日付ごとに1行。月次（確定）は月の末日の行として
+ * final=1 で残す。どちらも月別の実績（deal_actuals）から数えるので、
+ * 画面の数字（案件の実績の合計）とぴったり合う。
+ * 取込そのものは成功させたいので、ここで失敗しても投げずに警告だけ残す。
+ */
+async function recordSalesProgress(actualMeta, stamp) {
+  try {
+    const ym = String(actualMeta?.ym ?? '');
+    if (!/^\d{4}-\d{2}$/.test(ym)) return null;
+    const daily = actualMeta?.mode === 'daily' && /^\d{4}-\d{2}-\d{2}$/.test(String(actualMeta?.asOf ?? ''));
+    const asOf = daily ? String(actualMeta.asOf) : monthEnd(ym);
+    const workDays = workdaysOf(ym);
+    const elapsed = daily ? actualBaseDays(actualMeta, ym) : workDays;
+    const f = (c) => `CAST(${c} AS FLOAT)`;
+    const row = await db.get(`
+      SELECT COUNT(*) AS deals, SUM(${f('master_qty')}) AS qty,
+             SUM(COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)) AS amount,
+             SUM(${f('plan_qty')}) AS plan_qty, SUM(${f('plan_amount')}) AS plan_amount
+        FROM deal_actuals WHERE ym = ?`, [ym]);
+    const n = (v) => Number(v ?? 0);
+    const rec = {
+      ym, asOf, final: daily ? 0 : 1, elapsedDays: elapsed ?? null, workDays: workDays ?? null,
+      deals: n(row?.deals), qty: n(row?.qty), amount: n(row?.amount),
+      planQty: n(row?.plan_qty), planAmount: n(row?.plan_amount),
+      filename: actualMeta?.filename ?? null, takenAt: stamp,
+    };
+    await db.run(`
+      INSERT INTO sales_progress (ym, as_of, final, elapsed_days, work_days, deals, qty, amount,
+        plan_qty, plan_amount, filename, taken_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT (ym, as_of) DO UPDATE SET
+        final = excluded.final, elapsed_days = excluded.elapsed_days,
+        work_days = excluded.work_days, deals = excluded.deals, qty = excluded.qty,
+        amount = excluded.amount, plan_qty = excluded.plan_qty,
+        plan_amount = excluded.plan_amount, filename = excluded.filename,
+        taken_at = excluded.taken_at`,
+      [rec.ym, rec.asOf, rec.final, rec.elapsedDays, rec.workDays, rec.deals, rec.qty,
+        rec.amount, rec.planQty, rec.planAmount, rec.filename, rec.takenAt]);
+    return rec;
+  } catch (e) {
+    console.warn(`売上高の進捗を残せませんでした → ${e.message}`);
+    return null;
+  }
+}
+
+/** 「2026-09」→「2026-09-30」（その月の末日） */
+function monthEnd(ym) {
+  const y = Number(ym.slice(0, 4));
+  const m = Number(ym.slice(5, 7));
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${ym}-${String(last).padStart(2, '0')}`;
+}
+
+/**
+ * 売上高の進捗（取込ごとの当月の合計）。新しい月・新しい日付が先頭。
+ *
+ * 取込の記録（値上げ額の推移）と同じく、全社・絞り込みなしの合計なので
+ * ログインしていれば誰でも見られる。
+ * 月ごとの総額（月別の実績の合計）も添えて、前の月の総額と比べられるようにする
+ * （日次の記録が無い月＝月次だけ取り込んだ月も、総額はここから分かる）。
+ */
+api.get('/sales-progress', wrap(async (req, res) => {
+  if (!requireLogin(req, res)) return;
+  const { actualMeta } = await loadImportMeta();
+  const months = Math.min(12, Math.max(1, Number(req.query.months) || 3));
+  let rows = [];
+  let totals = [];
+  try {
+    const yms = await db.all(
+      'SELECT DISTINCT ym FROM sales_progress ORDER BY ym DESC LIMIT ?', [months]);
+    if (yms.length) {
+      const oldest = String(yms[yms.length - 1].ym);
+      rows = await db.all(
+        'SELECT * FROM sales_progress WHERE ym >= ? ORDER BY ym DESC, as_of DESC', [oldest]);
+    }
+    const f = (c) => `CAST(${c} AS FLOAT)`;
+    totals = await db.all(`
+      SELECT ym, COUNT(*) AS deals, SUM(${f('master_qty')}) AS qty,
+             SUM(COALESCE(${f('master_amount')}, ${f('master_avg_price')} * ${f('master_qty')}, 0)) AS amount
+        FROM deal_actuals GROUP BY ym ORDER BY ym DESC`);
+  } catch {
+    /* 進捗の表が無い旧DBでは空で返す */
+  }
+  const n = (v) => Number(v ?? 0);
+  res.json({
+    current: actualMeta ? {
+      ym: actualMeta.ym ?? null, mode: actualMeta.mode ?? 'monthly',
+      asOf: actualMeta.asOf ?? null, elapsedDays: actualMeta.elapsedDays ?? null,
+      workDays: workdaysOf(actualMeta.ym) ?? null, filename: actualMeta.filename ?? null,
+    } : null,
+    rows: rows.map((r) => ({
+      ym: String(r.ym), asOf: String(r.as_of), final: Number(r.final) === 1,
+      elapsedDays: r.elapsed_days == null ? null : Number(r.elapsed_days),
+      workDays: r.work_days == null ? null : Number(r.work_days),
+      deals: n(r.deals), qty: n(r.qty), amount: n(r.amount),
+      planQty: n(r.plan_qty), planAmount: n(r.plan_amount),
+      filename: r.filename ?? null, takenAt: r.taken_at,
+    })),
+    totals: totals.map((r) => ({
+      ym: String(r.ym), deals: n(r.deals), qty: n(r.qty), amount: n(r.amount),
+      workDays: workdaysOf(String(r.ym)) ?? null,
+    })),
+  });
 }));
 
 // ---- 出荷実績（月別履歴）の取込 ----

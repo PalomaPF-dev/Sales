@@ -158,13 +158,35 @@ export interface Meta {
   /** マスタ登録（集約表）の取込情報。A基準の月（YYYY-MM）と出荷単価の期間 */
   aggMeta?: { m0?: string; m1: string; m2: string; m3: string; basePeriod: string;
     filename?: string; histMonths?: string[] } | null;
-  /** 価格調査（当月実績）の取込情報。ym は当月（例 2026-07） */
-  actualMeta?: { ym?: string; filename?: string; updatedAt?: string } | null;
+  /**
+   * 売上高（実績）の取込情報。ym は実績の月（例 2026-07）。
+   * mode が daily のときは「asOf（データの日付）までの当月の累計」で、
+   * elapsedDays はその日までの稼働日（計画の日量換算のもと）。
+   */
+  actualMeta?: ActualMeta | null;
   /** 実績として選べる月（月別に残してあるもの）。新しい順 */
   actualMonths?: { ym: string; deals: number }[];
   /** 過去最新単価が「いつまでの受注か」（いちばん新しい過去最新受注日） */
   pastMax?: string | null;
 }
+
+/** 売上高（実績）の取込情報 */
+export interface ActualMeta {
+  ym?: string;
+  filename?: string;
+  updatedAt?: string;
+  /** monthly=月次（確定・月まるごと） / daily=日次（データの日付までの当月の累計） */
+  mode?: 'monthly' | 'daily';
+  /** 日次のとき、いつまでの累計か（YYYY-MM-DD）。月次では null */
+  asOf?: string | null;
+  /** 日次のとき、データの日付までの稼働日。月次では null */
+  elapsedDays?: number | null;
+}
+
+/** 「2026-09-10」→「9/10」（実績が月の途中までのときの但し書きに使う） */
+export const asOfLabel = (m?: ActualMeta | null) =>
+  (m?.mode === 'daily' && /^\d{4}-\d{2}-\d{2}$/.test(String(m.asOf ?? ''))
+    ? `${Number(String(m.asOf).slice(5, 7))}/${Number(String(m.asOf).slice(8, 10))}` : '');
 
 export const ROUND_STATE_NAMES: Record<string, string> = {
   open: '未入力',

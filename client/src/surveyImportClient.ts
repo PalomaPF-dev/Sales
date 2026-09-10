@@ -282,22 +282,54 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
 }
 
 
+/** 売上高の取込1回ぶんの合計（サーバーが取込のたびに残す進捗の記録） */
+export interface SurveyProgress {
+  ym: string;
+  asOf: string;          // データの日付（月次のときは月の末日）
+  final: number;         // 1=月次（確定）
+  elapsedDays: number | null;
+  workDays: number | null;
+  deals: number;
+  qty: number;
+  amount: number;
+  planQty: number;
+  planAmount: number;
+}
+
 export interface SurveyResult {
   matched: number;    // 取り込んだ行
   unmatched: number;  // 得意先が空などで取り込めなかった行
   covered: number;    // 当月単価の入った案件の数
   total: number;      // 案件の総数
   removed?: number;   // 今回のファイルに無くなって消えた案件
+  progress?: SurveyProgress | null;   // この取込の時点の当月の合計
 }
+
+/**
+ * 取込の取り方。
+ *   monthly … 月次（確定）。月まるごとの実績（これまでどおり）
+ *   daily   … 日次（当月の累計）。asOf（データの日付）までの合計のファイルを毎日取り込む。
+ *             elapsedDays はその日までの稼働日（空ならサーバーが暦から見込む）
+ */
+export type SurveyMode = 'monthly' | 'daily';
 
 export async function sendSurveyImport(
   parsed: SurveyParsed,
   filename: string,
-  opts: { onProgress?: (done: number, total: number) => void }
+  opts: {
+    onProgress?: (done: number, total: number) => void;
+    mode?: SurveyMode;
+    asOf?: string;
+    elapsedDays?: number | null;
+  }
 ): Promise<SurveyResult> {
   const started = await api<{ batch?: string }>('/survey-import/start', {
     method: 'POST',
-    body: JSON.stringify({ filename, ym: parsed.ym }),
+    body: JSON.stringify({
+      filename, ym: parsed.ym, mode: opts.mode ?? 'monthly',
+      asOf: opts.mode === 'daily' ? opts.asOf : undefined,
+      elapsedDays: opts.mode === 'daily' && opts.elapsedDays ? opts.elapsedDays : undefined,
+    }),
   });
   let matched = 0;
   let unmatched = 0;
@@ -313,7 +345,11 @@ export async function sendSurveyImport(
     sent += chunk.length;
     opts.onProgress?.(sent, parsed.rows.length);
   }
-  const fin = await api<{ covered: number; total: number; removed?: number }>(
+  const fin = await api<{ covered: number; total: number; removed?: number;
+    progress?: SurveyProgress | null }>(
     '/survey-import/finish', { method: 'POST', body: JSON.stringify({ batch: started.batch }) });
-  return { matched, unmatched, covered: fin.covered, total: fin.total, removed: fin.removed };
+  return {
+    matched, unmatched, covered: fin.covered, total: fin.total, removed: fin.removed,
+    progress: fin.progress ?? null,
+  };
 }

@@ -5,6 +5,7 @@ import { Card } from '../components/ui';
 import { useUser } from '../user';
 import AggImportCard from '../components/AggImportCard';
 import SurveyImportCard from '../components/SurveyImportCard';
+import SalesProgressCard from '../components/SalesProgressCard';
 import RaiseTrendCard from '../components/RaiseTrend';
 import type { RaiseDay } from '../components/RaiseTrend';
 import type { Meta } from '../types';
@@ -37,10 +38,13 @@ export default function ImportPage() {
   // 「いまの内容で記録する」の日付と実行中かどうか
   const [recordOn, setRecordOn] = useState(today());
   const [recording, setRecording] = useState(false);
+  // 売上高の進捗カードを取り直す合図（取込のたびに増やす）
+  const [reloadKey, setReloadKey] = useState(0);
   const canCheck = me.role === 'admin' || me.role === 'developer';
   const navigate = useNavigate();
 
   const load = () => {
+    setReloadKey((k) => k + 1);
     // 取込の記録（値上げ額の合計）はいつでも見られるようにする
     api<{ days: RaiseDay[] }>('/raise-history?limit=60')
       .then((r) => setHistory(r.days ?? []))
@@ -80,6 +84,8 @@ export default function ImportPage() {
         当月のマスタ単価が月別の実績履歴として残ります）。
         <strong>②売上高（月次）</strong>を取り込むと、ベースへ単価・数量を突合して
         その月の実績が重なります（売上高にだけある行も案件として残り、合計は必ず合います）。
+        <strong>③売上高（日次）</strong>は当月の累計（月初からその日までの合計）を毎日取り込むもので、
+        月の中で実績が積み上がっていく進捗を見られます（月末に②を取り込むと確定の総額に置き換わります）。
         商談結果など画面で入れた値は残ります。
       </p>
       {msg && <div className={`alert ${msg.kind}`} onClick={() => setMsg(null)}>{msg.text}</div>}
@@ -87,7 +93,8 @@ export default function ImportPage() {
       {canCheck ? (
         <>
           <AggImportCard onDone={load} />
-          <SurveyImportCard anchorYm={meta?.aggMeta?.m0} onDone={load} />
+          <SurveyImportCard mode="monthly" anchorYm={meta?.aggMeta?.m0} onDone={load} />
+          <SurveyImportCard mode="daily" anchorYm={meta?.aggMeta?.m0} onDone={load} />
         </>
       ) : (
         <Card title="取込">
@@ -96,6 +103,9 @@ export default function ImportPage() {
           </p>
         </Card>
       )}
+
+      {/* 売上高（当月）の進捗。日次の取込のたびに残している当月の合計を日付ごとに並べる */}
+      <SalesProgressCard reloadKey={reloadKey} showEmpty={canCheck} />
 
       {/* 取込履歴。取り込むたびに値上げ額の合計を残しているので、
           いつ・どれだけ動いたかをここでたどれる */}
