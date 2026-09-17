@@ -67,50 +67,87 @@ function normHead(h: unknown): string {
 }
 
 /**
- * 中身のあるシートと見出しの行を選ぶ。
- * 先頭シートが空（表紙だけ）のブックや、見出しの上に表題が載っている形式でも読める。
+ * シートに実際に入っているセルの右下の位置。
+ * 宣言されたデータ範囲（!ref）が当てにならないファイルがあるため、セルから数え直す。
  */
-function sheetRows(ws: XLSX.WorkSheet | undefined): unknown[][] {
-  if (!ws) return [];
-  const g: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  if (g.length) return g;
-  // データ範囲（!ref）が壊れて「空」に見えるファイルがある。
-  // 実際のセルから範囲を数え直して、もう一度読む
-  const dense = (ws as { '!data'?: { length: number }[][] })['!data'];
-  if (dense?.length) {
-    // dense（行の配列）のときは行数と一番長い行から範囲を作る
-    let maxC = 0;
-    for (const row of dense) maxC = Math.max(maxC, row?.length ?? 0);
-    if (!maxC) return [];
-    ws['!ref'] = XLSX.utils.encode_range(
-      { s: { r: 0, c: 0 }, e: { r: dense.length - 1, c: maxC - 1 } });
-    return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  }
+function sheetExtent(ws: XLSX.WorkSheet): { maxR: number; maxC: number } | null {
   let maxR = -1;
   let maxC = -1;
+  const dense = (ws as { '!data'?: unknown[][] })['!data'];
+  if (dense?.length) {
+    for (let r = 0; r < dense.length; r++) {
+      const row = dense[r];
+      if (!row?.length) continue;
+      let last = -1;
+      for (let c = row.length - 1; c >= 0; c--) {
+        if (row[c] != null) { last = c; break; }
+      }
+      if (last < 0) continue;
+      maxR = r;
+      if (last > maxC) maxC = last;
+    }
+    return maxR < 0 ? null : { maxR, maxC };
+  }
   for (const k of Object.keys(ws)) {
     if (k.startsWith('!')) continue;
     const a = XLSX.utils.decode_cell(k);
     if (a.r > maxR) maxR = a.r;
     if (a.c > maxC) maxC = a.c;
   }
-  if (maxR < 0) return [];
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
-  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  return maxR < 0 ? null : { maxR, maxC };
 }
 
-function pickGrid(wb: XLSX.WorkBook, needles: string[]): unknown[][] {
-  let fallback: unknown[][] | null = null;
+function sheetRows(ws: XLSX.WorkSheet | undefined): unknown[][] {
+  if (!ws) return [];
+  let g: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  // 宣言されたデータ範囲（!ref）が実際のセルより狭いファイルがある
+  // （書き出したツールによっては見出し行までしか入っておらず、明細が1行も読めない）。
+  // 実際のセルから数え直して、足りなければ範囲を広げて読み直す。
+  // 範囲のほうが広いぶんには読めているので、そのまま使う（末尾の空行は害が無い）
+  const ext = sheetExtent(ws);
+  if (ext && ext.maxR + 1 > g.length) {
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: ext.maxR, c: ext.maxC } });
+    g = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  }
+  return g;
+}
+
+/** 読み取り元。どのシートの何行目を見出しとして読んだか（取り込めないときの説明に使う） */
+interface GridSource {
+  grid: unknown[][];   // 見出し行を先頭にした行の並び
+  sheet: string;
+  headerRow: number;   // Excelの行番号（1始まり）
+}
+
+/**
+ * 中身のあるシートと見出しの行を選ぶ。
+ * 先頭シートが空（表紙だけ）のブックや、見出しの上に表題が載っている形式でも読める。
+ *
+ * 見出しの語が並ぶだけの「項目説明」シートが先頭にあるファイルがあるため、
+ * 見出しが合っただけでは決めず、その下に明細（必須の列が埋まった行）があるものを選ぶ。
+ * どのシートにも明細が無ければ、見出しだけ合ったものを返す（理由は呼び出し側で説明する）。
+ */
+function pickGrid(wb: XLSX.WorkBook, needles: string[]): GridSource {
+  let fallback: GridSource | null = null;
+  let headerOnly: GridSource | null = null;
   for (const name of wb.SheetNames) {
     const g = sheetRows(wb.Sheets[name]);
     if (!g.length || !g.some((r) => (r ?? []).some((v) => v != null && v !== ''))) continue;
     // 見出しの行を先頭50行から探す（表題や説明が上に載っている形式も読めるように）
     for (let i = 0; i < Math.min(50, g.length); i++) {
       const heads = (g[i] ?? []).map((h) => normHead(h));
-      if (needles.every((n) => heads.some((h) => h.includes(n)))) return g.slice(i);
+      if (!needles.every((n) => heads.some((h) => h.includes(n)))) continue;
+      const found: GridSource = { grid: g.slice(i), sheet: name, headerRow: i + 1 };
+      // その見出しの下に明細があるか（必須の列がどちらも埋まった行が1つでもあるか）
+      const at = needles.map((n) => heads.findIndex((h) => h.includes(n)));
+      const hasData = g.slice(i + 1).some((r) =>
+        at.every((c) => String((r ?? [])[c] ?? '').trim() !== ''));
+      if (hasData) return found;
+      headerOnly ??= found;
     }
-    fallback ??= g;
+    fallback ??= { grid: g, sheet: name, headerRow: 1 };
   }
+  if (headerOnly) return headerOnly;
   if (!fallback) {
     // どのシートからも読めなかった。原因を追えるよう、シートの中身を添える
     const info = wb.SheetNames.map((n) => {
@@ -159,11 +196,17 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
     type: 'array', dense: true, cellHTML: false, cellFormula: false, cellText: false,
   });
   // 先頭シートが空でも、得意先コード・商品コードの見出しがあるシートを探して読む
-  const grid = pickGrid(wb, ['得意先コード', '商品コード']);
+  const src = pickGrid(wb, ['得意先コード', '商品コード']);
+  const grid = src.grid;
 
   const headers = (grid[0] ?? []).map((h) => normHead(h));
-  const find = (name: string) => headers.findIndex((h) => h === name);
   const findLike = (word: string) => headers.findIndex((h) => h.includes(word));
+  // 見出し名は、まず同じ名前の列を探し、無ければその語を含む列で拾う
+  // （「得意先コード（請求先）」のように但し書きが付くことがあるため）
+  const find = (name: string) => {
+    const exact = headers.findIndex((h) => h === name);
+    return exact >= 0 ? exact : findLike(name);
+  };
 
   // 当月の列の見つけ方は2通りある。
   //   月次: 「7月数量」「7月数量(合計)」のように見出しに月が付く（月は見出しから読む）
@@ -209,7 +252,11 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
   };
   const missing = Object.entries(col).filter(([, i]) => i < 0).map(([k]) => k);
   if (missing.length) {
-    throw new Error(`価格調査の見出しが見つかりません: ${missing.join('・')}`);
+    // どの見出しを見て駄目だったのかが分かるよう、読んだ場所と実際の見出しを添える
+    const found = headers.filter((h) => h).slice(0, 30).join('・');
+    throw new Error(`価格調査の見出しが見つかりません: ${missing.join('・')}。`
+      + `シート「${src.sheet}」の${src.headerRow}行目を見出しとして読みました`
+      + (found ? `（読めた見出し: ${found}）` : '（見出しが空でした）'));
   }
 
   // 過去の単価（値上げ前）。無いファイルでも取り込めるようにしておく
@@ -295,7 +342,25 @@ export async function parseSurveyFile(file: File, anchorYm?: string): Promise<Su
       gain_amount: gainAt >= 0 ? r[gainAt] : null,
     });
   }
-  if (!rows.length) throw new Error('取り込める行がありません');
+  if (!rows.length) {
+    // 「取り込める行がありません」だけでは、ファイルのどこを見て駄目だったのかが分からない。
+    // どのシートの何行目を見出しとし、どの列を必須として読んだか、
+    // その列に実際は何が入っていたかを添えて、ファイル側と突き合わせられるようにする
+    const colName = (i: number) => `${XLSX.utils.encode_col(i)}列`;
+    const sample = grid.slice(1)
+      .filter((r) => (r ?? []).some((v) => v != null && String(v).trim() !== ''))
+      .slice(0, 3)
+      .map((r, i) => `${src.headerRow + 1 + i}行目「${String((r ?? [])[col.得意先コード] ?? '')}」`
+        + `「${String((r ?? [])[col.商品コード] ?? '')}」`)
+      .join(' / ');
+    throw new Error('取り込める行がありません。'
+      + `シート「${src.sheet}」の${src.headerRow}行目を見出しとして読み、`
+      + `得意先コード=${colName(col.得意先コード)}・商品コード=${colName(col.商品コード)}として`
+      + `${(grid.length - 1).toLocaleString()}行を見ましたが、`
+      + 'この2列がどちらも入っている行が1つもありませんでした'
+      + (sample ? `（実際の値: ${sample}）` : '（見出しの下に行がありません）')
+      + '。見出しの行・シート・列名をご確認ください');
+  }
 
   // 当月。「対象年月」の列があればそれを正とする（年も分かる）。
   // 月が混ざっているファイルは、どの月として取り込むか決められないので止める
