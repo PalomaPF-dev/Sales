@@ -3,7 +3,7 @@ import { api } from '../api';
 import { Card, nums } from '../components/ui';
 import ShipColorImport from '../components/ShipColorImport';
 import { useUser } from '../user';
-import { SOURCE_LABELS, allCategories } from '../shipColor';
+import { COLOR_NAMES, SOURCE_LABELS, allCategories } from '../shipColor';
 import type { ShipCategory, ShipRulesRes } from '../shipColor';
 
 /** 集計のまとめ方 */
@@ -164,7 +164,7 @@ export default function ShipColor() {
       )}
 
       {tab === 'summary' && (
-        <SummaryView summary={summary} cats={cats}
+        <SummaryView summary={summary} cats={cats} from={from} to={to}
                      group={group} setGroup={setGroup} metric={metric} setMetric={setMetric}
                      onOpen={openRows} onImport={() => setTab('import')} canEdit={canEdit} />
       )}
@@ -179,9 +179,10 @@ export default function ShipColor() {
 }
 
 /** 集計。区分ごとのタイルと、まとめ方 × 区分の表 */
-function SummaryView({ summary, cats, group, setGroup, metric, setMetric, onOpen, onImport, canEdit }: {
+function SummaryView({ summary, cats, from, to, group, setGroup, metric, setMetric, onOpen, onImport, canEdit }: {
   summary: SummaryRes | null;
   cats: ShipCategory[];
+  from: string; to: string;
   group: Group; setGroup: (g: Group) => void;
   metric: Metric; setMetric: (m: Metric) => void;
   onOpen: (f: { group?: Group; name?: string; cat?: string }) => void;
@@ -248,6 +249,8 @@ function SummaryView({ summary, cats, group, setGroup, metric, setMetric, onOpen
           );
         })}
       </div>
+
+      <ColorTable summary={summary} cats={cats} from={from} to={to} onOpen={onOpen} />
 
       <Card>
         <div className="toolbar">
@@ -330,6 +333,172 @@ function SummaryView({ summary, cats, group, setGroup, metric, setMetric, onOpen
         </p>
       </Card>
     </>
+  );
+}
+
+const swatch = (c: ShipCategory) => (
+  <i style={{ display: 'inline-block', width: 14, height: 14, borderRadius: 3, verticalAlign: -2, marginRight: 8,
+              background: c.color, border: '1px solid #ccc' }} />
+);
+const catName = (c: ShipCategory) => (COLOR_NAMES[c.key] && COLOR_NAMES[c.key] !== '—'
+  ? `${c.label}（${COLOR_NAMES[c.key]}）` : c.label);
+
+/**
+ * 色別集計表。区分（色）ごとの件数・数量・出荷金額と構成比、平均単価を1枚にまとめる。
+ * Excelへの書き出しは、この表に加えてカテゴリー・器具区分・支店・法人・日ごとの
+ * 色別の表（件数・数量・金額）も入れる。
+ */
+function ColorTable({ summary, cats, from, to, onOpen }: {
+  summary: SummaryRes; cats: ShipCategory[]; from: string; to: string;
+  onOpen: (f: { cat?: string }) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const byCat = new Map(summary.totals.map((t) => [t.cat, t]));
+  const list = cats.filter((c) => c.key !== 'excluded' && byCat.has(c.key));
+  const excluded = byCat.get('excluded');
+  const tot = (m: Metric) => list.reduce((s, c) => s + val(byCat.get(c.key), m), 0);
+  const avg = (a: Agg | undefined) => (val(a, 'qty') > 0 ? val(a, 'amount') / val(a, 'qty') : null);
+  const period = `${from || '最初'}〜${to || '最新'}`;
+
+  const exportXlsx = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+      const share = (v: number, t: number) => (t > 0 ? Math.round((v / t) * 1000) / 10 : null);
+      // 1枚目：色別集計表
+      const head = ['区分', '色', '件数', '構成比(件数)%', '数量', '構成比(数量)%', '出荷金額', '構成比(金額)%', '平均単価'];
+      const line = (c: ShipCategory, a: Agg | undefined) => [
+        c.label, COLOR_NAMES[c.key] ?? '', val(a, 'n'), share(val(a, 'n'), tot('n')),
+        val(a, 'qty'), share(val(a, 'qty'), tot('qty')), val(a, 'amount'), share(val(a, 'amount'), tot('amount')),
+        avg(a) == null ? null : Math.round(avg(a)!),
+      ];
+      const aoa: unknown[][] = [
+        ['出荷実績 色別集計表'], [`売上日 ${period}`], [],
+        head,
+        ...list.map((c) => line(c, byCat.get(c.key))),
+        ['合計', '', tot('n'), 100, tot('qty'), 100, tot('amount'), 100,
+          tot('qty') > 0 ? Math.round(tot('amount') / tot('qty')) : null],
+      ];
+      if (excluded) {
+        aoa.push([], ['対象外（輸出）', '', val(excluded, 'n'), null, val(excluded, 'qty'), null, val(excluded, 'amount'), null, null]);
+      }
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 24 }, { wch: 8 }, ...Array(7).fill({ wch: 14 })];
+      XLSX.utils.book_append_sheet(wb, ws, '色別集計');
+
+      // 2枚目以降：まとめ方ごとの色別の表（件数・数量・金額を上から順に）
+      for (const g of GROUPS) {
+        const qs = new URLSearchParams({ group: g.key, ...(from ? { from } : {}), ...(to ? { to } : {}) });
+        const r = await api<SummaryRes>(`/ship-color/summary?${qs}`);
+        const m = new Map<string, Map<string, Agg>>();
+        for (const x of r.cross) {
+          if (x.cat === 'excluded') continue;
+          if (!m.has(x.name)) m.set(x.name, new Map());
+          m.get(x.name)!.set(x.cat, x);
+        }
+        const cols = cats.filter((c) => c.key !== 'excluded' && r.cross.some((x) => x.cat === c.key));
+        const names = [...m.keys()].sort((a, b) => (g.key === 'day' ? a.localeCompare(b)
+          : [...m.get(b)!.values()].reduce((s, x) => s + val(x, 'amount'), 0)
+            - [...m.get(a)!.values()].reduce((s, x) => s + val(x, 'amount'), 0)));
+        const sheet: unknown[][] = [[`出荷実績 ${g.label}・色別`], [`売上日 ${period}`]];
+        for (const met of METRICS) {
+          sheet.push([], [`【${met.label}】`], [g.head, ...cols.map(catName), '合計']);
+          const colTot = cols.map(() => 0);
+          for (const name of names) {
+            const row = cols.map((c) => val(m.get(name)!.get(c.key), met.key));
+            row.forEach((v, i) => { colTot[i] += v; });
+            sheet.push([name || '(空白)', ...row, row.reduce((s, v) => s + v, 0)]);
+          }
+          sheet.push(['合計', ...colTot, colTot.reduce((s, v) => s + v, 0)]);
+        }
+        const gws = XLSX.utils.aoa_to_sheet(sheet);
+        gws['!cols'] = [{ wch: 26 }, ...cols.map(() => ({ wch: 16 })), { wch: 16 }];
+        XLSX.utils.book_append_sheet(wb, gws, g.label);
+      }
+
+      const buf: ArrayBuffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: true });
+      const url = URL.createObjectURL(new Blob([buf],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `出荷実績_色別集計表_${from || '最初'}_${to || '最新'}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <div className="toolbar">
+        <h3 style={{ margin: 0 }}>色別集計表</h3>
+        <span className="pt-note" style={{ margin: 0 }}>売上日 {period}</span>
+        <span className="grow" />
+        <button className="btn secondary sm" disabled={busy} onClick={exportXlsx}
+                title="この表と、カテゴリー・器具区分・支店・法人・日ごとの色別の表をまとめて書き出します">
+          {busy ? '書き出し中...' : '集計表をExcelに書き出す'}
+        </button>
+      </div>
+      {err && <div className="alert error">{err}</div>}
+      <div className="tbl-scroll">
+        <table className="tbl nowrap">
+          <thead>
+            <tr>
+              <th>区分（色）</th>
+              <th className="num">件数</th><th className="num">構成比</th>
+              <th className="num">数量</th><th className="num">構成比</th>
+              <th className="num">出荷金額</th><th className="num">構成比</th>
+              <th className="num">平均単価</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((c) => {
+              const a = byCat.get(c.key);
+              return (
+                <tr key={c.key} className="clickable" onClick={() => onOpen({ cat: c.key })} title="押すと明細を開きます">
+                  <td>{swatch(c)}<strong>{c.label}</strong>
+                    <span style={{ color: 'var(--muted)', marginLeft: 6, fontSize: 12 }}>{COLOR_NAMES[c.key]}</span></td>
+                  <td className="num">{fmt(val(a, 'n'))}</td>
+                  <td className="num">{pctOf(val(a, 'n'), tot('n'))}</td>
+                  <td className="num">{fmt(val(a, 'qty'))}</td>
+                  <td className="num">{pctOf(val(a, 'qty'), tot('qty'))}</td>
+                  <td className="num">{fmt(val(a, 'amount'))}</td>
+                  <td className="num">{pctOf(val(a, 'amount'), tot('amount'))}</td>
+                  <td className="num">{avg(a) == null ? '—' : fmt(avg(a)!)}</td>
+                </tr>
+              );
+            })}
+            <tr style={{ background: '#fafafa' }}>
+              <td><strong>合計</strong></td>
+              <td className="num"><strong>{fmt(tot('n'))}</strong></td><td className="num">100%</td>
+              <td className="num"><strong>{fmt(tot('qty'))}</strong></td><td className="num">100%</td>
+              <td className="num"><strong>{fmt(tot('amount'))}</strong></td><td className="num">100%</td>
+              <td className="num">{tot('qty') > 0 ? fmt(tot('amount') / tot('qty')) : '—'}</td>
+            </tr>
+            {excluded && (
+              <tr style={{ color: 'var(--muted)' }}>
+                <td>対象外（輸出）</td>
+                <td className="num">{fmt(val(excluded, 'n'))}</td><td />
+                <td className="num">{fmt(val(excluded, 'qty'))}</td><td />
+                <td className="num">{fmt(val(excluded, 'amount'))}</td><td /><td />
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="pt-note">
+        Excelには、この表のほかにカテゴリー別・器具区分別・支店別・法人別・日別の色別の表（件数・数量・出荷金額）が入ります。
+        Excel側はセルに色が付かないため、見出しに色の名前を添えています。
+      </p>
+    </Card>
   );
 }
 

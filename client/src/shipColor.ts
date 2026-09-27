@@ -59,3 +59,15 @@ export interface ShipBatch {
 
 /** 日本時間の今日（YYYY-MM-DD） */
 export const todayJst = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
+/** 区分の色の呼び名。Excelの集計表では塗りを付けられないため、名前で添える */
+export const COLOR_NAMES: Record<string, string> = {
+  raised: '水色',
+  ordered: '緑',
+  contract: '黄',
+  unsigned: 'ピンク',
+  nonpos: 'オレンジ',
+  other: '灰',
+  unset: '色なし',
+  excluded: '—',
+};
