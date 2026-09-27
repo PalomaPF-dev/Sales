@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card, nums } from '../components/ui';
 import ShipColorImport from '../components/ShipColorImport';
+import ShipColorSpec from '../components/ShipColorSpec';
 import { useUser } from '../user';
 import { COLOR_NAMES, SOURCE_LABELS, allCategories } from '../shipColor';
 import type { ShipCategory, ShipRulesRes } from '../shipColor';
+
+/** 画面の中身。左のメニューの「出荷実績（色分け）」の各項目と対応する */
+const TABS = [
+  { key: 'summary', label: '集計' },
+  { key: 'rows', label: '明細' },
+  { key: 'import', label: '取込・判定条件' },
+  { key: 'spec', label: '仕様' },
+] as const;
+type Tab = typeof TABS[number]['key'];
 
 /** 集計のまとめ方 */
 const GROUPS = [
@@ -71,7 +82,11 @@ const monthStart = (d: string) => `${d.slice(0, 7)}-01`;
 export default function ShipColor() {
   const me = useUser();
   const canEdit = HQ.includes(me.role);
-  const [tab, setTab] = useState<'summary' | 'rows' | 'import'>('summary');
+  // 表示する中身は URL で決める（左のメニューから直接開けるように）
+  const params = useParams<{ tab?: string }>();
+  const navigate = useNavigate();
+  const tab: Tab = TABS.some((t) => t.key === params.tab) ? params.tab as Tab : 'summary';
+  const setTab = (t: Tab) => navigate(t === 'summary' ? '/ship-color' : `/ship-color/${t}`);
   const [info, setInfo] = useState<ShipRulesRes | null>(null);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -133,15 +148,15 @@ export default function ShipColor() {
 
       <div className="toolbar">
         <div className="seg">
-          <button className={tab === 'summary' ? 'on' : ''} onClick={() => setTab('summary')}>集計</button>
-          <button className={tab === 'rows' ? 'on' : ''} onClick={() => setTab('rows')}>明細</button>
-          <button className={tab === 'import' ? 'on' : ''} onClick={() => setTab('import')}>
-            {canEdit ? '取込・判定条件' : '判定条件'}
-          </button>
+          {TABS.map((t) => (
+            <button key={t.key} className={tab === t.key ? 'on' : ''} onClick={() => setTab(t.key)}>
+              {t.key === 'import' && !canEdit ? '判定条件' : t.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {tab !== 'import' && (
+      {(tab === 'summary' || tab === 'rows') && (
         <div className="filters">
           <label className="fld">
             <span>売上日（から）</span>
@@ -176,6 +191,7 @@ export default function ShipColor() {
                   onChanged={() => setReload((k) => k + 1)} />
       )}
       {tab === 'import' && <ShipColorImport info={info} canEdit={canEdit} onChanged={onChanged} />}
+      {tab === 'spec' && <ShipColorSpec info={info} />}
     </div>
   );
 }

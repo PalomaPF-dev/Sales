@@ -73,8 +73,8 @@ export const COLOR_NAMES: Record<string, string> = {
 };
 
 /**
- * この機能を使える権限。まずは開発者だけで試す。
+ * この機能を使える権限。まずは管理者だけで試す（開発者は管理者と同じ扱い）。
  * サーバー側の server/shipColor.js の SHIP_VIEW_ROLES と合わせる（画面で隠すだけでなくAPIも止めている）
  */
-export const SHIP_VIEW_ROLES = ['developer'];
+export const SHIP_VIEW_ROLES = ['admin', 'developer'];
 export const canUseShipColor = (role: string) => SHIP_VIEW_ROLES.includes(role);
