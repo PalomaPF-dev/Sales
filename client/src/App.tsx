@@ -291,9 +291,15 @@ export default function App() {
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <NavLink to="/avg-prices"><IconChart /><span className="lbl">平均単価</span></NavLink>
-            {/* 出荷実績（色分け）。まずは開発者だけに見せる */}
+            {/* 出荷実績（色分け）。従来の機能とは別の区分にまとめる。まずは管理者だけに見せる */}
             {canUseShipColor(user.role) && (
-              <NavLink to="/ship-color"><IconPalette /><span className="lbl">出荷実績（色分け）</span></NavLink>
+              <>
+                <div className="nav-head">出荷実績（色分け）</div>
+                <NavLink to="/ship-color" end><IconPalette /><span className="lbl">集計</span></NavLink>
+                <NavLink to="/ship-color/rows"><IconDeals /><span className="lbl">明細</span></NavLink>
+                <NavLink to="/ship-color/import"><IconImport /><span className="lbl">取込・判定条件</span></NavLink>
+                <NavLink to="/ship-color/spec"><IconHelp /><span className="lbl">仕様</span></NavLink>
+              </>
             )}
             {(!viewer || isAdmin) && <div className="nav-head">取込・設定</div>}
             {!viewer && <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>}
@@ -416,7 +422,7 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/deals" element={<Deals />} />
               <Route path="/avg-prices" element={<AvgPrices />} />
-              <Route path="/ship-color" element={canUseShipColor(user.role) ? <ShipColor /> : <Dashboard />} />
+              <Route path="/ship-color/:tab?" element={canUseShipColor(user.role) ? <ShipColor /> : <Dashboard />} />
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />

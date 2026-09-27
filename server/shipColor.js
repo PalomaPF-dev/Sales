@@ -80,7 +80,7 @@ export const DEFAULT_RULES = {
 const SETTINGS_KEY = 'ship_rules';
 
 /** この機能を使える権限。画面側の client/src/shipColor.ts の SHIP_VIEW_ROLES と合わせる */
-export const SHIP_VIEW_ROLES = ['developer'];
+export const SHIP_VIEW_ROLES = ['admin', 'developer'];
 
 /**
  * 突き合わせ用の正規化。全角・半角（㈱と(株)、＋と+）と空白の違いを無視する。
@@ -385,17 +385,17 @@ export async function classifyBatch(batchId) {
  * 認証・権限・閲覧範囲の部品は api.js のものをそのまま使う（二重に持たないため）。
  */
 export function mountShipColor(api, { wrap, requireLogin, requireRole, scopeConditions }) {
-  // 公開の範囲。まずは開発者だけで試す。広げるときはここ（と画面の SHIP_VIEW_ROLES）を変える。
+  // 公開の範囲。まずは管理者だけで試す（開発者は管理者と同じ扱い）。広げるときはここ（と画面の SHIP_VIEW_ROLES）を変える。
   // 個々の経路に書き忘れても漏れないよう、/ship-color の入口でまとめて止める
   api.use('/ship-color', (req, res, next) => {
     if (!requireLogin(req, res)) return;
     if (!SHIP_VIEW_ROLES.includes(req.user.role)) {
-      return res.status(403).json({ error: 'この画面は開発者のみ利用できます' });
+      return res.status(403).json({ error: 'この画面は管理者のみ利用できます' });
     }
     next();
   });
   // 取込・判定条件の変更・区分の手直しは本社（営業部・製品企画部）と管理者
-  // （入口で開発者に絞っているため、いまは開発者だけが通る）
+  // （入口で管理者に絞っているため、いまは管理者だけが通る）
   const requireHq = (req, res) => requireRole(req, res, ['planning']);
   const userName = (req) => req.user?.name ?? '';
 
