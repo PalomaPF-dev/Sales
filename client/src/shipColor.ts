@@ -71,3 +71,10 @@ export const COLOR_NAMES: Record<string, string> = {
   unset: '色なし',
   excluded: '—',
 };
+
+/**
+ * この機能を使える権限。まずは開発者だけで試す。
+ * サーバー側の server/shipColor.js の SHIP_VIEW_ROLES と合わせる（画面で隠すだけでなくAPIも止めている）
+ */
+export const SHIP_VIEW_ROLES = ['developer'];
+export const canUseShipColor = (role: string) => SHIP_VIEW_ROLES.includes(role);

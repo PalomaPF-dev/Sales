@@ -4,6 +4,7 @@ import { api, fetchMe, logout } from './api';
 import type { User } from './types';
 import { ROLE_NAMES } from './types';
 import { UserContext, isViewerRole } from './user';
+import { canUseShipColor } from './shipColor';
 import { MobileContext } from './view';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
@@ -290,7 +291,10 @@ export default function App() {
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <NavLink to="/avg-prices"><IconChart /><span className="lbl">平均単価</span></NavLink>
-            <NavLink to="/ship-color"><IconPalette /><span className="lbl">出荷実績（色分け）</span></NavLink>
+            {/* 出荷実績（色分け）。まずは開発者だけに見せる */}
+            {canUseShipColor(user.role) && (
+              <NavLink to="/ship-color"><IconPalette /><span className="lbl">出荷実績（色分け）</span></NavLink>
+            )}
             {(!viewer || isAdmin) && <div className="nav-head">取込・設定</div>}
             {!viewer && <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>}
             {/* 設定（ユーザー管理など）。管理者だけに見せる */}
@@ -412,7 +416,7 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/deals" element={<Deals />} />
               <Route path="/avg-prices" element={<AvgPrices />} />
-              <Route path="/ship-color" element={<ShipColor />} />
+              <Route path="/ship-color" element={canUseShipColor(user.role) ? <ShipColor /> : <Dashboard />} />
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />

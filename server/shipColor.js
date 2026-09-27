@@ -79,6 +79,9 @@ export const DEFAULT_RULES = {
 
 const SETTINGS_KEY = 'ship_rules';
 
+/** この機能を使える権限。画面側の client/src/shipColor.ts の SHIP_VIEW_ROLES と合わせる */
+export const SHIP_VIEW_ROLES = ['developer'];
+
 /**
  * 突き合わせ用の正規化。全角・半角（㈱と(株)、＋と+）と空白の違いを無視する。
  * 法人名・器種名は元の表記が揺れるため、比べる前に必ずこれを通す。
@@ -382,7 +385,17 @@ export async function classifyBatch(batchId) {
  * 認証・権限・閲覧範囲の部品は api.js のものをそのまま使う（二重に持たないため）。
  */
 export function mountShipColor(api, { wrap, requireLogin, requireRole, scopeConditions }) {
+  // 公開の範囲。まずは開発者だけで試す。広げるときはここ（と画面の SHIP_VIEW_ROLES）を変える。
+  // 個々の経路に書き忘れても漏れないよう、/ship-color の入口でまとめて止める
+  api.use('/ship-color', (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+    if (!SHIP_VIEW_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ error: 'この画面は開発者のみ利用できます' });
+    }
+    next();
+  });
   // 取込・判定条件の変更・区分の手直しは本社（営業部・製品企画部）と管理者
+  // （入口で開発者に絞っているため、いまは開発者だけが通る）
   const requireHq = (req, res) => requireRole(req, res, ['planning']);
   const userName = (req) => req.user?.name ?? '';
 
@@ -598,7 +611,8 @@ export function mountShipColor(api, { wrap, requireLogin, requireRole, scopeCond
   api.get('/ship-color/rows', wrap(async (req, res) => {
     if (!requireLogin(req, res)) return;
     const q = req.query;
-    const size = Math.min(5000, Math.max(1, Number(q.size) || 100));
+    // 応答が約4.5MB（Vercelの上限）を超えないよう、1回は2000行まで（約1.5MB）
+    const size = Math.min(2000, Math.max(1, Number(q.size) || 100));
     const page = Math.max(1, Number(q.page) || 1);
     const f = filters(q, req.user);
     const total = await db.get(`SELECT COUNT(*) AS n FROM ${ROW_FROM} ${f.where}`, f.params);

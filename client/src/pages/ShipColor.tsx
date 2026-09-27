@@ -48,6 +48,8 @@ interface ShipRowView {
 
 const HQ = ['planning', 'admin', 'developer'];
 const PAGE = 100;
+// 書き出しで1回に取る行数。サーバーレス（Vercel）の応答は約4.5MBまでで、2000行で約1.5MB
+const EXPORT_PAGE = 2000;
 const val = (a: Agg | undefined, m: Metric) => Number(a?.[m] ?? 0);
 const fmt = (v: number) => Math.round(v).toLocaleString();
 const pctOf = (v: number, total: number) => (total > 0 ? `${((v / total) * 100).toFixed(1)}%` : '—');
@@ -562,7 +564,7 @@ function RowsView({ from, to, filter, setFilter, cats, catOf, info, canEdit, rel
     try {
       const all: ShipRowView[] = [];
       for (let p = 1; ; p++) {
-        const r = await api<{ total: number; rows: ShipRowView[] }>(`/ship-color/rows?${params({ page: String(p), size: '5000' })}`);
+        const r = await api<{ total: number; rows: ShipRowView[] }>(`/ship-color/rows?${params({ page: String(p), size: String(EXPORT_PAGE) })}`);
         all.push(...r.rows);
         if (all.length >= r.total || !r.rows.length) break;
       }
