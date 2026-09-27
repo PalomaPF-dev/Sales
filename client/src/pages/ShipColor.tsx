@@ -361,23 +361,119 @@ const swatch = (c: ShipCategory) => (
 const catName = (c: ShipCategory) => (COLOR_NAMES[c.key] && COLOR_NAMES[c.key] !== '—'
   ? `${c.label}（${COLOR_NAMES[c.key]}）` : c.label);
 
+/** 色別集計表の1ブロック（全体、または1つのカテゴリー）。区分ごとの集計値 */
+interface ColorSection { key: string; title: string; byCat: Map<string, Agg> }
+
+const avgOf = (a: Agg | undefined) => (val(a, 'qty') > 0 ? val(a, 'amount') / val(a, 'qty') : null);
+
+/** 1ブロックの表。構成比はそのブロックの中での割合（輸出＝対象外は分母に入れない） */
+function ColorBlock({ sec, cats, onOpen }: {
+  sec: ColorSection; cats: ShipCategory[];
+  onOpen: (f: { group?: Group; name?: string; cat?: string }) => void;
+}) {
+  const list = cats.filter((c) => c.key !== 'excluded' && sec.byCat.has(c.key));
+  const excluded = sec.byCat.get('excluded');
+  const tot = (m: Metric) => list.reduce((s, c) => s + val(sec.byCat.get(c.key), m), 0);
+  // 全体のときは区分だけで、カテゴリーのときはそのカテゴリーに絞って明細を開く
+  const open = (cat: string) => onOpen(sec.key === '' ? { cat } : { group: 'cat_large', name: sec.key, cat });
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '4px 0 6px' }}>
+        <strong style={{ fontSize: 14.5 }}>{sec.title}</strong>
+        <span className="pt-note" style={{ margin: 0 }}>
+          {fmt(tot('n'))}件・出荷金額 {fmt(tot('amount'))}円
+        </span>
+      </div>
+      <div className="tbl-scroll">
+        <table className="tbl nowrap">
+          <thead>
+            <tr>
+              <th>区分（色）</th>
+              <th className="num">件数</th><th className="num">構成比</th>
+              <th className="num">数量</th><th className="num">構成比</th>
+              <th className="num">出荷金額</th><th className="num">構成比</th>
+              <th className="num">平均単価</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((c) => {
+              const a = sec.byCat.get(c.key);
+              return (
+                <tr key={c.key} className="clickable" onClick={() => open(c.key)} title="押すと明細を開きます">
+                  <td>{swatch(c)}<strong>{c.label}</strong>
+                    <span style={{ color: 'var(--muted)', marginLeft: 6, fontSize: 12 }}>{COLOR_NAMES[c.key]}</span></td>
+                  <td className="num">{fmt(val(a, 'n'))}</td>
+                  <td className="num">{pctOf(val(a, 'n'), tot('n'))}</td>
+                  <td className="num">{fmt(val(a, 'qty'))}</td>
+                  <td className="num">{pctOf(val(a, 'qty'), tot('qty'))}</td>
+                  <td className="num">{fmt(val(a, 'amount'))}</td>
+                  <td className="num">{pctOf(val(a, 'amount'), tot('amount'))}</td>
+                  <td className="num">{avgOf(a) == null ? '—' : fmt(avgOf(a)!)}</td>
+                </tr>
+              );
+            })}
+            <tr style={{ background: '#fafafa' }}>
+              <td><strong>合計</strong></td>
+              <td className="num"><strong>{fmt(tot('n'))}</strong></td><td className="num">100%</td>
+              <td className="num"><strong>{fmt(tot('qty'))}</strong></td><td className="num">100%</td>
+              <td className="num"><strong>{fmt(tot('amount'))}</strong></td><td className="num">100%</td>
+              <td className="num">{tot('qty') > 0 ? fmt(tot('amount') / tot('qty')) : '—'}</td>
+            </tr>
+            {excluded && (
+              <tr style={{ color: 'var(--muted)' }}>
+                <td>対象外（輸出）</td>
+                <td className="num">{fmt(val(excluded, 'n'))}</td><td />
+                <td className="num">{fmt(val(excluded, 'qty'))}</td><td />
+                <td className="num">{fmt(val(excluded, 'amount'))}</td><td /><td />
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /**
- * 色別集計表。区分（色）ごとの件数・数量・出荷金額と構成比、平均単価を1枚にまとめる。
+ * 色別集計表。区分（色）ごとの件数・数量・出荷金額と構成比、平均単価を、
+ * 全体とカテゴリー（FH・PH・湯沸・PR）ごとに分けて出す。構成比はそれぞれの中での割合。
  * Excelへの書き出しは、この表に加えてカテゴリー・器具区分・支店・法人・日ごとの
  * 色別の表（件数・数量・金額）も入れる。
  */
 function ColorTable({ summary, cats, from, to, onOpen }: {
   summary: SummaryRes; cats: ShipCategory[]; from: string; to: string;
-  onOpen: (f: { cat?: string }) => void;
+  onOpen: (f: { group?: Group; name?: string; cat?: string }) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const byCat = new Map(summary.totals.map((t) => [t.cat, t]));
-  const list = cats.filter((c) => c.key !== 'excluded' && byCat.has(c.key));
-  const excluded = byCat.get('excluded');
-  const tot = (m: Metric) => list.reduce((s, c) => s + val(byCat.get(c.key), m), 0);
-  const avg = (a: Agg | undefined) => (val(a, 'qty') > 0 ? val(a, 'amount') / val(a, 'qty') : null);
+  // カテゴリーごとの集計。画面のまとめ方（器具区分別など）に関係なく、カテゴリーで取り直す
+  const [byLarge, setByLarge] = useState<SummaryRes | null>(null);
+  // 表示するブロック。'all' はすべて並べる
+  const [show, setShow] = useState('all');
   const period = `${from || '最初'}〜${to || '最新'}`;
+
+  useEffect(() => {
+    const qs = new URLSearchParams({ group: 'cat_large', ...(from ? { from } : {}), ...(to ? { to } : {}) });
+    api<SummaryRes>(`/ship-color/summary?${qs}`).then(setByLarge).catch(() => setByLarge(null));
+  }, [from, to, summary]);
+
+  const sections: ColorSection[] = useMemo(() => {
+    const whole: ColorSection = { key: '', title: '全体', byCat: new Map(summary.totals.map((t) => [t.cat, t])) };
+    if (!byLarge) return [whole];
+    const m = new Map<string, Map<string, Agg>>();
+    for (const x of byLarge.cross) {
+      if (!m.has(x.name)) m.set(x.name, new Map());
+      m.get(x.name)!.set(x.cat, x);
+    }
+    const amt = (b: Map<string, Agg>) => [...b.entries()]
+      .filter(([k]) => k !== 'excluded').reduce((s, [, a]) => s + val(a, 'amount'), 0);
+    const parts = [...m.entries()]
+      .sort((a, b) => amt(b[1]) - amt(a[1]) || a[0].localeCompare(b[0], 'ja'))
+      .map(([name, b]) => ({ key: name || '(空白)', title: name || '(空白)', byCat: b }));
+    return [whole, ...parts];
+  }, [summary, byLarge]);
+
+  const visible = show === 'all' ? sections : sections.filter((x) => x.key === show);
 
   const exportXlsx = async () => {
     setBusy(true);
@@ -386,22 +482,23 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
       const XLSX = await import('xlsx');
       const wb = XLSX.utils.book_new();
       const share = (v: number, t: number) => (t > 0 ? Math.round((v / t) * 1000) / 10 : null);
-      // 1枚目：色別集計表
+      // 1枚目：色別集計表（全体、続けてカテゴリーごと）
       const head = ['区分', '色', '件数', '構成比(件数)%', '数量', '構成比(数量)%', '出荷金額', '構成比(金額)%', '平均単価'];
-      const line = (c: ShipCategory, a: Agg | undefined) => [
-        c.label, COLOR_NAMES[c.key] ?? '', val(a, 'n'), share(val(a, 'n'), tot('n')),
-        val(a, 'qty'), share(val(a, 'qty'), tot('qty')), val(a, 'amount'), share(val(a, 'amount'), tot('amount')),
-        avg(a) == null ? null : Math.round(avg(a)!),
-      ];
-      const aoa: unknown[][] = [
-        ['出荷実績 色別集計表'], [`売上日 ${period}`], [],
-        head,
-        ...list.map((c) => line(c, byCat.get(c.key))),
-        ['合計', '', tot('n'), 100, tot('qty'), 100, tot('amount'), 100,
-          tot('qty') > 0 ? Math.round(tot('amount') / tot('qty')) : null],
-      ];
-      if (excluded) {
-        aoa.push([], ['対象外（輸出）', '', val(excluded, 'n'), null, val(excluded, 'qty'), null, val(excluded, 'amount'), null, null]);
+      const aoa: unknown[][] = [['出荷実績 色別集計表（全体・カテゴリー別）'], [`売上日 ${period}`]];
+      for (const sec of sections) {
+        const list = cats.filter((c) => c.key !== 'excluded' && sec.byCat.has(c.key));
+        const tot = (m: Metric) => list.reduce((s, c) => s + val(sec.byCat.get(c.key), m), 0);
+        aoa.push([], [`【${sec.title}】`], head);
+        for (const c of list) {
+          const a = sec.byCat.get(c.key);
+          aoa.push([c.label, COLOR_NAMES[c.key] ?? '', val(a, 'n'), share(val(a, 'n'), tot('n')),
+            val(a, 'qty'), share(val(a, 'qty'), tot('qty')), val(a, 'amount'), share(val(a, 'amount'), tot('amount')),
+            avgOf(a) == null ? null : Math.round(avgOf(a)!)]);
+        }
+        aoa.push(['合計', '', tot('n'), 100, tot('qty'), 100, tot('amount'), 100,
+          tot('qty') > 0 ? Math.round(tot('amount') / tot('qty')) : null]);
+        const ex = sec.byCat.get('excluded');
+        if (ex) aoa.push(['対象外（輸出）', '', val(ex, 'n'), null, val(ex, 'qty'), null, val(ex, 'amount'), null, null]);
       }
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws['!cols'] = [{ wch: 24 }, { wch: 8 }, ...Array(7).fill({ wch: 14 })];
@@ -461,59 +558,25 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
         <span className="pt-note" style={{ margin: 0 }}>売上日 {period}</span>
         <span className="grow" />
         <button className="btn secondary sm" disabled={busy} onClick={exportXlsx}
-                title="この表と、カテゴリー・器具区分・支店・法人・日ごとの色別の表をまとめて書き出します">
+                title="全体・カテゴリーごとの色別集計表と、カテゴリー・器具区分・支店・法人・日ごとの色別の表をまとめて書き出します">
           {busy ? '書き出し中...' : '集計表をExcelに書き出す'}
         </button>
       </div>
-      {err && <div className="alert error">{err}</div>}
-      <div className="tbl-scroll">
-        <table className="tbl nowrap">
-          <thead>
-            <tr>
-              <th>区分（色）</th>
-              <th className="num">件数</th><th className="num">構成比</th>
-              <th className="num">数量</th><th className="num">構成比</th>
-              <th className="num">出荷金額</th><th className="num">構成比</th>
-              <th className="num">平均単価</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((c) => {
-              const a = byCat.get(c.key);
-              return (
-                <tr key={c.key} className="clickable" onClick={() => onOpen({ cat: c.key })} title="押すと明細を開きます">
-                  <td>{swatch(c)}<strong>{c.label}</strong>
-                    <span style={{ color: 'var(--muted)', marginLeft: 6, fontSize: 12 }}>{COLOR_NAMES[c.key]}</span></td>
-                  <td className="num">{fmt(val(a, 'n'))}</td>
-                  <td className="num">{pctOf(val(a, 'n'), tot('n'))}</td>
-                  <td className="num">{fmt(val(a, 'qty'))}</td>
-                  <td className="num">{pctOf(val(a, 'qty'), tot('qty'))}</td>
-                  <td className="num">{fmt(val(a, 'amount'))}</td>
-                  <td className="num">{pctOf(val(a, 'amount'), tot('amount'))}</td>
-                  <td className="num">{avg(a) == null ? '—' : fmt(avg(a)!)}</td>
-                </tr>
-              );
-            })}
-            <tr style={{ background: '#fafafa' }}>
-              <td><strong>合計</strong></td>
-              <td className="num"><strong>{fmt(tot('n'))}</strong></td><td className="num">100%</td>
-              <td className="num"><strong>{fmt(tot('qty'))}</strong></td><td className="num">100%</td>
-              <td className="num"><strong>{fmt(tot('amount'))}</strong></td><td className="num">100%</td>
-              <td className="num">{tot('qty') > 0 ? fmt(tot('amount') / tot('qty')) : '—'}</td>
-            </tr>
-            {excluded && (
-              <tr style={{ color: 'var(--muted)' }}>
-                <td>対象外（輸出）</td>
-                <td className="num">{fmt(val(excluded, 'n'))}</td><td />
-                <td className="num">{fmt(val(excluded, 'qty'))}</td><td />
-                <td className="num">{fmt(val(excluded, 'amount'))}</td><td /><td />
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="toolbar">
+        <div className="seg">
+          <button className={show === 'all' ? 'on' : ''} onClick={() => setShow('all')}>すべて並べる</button>
+          {sections.map((x) => (
+            <button key={x.key || 'whole'} className={show === x.key ? 'on' : ''} onClick={() => setShow(x.key)}>
+              {x.title}
+            </button>
+          ))}
+        </div>
       </div>
+      {err && <div className="alert error">{err}</div>}
+      {visible.map((sec) => <ColorBlock key={sec.key || 'whole'} sec={sec} cats={cats} onOpen={onOpen} />)}
       <p className="pt-note">
-        Excelには、この表のほかにカテゴリー別・器具区分別・支店別・法人別・日別の色別の表（件数・数量・出荷金額）が入ります。
+        構成比は、それぞれの表の中での割合です（カテゴリーの表なら、そのカテゴリーの合計に対する割合）。行を押すと明細を開きます。
+        Excelには、全体とカテゴリーごとの色別集計表のほかに、カテゴリー別・器具区分別・支店別・法人別・日別の色別の表（件数・数量・出荷金額）が入ります。
         Excel側はセルに色が付かないため、見出しに色の名前を添えています。
       </p>
     </Card>
