@@ -136,3 +136,13 @@ export function IconChart() {
     </svg>
   );
 }
+
+/** 出荷実績（色分け）。色の見本（パレット） */
+export function IconPalette() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9.5h18M3 14.5h18M9 4v16" />
+    </svg>
+  );
+}

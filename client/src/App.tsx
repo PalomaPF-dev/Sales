@@ -9,12 +9,13 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
-import { IconBell, IconChart, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconLogout, IconSettings } from './components/icons';
+import { IconBell, IconChart, IconDashboard, IconDeals, IconHelp, IconImport, IconInbox, IconLogout, IconPalette, IconSettings } from './components/icons';
 
 // 最初に出るのはログインとダッシュボードだけ。残りは開いたときに読み込む。
 // 全部をひとまとめにすると、最初の表示までに数百KBの待ちが入る。
 const Deals = lazy(() => import('./pages/Deals'));
 const AvgPrices = lazy(() => import('./pages/AvgPrices'));
+const ShipColor = lazy(() => import('./pages/ShipColor'));
 const DealDetail = lazy(() => import('./pages/DealDetail'));
 const CorpDetail = lazy(() => import('./pages/CorpDetail'));
 
@@ -289,6 +290,7 @@ export default function App() {
             <NavLink to="/dashboard"><IconDashboard /><span className="lbl">ダッシュボード</span></NavLink>
             <NavLink to="/deals"><IconDeals /><span className="lbl">案件一覧</span></NavLink>
             <NavLink to="/avg-prices"><IconChart /><span className="lbl">平均単価</span></NavLink>
+            <NavLink to="/ship-color"><IconPalette /><span className="lbl">出荷実績（色分け）</span></NavLink>
             {(!viewer || isAdmin) && <div className="nav-head">取込・設定</div>}
             {!viewer && <NavLink to="/import"><IconImport /><span className="lbl">Excel取込</span></NavLink>}
             {/* 設定（ユーザー管理など）。管理者だけに見せる */}
@@ -410,6 +412,7 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/deals" element={<Deals />} />
               <Route path="/avg-prices" element={<AvgPrices />} />
+              <Route path="/ship-color" element={<ShipColor />} />
               <Route path="/deals/:id" element={<DealDetail />} />
               <Route path="/corps/:code" element={<CorpDetail />} />
               <Route path="/import" element={viewer ? <Dashboard /> : <ImportPage />} />
