@@ -556,3 +556,74 @@ CREATE TABLE IF NOT EXISTS standard_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_std_model ON standard_prices(region, kubun, model_key);
 CREATE INDEX IF NOT EXISTS idx_std_code  ON standard_prices(region, kubun, model_gas_code);
+
+-- ───────── 出荷実績の色分け（色塗り判定） ─────────
+-- MBの出荷明細（毎日の出荷データ）を取り込み、色塗り資料の判定条件で区分けする。
+-- 取込1回（＝1日ぶん・1シート）ごとに1行。同じ日付を取り込み直すと置き換わる。
+CREATE TABLE IF NOT EXISTS ship_batches (
+  id            SERIAL PRIMARY KEY,
+  data_date     TEXT NOT NULL,   -- データの日付（明細の売上日の最終日）
+  filename      TEXT,
+  sheet         TEXT,
+  row_count     INTEGER NOT NULL DEFAULT 0,
+  colored_count INTEGER NOT NULL DEFAULT 0,  -- ファイルで色が塗られていた行
+  status        TEXT NOT NULL DEFAULT 'loading',  -- loading / done
+  taken_at      TEXT NOT NULL,
+  taken_by_name TEXT,
+  classified_at TEXT            -- 最後に判定した日時
+);
+CREATE INDEX IF NOT EXISTS idx_ship_batches_date ON ship_batches(data_date);
+
+-- 出荷明細1行。原価・粗利の列は社外秘のため取り込まない。
+CREATE TABLE IF NOT EXISTS ship_rows (
+  id            SERIAL PRIMARY KEY,
+  batch_id      INTEGER NOT NULL,
+  slip_no       TEXT NOT NULL,   -- 売上伝票NO（明細を見分けるキー）
+  sale_date     TEXT,            -- 売上日
+  order_date    TEXT,            -- 受注日
+  corp_code     TEXT,            -- 法人コード
+  corp_name     TEXT,
+  customer_code TEXT,            -- 得意先コード
+  customer_name TEXT,
+  delivery_code TEXT,            -- 納入先コード
+  delivery_name TEXT,
+  industry      TEXT,            -- 業種名
+  equip_name    TEXT,            -- 器具区分名
+  cat_large     TEXT,            -- カテゴリー名大（湯沸 / PH / PR / FH）
+  cat_name      TEXT,            -- カテゴリー名
+  model_code    TEXT,            -- 器種コード
+  gas_code      TEXT,            -- ガスコード
+  model_name    TEXT,            -- 器種名
+  gas_type      TEXT,            -- ガス種
+  qty           DOUBLE PRECISION,          -- 出荷数
+  price         DOUBLE PRECISION,          -- 出荷単価
+  amount        DOUBLE PRECISION,          -- 出荷金額
+  list_price    DOUBLE PRECISION,          -- 定価
+  quote_no      TEXT,            -- 見積伝票番号
+  branch        TEXT,            -- 売上担当者支店名（閲覧範囲の絞り込みに使う）
+  office        TEXT,            -- 売上担当者営業所名
+  person        TEXT,            -- 売上担当者名
+  file_cat      TEXT,            -- ファイルで塗られていた色の区分（色塗り済みのファイルを取り込んだとき）
+  auto_cat      TEXT,            -- 自動判定の区分（NULL＝未判定）
+  auto_rule     TEXT             -- 自動判定で決まった条件の番号
+);
+CREATE INDEX IF NOT EXISTS idx_ship_rows_batch ON ship_rows(batch_id);
+CREATE INDEX IF NOT EXISTS idx_ship_rows_slip ON ship_rows(slip_no);
+CREATE INDEX IF NOT EXISTS idx_ship_rows_sale ON ship_rows(sale_date);
+CREATE INDEX IF NOT EXISTS idx_ship_rows_model ON ship_rows(model_code);
+
+-- 画面で決めた区分（目視確認の結果）。売上伝票NOごとに持ち、取り込み直しても残す
+CREATE TABLE IF NOT EXISTS ship_overrides (
+  slip_no         TEXT PRIMARY KEY,
+  category        TEXT NOT NULL,
+  updated_by_name TEXT,
+  updated_at      TEXT NOT NULL
+);
+
+-- 色塗り資料の「基準価格」シート。器種コード（カタログ記載の中5桁）ごとの基準価格
+CREATE TABLE IF NOT EXISTS ship_base_prices (
+  code        TEXT PRIMARY KEY,
+  model_name  TEXT,
+  base_price  DOUBLE PRECISION,
+  updated_at  TEXT
+);

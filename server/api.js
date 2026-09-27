@@ -27,6 +27,7 @@ import {
   KUBUNS, findStandardPrice, loadStandardIndex, matchStandardModel,
   parseStandardWorkbook, replaceStandardPrices,
 } from './standardPrices.js';
+import { mountShipColor } from './shipColor.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -5289,3 +5290,7 @@ api.delete('/import/batches/:id', wrap(async (req, res) => {
   await db.run('DELETE FROM import_batches WHERE id = ?', [id]);
   res.json({ deleted: Number(changes ?? batch.row_count) });
 }));
+
+// ---- 出荷実績の色分け（色塗り判定） ----
+// 判定・取込・集計は shipColor.js にまとめてある。認証・権限・閲覧範囲はここのものを使う
+mountShipColor(api, { wrap, requireLogin, requireRole, scopeConditions });

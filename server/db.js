@@ -241,7 +241,7 @@ const TABLES_WITHOUT_ID = new Set([
   'settings', 'price_types', 'corp_negotiations',
   'corp_map', 'agg_staging', 'act_staging', 'corp_plans',
   'master_price_history', 'raise_history', 'announcement_reads', 'deal_actuals',
-  'sales_progress',
+  'sales_progress', 'ship_overrides', 'ship_base_prices',
 ]);
 
 /** SQLiteの方言をPostgreSQLへ寄せる */
@@ -533,7 +533,7 @@ let initialized = null;
 /** スキーマ適用とマスタ初期データ投入（初回のみ実行） */
 // スキーマの版。schema.sql / beforeSchema / migrate を変えたら必ず上げること。
 // この版がDBに記録されていれば、起動のたびの重い確認（数十回のDB往復）を省ける。
-const SCHEMA_VERSION = '2026-09-10-gain-src';
+const SCHEMA_VERSION = '2026-09-27-ship-color';
 
 /**
  * すでに同じ版で初期化済みかを1回の問い合わせで確かめる。
