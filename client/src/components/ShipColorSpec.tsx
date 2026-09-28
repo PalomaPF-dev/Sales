@@ -56,7 +56,7 @@ export default function ShipColorSpec({ info }: { info: ShipRulesRes | null }) {
 
       <Sec title="毎日の流れ">
         <ol style={{ margin: 0, paddingLeft: '1.4em' }}>
-          <li>「取込・判定条件」で、その日の出荷データ（MBの出荷明細）を取り込む。取り込むとすぐに自動で区分けされる</li>
+          <li>MBから出荷明細（その月の分）をダウンロードし、「取込・判定条件」で取り込む。まだ取り込んでいない日が選ばれた状態になり、取り込むとすぐに自動で区分けされる</li>
           <li>「集計」の上に出る「未判定（目視確認）」を押し、明細で区分を選ぶ（選んだ区分は次の日からの判定にも使われる）</li>
           <li>「集計」で色別集計表を確認し、必要ならExcelに書き出す</li>
         </ol>
@@ -90,6 +90,8 @@ export default function ShipColorSpec({ info }: { info: ShipRulesRes | null }) {
           <table className="tbl">
             <thead><tr><th>No</th><th>条件</th><th>区分</th><th>いまの設定</th></tr></thead>
             <tbody>
+              <tr><td>対象</td><td>カテゴリー名大が対象のものだけを取り込む（それ以外は読み飛ばす）</td><td>—</td>
+                <td>{joinOr(r.targetCategories)}</td></tr>
               <tr><td>1</td><td>法人名が対象外の名前なら判定しない</td><td>対象外</td><td>{joinOr(r.excludeCorps)}</td></tr>
               <tr><td>2</td><td>器種コードが基準価格シートの商品コード（中5桁）と一致し、出荷単価が基準価格（Q列）以上。未満なら色を付けず次へ</td>
                 <td>値上済</td><td>基準価格 {info.basePrices.count.toLocaleString()}件</td></tr>
@@ -128,8 +130,10 @@ export default function ShipColorSpec({ info }: { info: ShipRulesRes | null }) {
 
       <Sec title="取り込むデータ">
         <ul style={{ margin: 0, paddingLeft: '1.4em' }}>
-          <li><strong>出荷データ</strong>：1シートを1日分として扱います（日ごとにシートを分けたファイルはまとめて取り込めます）。
-            データの日付は売上日の最終日です。同じ日付を取り込み直すと置き換わります</li>
+          <li><strong>出荷データ</strong>：MBからダウンロードした出荷明細（1か月分が1シートのファイル、日ごとにシートを分けたファイル、CSV）を、
+            <strong>売上日ごとに分けて</strong>古い日から1日ずつ取り込みます。同じ日を取り込み直すと置き換わります。
+            毎日1か月分のファイルを取り込むときは、まだ取り込んでいない日だけが選ばれた状態になります</li>
+          <li>判定の対象はカテゴリー名大が {joinOr(r.targetCategories)} の明細だけです（ロードヒーター・ビルトインなどは取り込みません）</li>
           <li>列は見出しの名前で探します（得意先コード・器種コード・出荷単価は必須）。列の並びが違っても読めます</li>
           <li><strong>原価・粗利の列は取り込みません</strong>（社外秘のため）</li>
           <li><strong>色塗り資料</strong>：「基準価格」「先方契約済物件」「期間指定」のシートを読み、入っているシートだけ置き換えます。

@@ -44,9 +44,12 @@ export interface ShipRow {
 }
 
 export interface ShipSheet {
+  /** 取込1回の見分け（シート名＋売上日）。画面で選ぶときに使う */
+  key: string;
+  /** 読んだシート名 */
   sheet: string;
   rows: ShipRow[];
-  /** データの日付（売上日の最終日）。同じ日付の取込は置き換わる */
+  /** データの日付（売上日）。1日＝1回の取込で、同じ日付の取込は置き換わる */
   dataDate: string;
   minDate: string;
   /** 出荷単価に色が塗られていた行の数 */
@@ -56,9 +59,25 @@ export interface ShipSheet {
 }
 
 export interface ShipParsed {
+  /** 売上日ごとの取込単位（日付の古い順） */
   sheets: ShipSheet[];
   /** 見出しが見つからず読まなかったシート */
   ignored: string[];
+  /** 判定の対象外のカテゴリー（ロードヒーター・ビルトインなど）で読み飛ばした行 */
+  otherSkipped: number;
+  /** 読み飛ばしたカテゴリーの内訳（カテゴリー名大 → 行数） */
+  otherCats: Record<string, number>;
+  /** 売上伝票NOが「2.6E+11」のように壊れていた行（中身から見分けるキーで代える） */
+  brokenSlips: number;
+  /** 売上日が無く、読み飛ばした行 */
+  noDate: number;
+}
+
+export interface ShipParseOptions {
+  /** ファイル名。拡張子が .csv ならCSVとして読む */
+  fileName?: string;
+  /** 判定の対象にするカテゴリー名大（湯沸・PH・PR・FH）。空ならすべて */
+  targetCategories?: string[];
 }
 
 /** 見出しの表記ゆれ（全角・半角、空白、改行）をならす */
@@ -166,8 +185,23 @@ function fillOf(cell: Cell): string {
   return s.fgColor?.rgb ?? '';
 }
 
+/** 突き合わせ用の正規化（全角・半角と空白を無視） */
+const nk = (v: unknown) => String(v ?? '').normalize('NFKC').replace(/[\s　]/g, '').toUpperCase();
+
+/** 「2.6E+11」のように指数で書かれた番号。ExcelでCSVを開いて保存し直すと伝票番号がこうなる */
+const isExpNumber = (s: string) => /^\d+(\.\d+)?E\+\d+$/i.test(s);
+
+interface RawSheet {
+  name: string;
+  rows: ShipRow[];
+  skipped: number;
+  otherCats: Record<string, number>;
+  brokenSlips: number;
+  noDate: number;
+}
+
 /** 1シートを読み取る。見出しが無ければ null */
-function parseSheet(ws: XLSX.WorkSheet, name: string): ShipSheet | null {
+function parseSheet(ws: XLSX.WorkSheet, name: string, targets: Set<string>): RawSheet | null {
   const dense = (ws as { '!data'?: Cell[][] })['!data'];
   const rowAt = (r: number): Cell[] => dense?.[r] ?? [];
   const nRows = dense?.length ?? 0;
@@ -189,8 +223,10 @@ function parseSheet(ws: XLSX.WorkSheet, name: string): ShipSheet | null {
 
   const rows: ShipRow[] = [];
   const seen = new Map<string, number>();
-  const colorCounts: Record<string, number> = {};
+  const otherCats: Record<string, number> = {};
   let skipped = 0;
+  let brokenSlips = 0;
+  let noDate = 0;
   for (let r = headerRow + 1; r < nRows; r++) {
     const cells = rowAt(r);
     const get = (k: keyof typeof HEADS) => (col[k] == null ? undefined : cells[col[k]!]);
@@ -205,7 +241,16 @@ function parseSheet(ws: XLSX.WorkSheet, name: string): ShipSheet | null {
       if (cells.some((c) => c?.v != null && c.v !== '')) skipped++;
       continue;
     }
-    // 売上伝票NOが無いファイル（過去色塗り表など）は、中身から見分けるキーを作る
+    // 判定の対象（湯沸・PH・PR・FH）以外のカテゴリーは取り込まない。
+    // MBの月全体のファイルには、ロードヒーター・ビルトインなどすべての器種が入っている
+    if (targets.size && col.cat_large != null && !targets.has(nk(out.cat_large))) {
+      const k = out.cat_large || '(空白)';
+      otherCats[k] = (otherCats[k] ?? 0) + 1;
+      continue;
+    }
+    if (!out.sale_date) { noDate++; continue; }
+    if (out.slip_no && isExpNumber(out.slip_no)) { out.slip_no = ''; brokenSlips++; }
+    // 売上伝票NOが無い・壊れているファイル（過去色塗り表など）は、中身から見分けるキーを作る
     if (!out.slip_no) {
       const base = ['K', out.sale_date, out.customer_code, out.delivery_code,
         out.model_code, out.gas_code, out.price].join('|');
@@ -214,40 +259,86 @@ function parseSheet(ws: XLSX.WorkSheet, name: string): ShipSheet | null {
       out.slip_no = `${base}|${n}`;
     }
     out.file_cat = colorToCat(fillOf(get('price')));
-    if (out.file_cat) colorCounts[out.file_cat] = (colorCounts[out.file_cat] ?? 0) + 1;
     rows.push(out);
   }
-  if (!rows.length) return null;
-  const dates = rows.map((x) => x.sale_date).filter(Boolean).sort();
-  return {
-    sheet: name,
-    rows,
-    dataDate: dates[dates.length - 1] ?? '',
-    minDate: dates[0] ?? '',
-    colored: rows.filter((x) => x.file_cat).length,
-    colorCounts,
-    skipped,
-  };
+  return { name, rows, skipped, otherCats, brokenSlips, noDate };
 }
 
-/** 出荷データのファイルを読み取る。見出しのあるシートをすべて、日付の古い順に並べて返す */
-export function parseShipWorkbook(buf: ArrayBuffer): ShipParsed {
-  const wb = XLSX.read(buf, {
-    type: 'array', dense: true, cellStyles: true, cellDates: true,
+/**
+ * CSVを文字列にする。MBから落としたCSVはShift_JISのことが多いので、
+ * UTF-8として読めなければShift_JISで読み直す。
+ */
+function decodeCsv(buf: ArrayBuffer): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf).replace(/^\uFEFF/, '');
+  } catch {
+    return new TextDecoder('shift_jis').decode(buf);
+  }
+}
+
+/**
+ * 出荷データのファイルを読み取る。
+ * 見出しのあるシートをすべて読み、売上日ごとに分けて、日付の古い順に並べて返す。
+ * 日ごとのシートのファイルでも、1か月分が1シートに入ったMBのファイルでも同じように扱える
+ * （後の日は前の日の結果を「過去の色塗り」として使うため、1日ずつ古い順に取り込む）。
+ */
+export function parseShipWorkbook(buf: ArrayBuffer, opts: ShipParseOptions = {}): ShipParsed {
+  const readOpts = {
+    dense: true, cellStyles: true, cellDates: true,
     cellHTML: false, cellFormula: false, cellText: false,
-  });
-  const sheets: ShipSheet[] = [];
+  } as const;
+  const isCsv = /\.(csv|txt)$/i.test(opts.fileName ?? '');
+  // CSVの数字の列（売上伝票NOなど）を数値に変えると桁が落ちることがあるため、文字のまま読む
+  const wb = isCsv
+    ? XLSX.read(decodeCsv(buf), { ...readOpts, type: 'string', raw: true })
+    : XLSX.read(buf, { ...readOpts, type: 'array' });
+  const targets = new Set((opts.targetCategories ?? []).map(nk).filter(Boolean));
   const ignored: string[] = [];
+  const otherCats: Record<string, number> = {};
+  let brokenSlips = 0;
+  let noDate = 0;
+  let found = false;
+  // 売上日ごとに分ける。別のシートに同じ日の明細があれば1つにまとめる
+  // （同じ日付の取込は置き換わるため、分けたままだと後のシートが前のシートを消してしまう）
+  const byDay = new Map<string, { sheets: Set<string>; rows: ShipRow[] }>();
   for (const name of wb.SheetNames) {
-    const s = parseSheet(wb.Sheets[name], name);
-    if (s) sheets.push(s); else ignored.push(name);
+    const s = parseSheet(wb.Sheets[name], name, targets);
+    if (!s) { ignored.push(name); continue; }
+    found = true;
+    brokenSlips += s.brokenSlips;
+    noDate += s.noDate;
+    for (const [k, n] of Object.entries(s.otherCats)) otherCats[k] = (otherCats[k] ?? 0) + n;
+    for (const r of s.rows) {
+      if (!byDay.has(r.sale_date)) byDay.set(r.sale_date, { sheets: new Set(), rows: [] });
+      const d = byDay.get(r.sale_date)!;
+      d.sheets.add(name);
+      d.rows.push(r);
+    }
+  }
+  const sheets: ShipSheet[] = [...byDay.entries()].map(([day, d]) => {
+    const colorCounts: Record<string, number> = {};
+    for (const r of d.rows) if (r.file_cat) colorCounts[r.file_cat] = (colorCounts[r.file_cat] ?? 0) + 1;
+    return {
+      key: day,
+      sheet: [...d.sheets].join('・'),
+      rows: d.rows,
+      dataDate: day,
+      minDate: day,
+      colored: d.rows.filter((x) => x.file_cat).length,
+      colorCounts,
+      skipped: 0,
+    };
+  });
+  if (!found) {
+    throw new Error('出荷データの見出し（得意先コード・器種コード・出荷単価）のあるシートが見つかりません');
   }
   if (!sheets.length) {
-    throw new Error('出荷データの見出し（得意先コード・器種コード・出荷単価）のあるシートが見つかりません');
+    throw new Error('判定の対象（' + (opts.targetCategories ?? []).join('・') + '）の明細がありません');
   }
   // 後の日は前の日の結果を「過去の色塗り」として使うため、古い日から取り込む
   sheets.sort((a, b) => a.dataDate.localeCompare(b.dataDate));
-  return { sheets, ignored };
+  const otherSkipped = Object.values(otherCats).reduce((a, b) => a + b, 0);
+  return { sheets, ignored, otherSkipped, otherCats, brokenSlips, noDate };
 }
 
 // ───────── 色塗り資料 ─────────

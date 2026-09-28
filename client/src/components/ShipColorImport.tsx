@@ -79,6 +79,8 @@ export default function ShipColorImport({ info, canEdit, onChanged }: {
         <>
           <ReferenceCard info={info} onDone={(t) => { setMsg({ kind: 'ok', text: t }); onChanged(); }} />
           <ShipImportCard
+            info={info}
+            importedDates={new Set(batches.filter((b) => b.status === 'done').map((b) => b.data_date))}
             onDone={(t) => { setMsg({ kind: 'ok', text: t }); loadBatches(); onChanged(); }}
             onError={(t) => { setMsg({ kind: 'error', text: t }); loadBatches(); }} />
         </>
@@ -242,14 +244,20 @@ function ReferenceCard({ info, onDone }: { info: ShipRulesRes | null; onDone: (t
 }
 
 /** ② 毎日の出荷データの取込 */
-function ShipImportCard({ onDone, onError }: { onDone: (text: string) => void; onError: (text: string) => void }) {
+function ShipImportCard({ info, importedDates, onDone, onError }: {
+  info: ShipRulesRes | null;
+  importedDates: Set<string>;
+  onDone: (text: string) => void;
+  onError: (text: string) => void;
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [parsed, setParsed] = useState<{ p: ShipParsed; name: string } | null>(null);
-  const [pickSheets, setPickSheets] = useState<Set<string>>(new Set());
+  const [pickDays, setPickDays] = useState<Set<string>>(new Set());
   const [useColors, setUseColors] = useState(true);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [err, setErr] = useState('');
+  const targets = info?.rules.targetCategories ?? [];
 
   const pick = async () => {
     const file = fileRef.current?.files?.[0];
@@ -257,12 +265,16 @@ function ShipImportCard({ onDone, onError }: { onDone: (text: string) => void; o
     setErr('');
     if (!file) return;
     setBusy(true);
-    setProgress('ファイルを読み取っています...（数MBのファイルは十数秒かかります）');
+    setProgress('ファイルを読み取っています...（1か月分のファイルは数十秒かかることがあります）');
     try {
       await new Promise((r) => setTimeout(r, 50));
-      const p = (await client()).parseShipWorkbook(await readBuf(file));
+      const p = (await client()).parseShipWorkbook(await readBuf(file), {
+        fileName: file.name, targetCategories: targets,
+      });
       setParsed({ p, name: file.name });
-      setPickSheets(new Set(p.sheets.map((s) => s.sheet)));
+      // まだ取り込んでいない日だけを選んでおく（月全体のファイルを毎日取り込む運用のため）。
+      // 取込済みの日も、選び直せば取り込み直せる
+      setPickDays(new Set(p.sheets.filter((s) => !importedDates.has(s.dataDate)).map((s) => s.key)));
       setUseColors(p.sheets.some((s) => s.colored > 0));
     } catch (e) {
       setErr((e as Error).message);
@@ -274,27 +286,27 @@ function ShipImportCard({ onDone, onError }: { onDone: (text: string) => void; o
 
   const run = async () => {
     if (!parsed) return;
-    const sheets = parsed.p.sheets.filter((s) => pickSheets.has(s.sheet));
-    const noDate = sheets.find((s) => !s.dataDate);
-    if (noDate) { setErr(`シート「${noDate.sheet}」の売上日が読み取れません`); return; }
+    const days = parsed.p.sheets.filter((s) => pickDays.has(s.key));
     setBusy(true);
     setErr('');
     const done: string[] = [];
     try {
-      for (const s of sheets) {
-        setProgress(`${s.sheet}（${s.dataDate}）を取り込んでいます...`);
+      for (let d = 0; d < days.length; d++) {
+        const s = days[d];
+        const head = `${s.dataDate}（${d + 1} / ${days.length}日）`;
+        setProgress(`${head}を取り込んでいます...`);
         const { batchId } = await api<{ batchId: number }>('/ship-color/import/start', {
           method: 'POST',
           body: JSON.stringify({ filename: parsed.name, sheet: s.sheet, dataDate: s.dataDate }),
         });
         const rows = useColors ? s.rows : s.rows.map((r) => ({ ...r, file_cat: '' }));
         for (let i = 0; i < rows.length; i += CHUNK) {
-          setProgress(`${s.sheet}（${s.dataDate}）${Math.min(i + CHUNK, rows.length).toLocaleString()} / ${rows.length.toLocaleString()}行を送信中...`);
+          setProgress(`${head} ${Math.min(i + CHUNK, rows.length).toLocaleString()} / ${rows.length.toLocaleString()}行を送信中...`);
           await api(`/ship-color/import/${batchId}/rows`, {
             method: 'POST', body: JSON.stringify({ rows: rows.slice(i, i + CHUNK) }),
           });
         }
-        setProgress(`${s.sheet}（${s.dataDate}）を判定しています...`);
+        setProgress(`${head}を判定しています...`);
         const r = await api<{ rows: number; counts: Record<string, number>; replaced: number }>(
           `/ship-color/import/${batchId}/finish`, { method: 'POST' });
         done.push(`${s.dataDate}（${r.rows.toLocaleString()}行${r.replaced ? '・置き換え' : ''}）`);
@@ -310,45 +322,79 @@ function ShipImportCard({ onDone, onError }: { onDone: (text: string) => void; o
     }
   };
 
-  const colored = parsed?.p.sheets.some((s) => s.colored > 0);
+  const p = parsed?.p;
+  const colored = p?.sheets.some((s) => s.colored > 0);
+  const pickedRows = p ? p.sheets.filter((s) => pickDays.has(s.key)).reduce((n, s) => n + s.rows.length, 0) : 0;
+  const setAll = (keys: string[]) => setPickDays(new Set(keys));
   return (
     <Card title="② 出荷データ（MBの出荷明細）">
       <p className="pt-note" style={{ marginTop: 0 }}>
-        毎日の出荷データを取り込むと、判定条件に沿って自動で区分けします。
-        <strong>1シートを1日ぶん</strong>として扱い、日ごとにシートを分けたファイルはまとめて取り込めます
-        （古い日から順に取り込み、前の日の結果を「過去の色塗り」として次の日の判定に使います）。
-        同じ日付を取り込み直すと置き換わり、画面で手で決めた区分は残ります。
+        MBからダウンロードした出荷明細を取り込むと、判定条件に沿って自動で区分けします。
+        <strong>1か月分が1シートに入ったファイル</strong>も、<strong>日ごとにシートを分けたファイル</strong>も取り込めます。
+        どちらも<strong>売上日ごとに分けて</strong>、古い日から1日ずつ取り込みます（前の日の結果を「過去の色塗り」として次の日の判定に使うため）。
         <br />
-        手作業で<strong>色塗りした後のファイル</strong>（過去色塗り表など）は、出荷単価のセルの色を区分として読み取り、
-        以後の判定の「過去の色塗り」に使います。原価・粗利の列は取り込みません。
+        判定の対象は、カテゴリー名大が <strong>{targets.length ? targets.join('・') : 'すべて'}</strong> の明細だけです
+        （ロードヒーター・ビルトインなどは取り込みません。対象は判定条件で変えられます）。
+        同じ日を取り込み直すと置き換わり、画面で手で決めた区分は残ります。原価・粗利の列は取り込みません。
+        <br />
+        手作業で<strong>色塗りした後のファイル</strong>（過去色塗り表など）は、出荷単価のセルの色を区分として読み取ります。
+        Excel（.xlsx）のほか、CSVも読めます。
       </p>
-      <input ref={fileRef} type="file" accept=".xlsx,.xlsm,.xls" onChange={pick} disabled={busy} />
+      <input ref={fileRef} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} disabled={busy} />
       {progress && <div className="alert info" style={{ marginTop: 10 }}>{progress}</div>}
       {err && <div className="alert error" style={{ marginTop: 10 }}>{err}</div>}
-      {parsed && (
+      {p && (
         <div style={{ marginTop: 12 }}>
-          <div className="tbl-scroll">
-            <table className="tbl nowrap" style={{ maxWidth: 720 }}>
+          {p.brokenSlips > 0 && (
+            <div className="alert error">
+              売上伝票NOが「2.6E+11」のように崩れている明細が {p.brokenSlips.toLocaleString()}行 あります。
+              CSVをExcelで開いて保存し直すと、こうなります。取り込みはできます（中身から明細を見分けます）が、
+              手で決めた区分を取り込み直しで引き継ぐため、<strong>MBからダウンロードしたままのファイル</strong>を使ってください。
+            </div>
+          )}
+          <p className="pt-note" style={{ marginTop: 0 }}>
+            対象の明細 {p.sheets.reduce((n, s) => n + s.rows.length, 0).toLocaleString()}行（売上日 {p.sheets[0].dataDate}〜{p.sheets[p.sheets.length - 1].dataDate}、{p.sheets.length}日）
+            {p.otherSkipped > 0 && (
+              <>。対象外のカテゴリーで読み飛ばした明細 {p.otherSkipped.toLocaleString()}行
+                （{Object.entries(p.otherCats).sort((a, b) => b[1] - a[1]).slice(0, 6)
+                  .map(([k, n]) => `${k} ${n.toLocaleString()}`).join('・')}{Object.keys(p.otherCats).length > 6 ? ' ほか' : ''}）</>
+            )}
+            {p.noDate > 0 && `。売上日が無く読み飛ばした明細 ${p.noDate.toLocaleString()}行`}
+          </p>
+          <div className="toolbar" style={{ marginBottom: 8 }}>
+            <button className="btn secondary sm" disabled={busy}
+                    onClick={() => setAll(p.sheets.filter((s) => !importedDates.has(s.dataDate)).map((s) => s.key))}>
+              まだ取り込んでいない日だけ
+            </button>
+            <button className="btn secondary sm" disabled={busy} onClick={() => setAll(p.sheets.map((s) => s.key))}>
+              すべての日
+            </button>
+            <button className="btn secondary sm" disabled={busy} onClick={() => setAll([])}>選択を外す</button>
+          </div>
+          <div className="tbl-scroll" style={{ maxHeight: 360 }}>
+            <table className="tbl nowrap" style={{ maxWidth: 760 }}>
               <thead>
                 <tr>
-                  <th></th><th>シート</th><th>データの日付</th><th>売上日</th>
+                  <th></th><th>売上日</th><th>状態</th><th>シート</th>
                   <th className="num">行数</th><th className="num">色つき</th>
                 </tr>
               </thead>
               <tbody>
-                {parsed.p.sheets.map((s) => (
-                  <tr key={s.sheet}>
+                {p.sheets.map((s) => (
+                  <tr key={s.key}>
                     <td>
-                      <input type="checkbox" checked={pickSheets.has(s.sheet)} disabled={busy}
-                             onChange={(e) => setPickSheets((cur) => {
+                      <input type="checkbox" checked={pickDays.has(s.key)} disabled={busy}
+                             onChange={(e) => setPickDays((cur) => {
                                const next = new Set(cur);
-                               if (e.target.checked) next.add(s.sheet); else next.delete(s.sheet);
+                               if (e.target.checked) next.add(s.key); else next.delete(s.key);
                                return next;
                              })} />
                     </td>
+                    <td><strong>{s.dataDate}</strong></td>
+                    <td>{importedDates.has(s.dataDate)
+                      ? <span className="badge gray">取込済み（選ぶと置き換え）</span>
+                      : <span className="badge blue">未取込</span>}</td>
                     <td>{s.sheet}</td>
-                    <td><strong>{s.dataDate || '（読めません）'}</strong></td>
-                    <td>{s.minDate && s.minDate !== s.dataDate ? `${s.minDate}〜${s.dataDate}` : s.dataDate}</td>
                     <td style={nums}>{s.rows.length.toLocaleString()}</td>
                     <td style={nums}>{s.colored ? s.colored.toLocaleString() : '—'}</td>
                   </tr>
@@ -356,8 +402,8 @@ function ShipImportCard({ onDone, onError }: { onDone: (text: string) => void; o
               </tbody>
             </table>
           </div>
-          {parsed.p.ignored.length > 0 && (
-            <p className="pt-note">見出しが無いため読まなかったシート：{parsed.p.ignored.join('、')}</p>
+          {p.ignored.length > 0 && (
+            <p className="pt-note">見出しが無いため読まなかったシート：{p.ignored.join('、')}</p>
           )}
           {colored && (
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '10px 0', fontSize: 13 }}>
@@ -365,8 +411,11 @@ function ShipImportCard({ onDone, onError }: { onDone: (text: string) => void; o
               ファイルの色を区分として使う（色塗り済みのファイル。自動判定より優先します）
             </label>
           )}
-          <button className="btn" style={{ marginTop: 8 }} disabled={busy || pickSheets.size === 0} onClick={run}>
-            {busy ? '取込中...' : `選んだ ${pickSheets.size} シートを取り込む`}
+          {pickDays.size === 0 && (
+            <p className="pt-note">取り込む日が選ばれていません（すべて取込済みです）。取り込み直す日を選んでください。</p>
+          )}
+          <button className="btn" style={{ marginTop: 8 }} disabled={busy || pickDays.size === 0} onClick={run}>
+            {busy ? '取込中...' : `選んだ ${pickDays.size}日（${pickedRows.toLocaleString()}行）を取り込む`}
           </button>
         </div>
       )}
@@ -404,6 +453,7 @@ function RulesCard({ info, canEdit, onSaved }: {
   const [err, setErr] = useState('');
 
   const toForm = (r: ShipRules) => ({
+    targetCategories: linesOf(r.targetCategories ?? []),
     excludeCorps: linesOf(r.excludeCorps),
     pinkCorps: linesOf(r.pinkCorps),
     pinkPrefixes: linesOf(r.pinkPrefixes),
@@ -431,6 +481,7 @@ function RulesCard({ info, canEdit, onSaved }: {
         method: 'PUT',
         body: JSON.stringify({
           rules: {
+            targetCategories: listOf(form.targetCategories),
             excludeCorps: listOf(form.excludeCorps),
             pinkCorps: listOf(form.pinkCorps),
             pinkPrefixes: listOf(form.pinkPrefixes),
@@ -469,6 +520,13 @@ function RulesCard({ info, canEdit, onSaved }: {
         どれにも当たらない行は「未判定（目視確認）」になり、明細の画面で区分を選べます。
         一覧は<strong>1行に1つ</strong>。表記の全角・半角（㈱と(株)、＋と+など）と空白の違いは無視して比べます。
       </p>
+      <Step no="0" title="判定の対象にするカテゴリー（カテゴリー名大）">
+        {area('targetCategories', 4)}
+        <p className="pt-note" style={{ margin: 0 }}>
+          ここにあるカテゴリーの明細だけを取り込みます（MBの月全体のファイルに入っているロードヒーター・ビルトインなどは読み飛ばします）。
+          空にするとすべて取り込みます。
+        </p>
+      </Step>
       <Step no="1" title="対象外にする法人名（輸出など）">{area('excludeCorps', 2)}</Step>
       <Step no="2" title="基準価格との比較（値上済・水色）">
         <p className="pt-note" style={{ margin: 0 }}>
