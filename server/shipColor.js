@@ -54,6 +54,9 @@ export const RULE_LABELS = {
  * 先方契約済物件・期間指定は色塗り資料のファイルから取り込む。
  */
 export const DEFAULT_RULES = {
+  // 判定の対象にするカテゴリー名大。MBの月全体のファイルにはすべての器種が入っているため、
+  // これ以外（ロードヒーター・ビルトインなど）は取り込まない
+  targetCategories: ['湯沸', 'PH', 'PR', 'FH'],
   excludeCorps: ['輸出'],
   pinkCorps: ['大和ハウス工業㈱', '積水ハウス㈱'],
   pinkPrefixes: ['DK'],
@@ -143,6 +146,7 @@ const codeList = (v) => (Array.isArray(v) ? v : [])
 export function sanitizeRules(input, base = DEFAULT_RULES) {
   const src = { ...base, ...(input ?? {}) };
   return {
+    targetCategories: strList(src.targetCategories),
     excludeCorps: strList(src.excludeCorps),
     pinkCorps: strList(src.pinkCorps),
     pinkPrefixes: strList(src.pinkPrefixes),
@@ -523,7 +527,10 @@ export function mountShipColor(api, { wrap, requireLogin, requireRole, scopeCond
     const batchId = Number(req.params.batchId);
     const batch = await db.get("SELECT id FROM ship_batches WHERE id = ? AND status = 'loading'", [batchId]);
     if (!batch) return res.status(404).json({ error: '取込が見つかりません。最初からやり直してください' });
-    const rows = (Array.isArray(req.body?.rows) ? req.body.rows : []).map(cleanRow).filter((r) => r.slip_no);
+    // 対象のカテゴリー（湯沸・PH・PR・FH）以外は取り込まない（画面でも絞っているが、念のためここでも）
+    const targets = new Set((await loadRules()).targetCategories.map(nk));
+    const rows = (Array.isArray(req.body?.rows) ? req.body.rows : []).map(cleanRow)
+      .filter((r) => r.slip_no && (!targets.size || !r.cat_large || targets.has(nk(r.cat_large))));
     if (!rows.length) return res.json({ inserted: 0 });
     // 同じ売上伝票NOが前に取り込まれていれば置き換える（同じ日を取り込み直したとき・
     // 日をまたいで同じ明細が載ったとき）。画面で選んだ区分は伝票NOで持っているので残る

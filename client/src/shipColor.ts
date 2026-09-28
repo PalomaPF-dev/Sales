@@ -6,6 +6,8 @@
 export interface ShipCategory { key: string; label: string; color: string }
 
 export interface ShipRules {
+  /** 判定の対象にするカテゴリー名大（湯沸・PH・PR・FH）。これ以外は取り込まない */
+  targetCategories: string[];
   excludeCorps: string[];
   pinkCorps: string[];
   pinkPrefixes: string[];
