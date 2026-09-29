@@ -100,11 +100,11 @@ export default function ShipColorSpec({ info }: { info: ShipRulesRes | null }) {
               <tr><td>4</td><td>見積伝票番号が先方契約済物件リストにある</td><td>先方契約済物件リスト分</td>
                 <td>{r.contractQuotes.length.toLocaleString()}件</td></tr>
               <tr><td>5</td><td>得意先・納入先・器種・ガス・出荷単価がすべて一致する過去の行があれば、その区分を引き継ぐ</td>
-                <td>過去と同じ</td><td>前の日までに取り込んだ出荷データ（手で選んだ区分・ファイルの色を含む）</td></tr>
-              <tr><td>6</td><td>法人コードが特定コード、または得意先コードが期間指定にある（期限は受注日で見る。受注日が無ければ売上日）</td>
+                <td>過去と同じ</td><td>前の日までに取り込んだ出荷データ（手で選んだ区分・ファイルの色を含む）。売上日 {r.historyFrom || '（指定なし）'} 以降</td></tr>
+              <tr><td>6</td><td>法人コードが特定コード、または得意先コードが期間指定にある（期限は受注日で見る。売上日では見ない。期限があって受注日が無い行は当てず、未判定にする）</td>
                 <td>受注分</td><td>特定コード：{codeText(r.greenCorpCodes)}<br />期間指定：{r.periodCustomers.length.toLocaleString()}件（期限：{untils.join('・') || '—'}）</td></tr>
               <tr><td>7</td><td>得意先・納入先・器種・ガスが一致する過去の行の最大単価を上回る。<strong>例外的に既存の色を上書きする</strong></td>
-                <td>値上済</td><td>前の日までに取り込んだ出荷データ</td></tr>
+                <td>値上済</td><td>前の日までに取り込んだ出荷データ（区分を問わず最大単価）。売上日 {r.historyFrom || '（指定なし）'} 以降</td></tr>
               <tr><td>8</td><td>受注日が締め日以前</td><td>受注分</td><td>締め日 {r.orderCutoff || '（未設定）'}</td></tr>
               <tr><td>9-1</td><td>カテゴリー名大が指定のもので黄色なら、色なしに戻す</td><td>（色なし）</td><td>{r.kettleCategory || '（なし）'}</td></tr>
               <tr><td>9-2</td><td>器種名に特定の文字を含む</td><td>その他</td><td>{joinOr(r.grayKeywords)}</td></tr>
@@ -147,7 +147,8 @@ export default function ShipColorSpec({ info }: { info: ShipRulesRes | null }) {
           <li><strong>内訳</strong>：区分 × カテゴリー（FH・PH・湯沸・PR）／器具区分／支店／法人／日</li>
           <li>期間は売上日で選びます。輸出（対象外）は構成比に含めません</li>
           <li><strong>Excel</strong>：集計表（色別集計＋内訳5枚）と明細（判定理由つき）を書き出せます。
-            セルに色は付かないため、見出しに色の名前を添えています</li>
+            区分のセルは区分の色で塗ります（明細は「区分」と「出荷単価」のセル）。色のRGBは
+            {info.categories.map((c) => `${c.label} ${c.color}`).join('、')}。未判定・対象外は色なしです</li>
         </ul>
       </Sec>
     </div>

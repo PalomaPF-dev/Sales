@@ -6,6 +6,7 @@ import ShipColorImport from '../components/ShipColorImport';
 import ShipColorSpec from '../components/ShipColorSpec';
 import { useUser } from '../user';
 import { COLOR_NAMES, SOURCE_LABELS, allCategories } from '../shipColor';
+import { BOLD, fillOf, loadStyledXlsx, paint } from '../xlsxStyled';
 import type { ShipCategory, ShipRulesRes } from '../shipColor';
 
 /** 画面の中身。左のメニューの「出荷実績（色分け）」の各項目と対応する */
@@ -364,6 +365,13 @@ const catName = (c: ShipCategory) => (COLOR_NAMES[c.key] && COLOR_NAMES[c.key] !
 /** 色別集計表の1ブロック（全体、または1つのカテゴリー）。区分ごとの集計値 */
 interface ColorSection { key: string; title: string; byCat: Map<string, Agg> }
 
+/**
+ * Excelで塗る色。区分の色をそのまま使う（別のVBAがセルの背景色RGBで区分を見分けるため）。
+ * 未判定・対象外（輸出）は色なし
+ */
+const catFill = (c: ShipCategory | undefined) =>
+  (!c || c.key === 'unset' || c.key === 'excluded' ? null : fillOf(c.color));
+
 const avgOf = (a: Agg | undefined) => (val(a, 'qty') > 0 ? val(a, 'amount') / val(a, 'qty') : null);
 
 /** 1ブロックの表。構成比はそのブロックの中での割合（輸出＝対象外は分母に入れない） */
@@ -479,18 +487,23 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
     setBusy(true);
     setErr('');
     try {
-      const XLSX = await import('xlsx');
+      const XLSX = await loadStyledXlsx();
       const wb = XLSX.utils.book_new();
       const share = (v: number, t: number) => (t > 0 ? Math.round((v / t) * 1000) / 10 : null);
       // 1枚目：色別集計表（全体、続けてカテゴリーごと）
       const head = ['区分', '色', '件数', '構成比(件数)%', '数量', '構成比(数量)%', '出荷金額', '構成比(金額)%', '平均単価'];
       const aoa: unknown[][] = [['出荷実績 色別集計表（全体・カテゴリー別）'], [`売上日 ${period}`]];
+      // 色を塗る行（区分の行）と見出しの行
+      const painted: [number, ShipCategory][] = [];
+      const heads: number[] = [];
       for (const sec of sections) {
         const list = cats.filter((c) => c.key !== 'excluded' && sec.byCat.has(c.key));
         const tot = (m: Metric) => list.reduce((s, c) => s + val(sec.byCat.get(c.key), m), 0);
         aoa.push([], [`【${sec.title}】`], head);
+        heads.push(aoa.length - 1);
         for (const c of list) {
           const a = sec.byCat.get(c.key);
+          painted.push([aoa.length, c]);
           aoa.push([c.label, COLOR_NAMES[c.key] ?? '', val(a, 'n'), share(val(a, 'n'), tot('n')),
             val(a, 'qty'), share(val(a, 'qty'), tot('qty')), val(a, 'amount'), share(val(a, 'amount'), tot('amount')),
             avgOf(a) == null ? null : Math.round(avgOf(a)!)]);
@@ -502,6 +515,9 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
       }
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws['!cols'] = [{ wch: 24 }, { wch: 8 }, ...Array(7).fill({ wch: 14 })];
+      // 区分の行は「区分」「色」のセルを区分の色で塗る
+      for (const [r, c] of painted) { paint(XLSX, ws, r, 0, catFill(c)); paint(XLSX, ws, r, 1, catFill(c)); }
+      for (const r of heads) head.forEach((_, c) => paint(XLSX, ws, r, c, BOLD));
       XLSX.utils.book_append_sheet(wb, ws, '色別集計');
 
       // 2枚目以降：まとめ方ごとの色別の表（件数・数量・金額を上から順に）
@@ -519,8 +535,11 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
           : [...m.get(b)!.values()].reduce((s, x) => s + val(x, 'amount'), 0)
             - [...m.get(a)!.values()].reduce((s, x) => s + val(x, 'amount'), 0)));
         const sheet: unknown[][] = [[`出荷実績 ${g.label}・色別`], [`売上日 ${period}`]];
+        // 区分の列（見出しから合計の行まで）を区分の色で塗る
+        const blocks: [number, number][] = [];
         for (const met of METRICS) {
           sheet.push([], [`【${met.label}】`], [g.head, ...cols.map(catName), '合計']);
+          const top = sheet.length - 1;
           const colTot = cols.map(() => 0);
           for (const name of names) {
             const row = cols.map((c) => val(m.get(name)!.get(c.key), met.key));
@@ -528,9 +547,14 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
             sheet.push([name || '(空白)', ...row, row.reduce((s, v) => s + v, 0)]);
           }
           sheet.push(['合計', ...colTot, colTot.reduce((s, v) => s + v, 0)]);
+          blocks.push([top, sheet.length - 1]);
         }
         const gws = XLSX.utils.aoa_to_sheet(sheet);
         gws['!cols'] = [{ wch: 26 }, ...cols.map(() => ({ wch: 16 })), { wch: 16 }];
+        for (const [top, bottom] of blocks) {
+          for (let r = top; r <= bottom; r++) cols.forEach((c, i) => paint(XLSX, gws, r, i + 1, catFill(c)));
+          for (let c = 0; c <= cols.length + 1; c++) paint(XLSX, gws, top, c, BOLD);
+        }
         XLSX.utils.book_append_sheet(wb, gws, g.label);
       }
 
@@ -577,7 +601,7 @@ function ColorTable({ summary, cats, from, to, onOpen }: {
       <p className="pt-note">
         構成比は、それぞれの表の中での割合です（カテゴリーの表なら、そのカテゴリーの合計に対する割合）。行を押すと明細を開きます。
         Excelには、全体とカテゴリーごとの色別集計表のほかに、カテゴリー別・器具区分別・支店別・法人別・日別の色別の表（件数・数量・出荷金額）が入ります。
-        Excel側はセルに色が付かないため、見出しに色の名前を添えています。
+        Excelでは区分のセルを区分の色（RGB）で塗り、見出しにも色の名前を添えています。
       </p>
     </Card>
   );
@@ -647,7 +671,7 @@ function RowsView({ from, to, filter, setFilter, cats, catOf, info, canEdit, rel
         all.push(...r.rows);
         if (all.length >= r.total || !r.rows.length) break;
       }
-      const XLSX = await import('xlsx');
+      const XLSX = await loadStyledXlsx();
       const labels = info?.ruleLabels ?? {};
       const aoa = [[
         '区分', '判定', '判定理由', '自動判定', '売上日', '受注日', '法人コード', '法人名', '得意先コード', '得意先名',
@@ -661,6 +685,14 @@ function RowsView({ from, to, filter, setFilter, cats, catOf, info, canEdit, rel
         r.qty, r.price, r.amount, r.base_price, r.quote_no, r.slip_no, r.branch, r.office, r.person,
       ])];
       const ws = XLSX.utils.aoa_to_sheet(aoa);
+      // 「区分」と「出荷単価」のセルを区分の色で塗る（手作業の色塗りと同じく出荷単価のセルに色が付く）
+      const priceCol = aoa[0].indexOf('出荷単価');
+      all.forEach((r, i) => {
+        const f = catFill(catOf(r.cat));
+        paint(XLSX, ws, i + 1, 0, f);
+        paint(XLSX, ws, i + 1, priceCol, f);
+      });
+      aoa[0].forEach((_, c) => paint(XLSX, ws, 0, c, BOLD));
       ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, '出荷実績（色分け）');

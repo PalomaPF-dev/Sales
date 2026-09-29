@@ -462,6 +462,7 @@ function RulesCard({ info, canEdit, onSaved }: {
     greenCorpCodes: codeLines(r.greenCorpCodes),
     periodCustomers: codeLines(r.periodCustomers),
     orderCutoff: r.orderCutoff,
+    historyFrom: r.historyFrom ?? '',
     kettleCategory: r.kettleCategory,
     grayKeywords: linesOf(r.grayKeywords),
     grayModels: linesOf(r.grayModels),
@@ -490,6 +491,7 @@ function RulesCard({ info, canEdit, onSaved }: {
             greenCorpCodes: codeListOf(form.greenCorpCodes),
             periodCustomers: codeListOf(form.periodCustomers),
             orderCutoff: form.orderCutoff,
+            historyFrom: form.historyFrom,
             kettleCategory: form.kettleCategory,
             grayKeywords: listOf(form.grayKeywords),
             grayModels: listOf(form.grayModels),
@@ -551,10 +553,15 @@ function RulesCard({ info, canEdit, onSaved }: {
           前の日までに取り込んだ出荷データの区分（手で決めた区分・ファイルの色・自動判定）を引き継ぎます。
           過去色塗り表は ② から取り込めます（出荷単価のセルの色を読みます）。
         </p>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginTop: 6 }}>
+          売上日が
+          <input type="date" value={form.historyFrom} onChange={set('historyFrom')} readOnly={!canEdit} />
+          以降の出荷データを「過去の色塗り」に使う（条件5・7。空欄はすべて）
+        </label>
       </Step>
       <Step no="6" title="特定コード・期間指定（受注分・緑）">
         <p className="pt-note" style={{ marginTop: 0 }}>
-          1行に「コード, 期限（YYYY-MM-DD。空欄は期限なし）, 名前」。期限は受注日（無ければ売上日）で見ます。
+          1行に「コード, 期限（YYYY-MM-DD。空欄は期限なし）, 名前」。期限は受注日で見ます（売上日では見ません。期限があって受注日が無い行は当てず、未判定にします）。
         </p>
         <div style={two}>
           <label>{lbl('法人コード（出荷明細のB列）')}{area('greenCorpCodes', 3, 'M0817, , アイエスジー')}</label>

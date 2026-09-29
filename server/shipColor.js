@@ -40,7 +40,7 @@ export const RULE_LABELS = {
   3: '3. 特定条件（法人・器種名）',
   4: '4. 先方契約済物件リスト',
   5: '5. 過去の色塗りと一致',
-  6: '6. 特定コード・期間指定',
+  6: '6. 特定コード・期間指定（受注日で判定）',
   7: '7. 過去の最大単価を上回る',
   8: '8. 受注日が締め日以前',
   '9-1': '9-1. 湯沸の黄色を色なしへ',
@@ -65,12 +65,15 @@ export const DEFAULT_RULES = {
   contractQuotes: [],
   // 法人コード（出荷明細のB列）で決める特定コード。期限は受注日で見る（空欄は期限なし）
   greenCorpCodes: [
-    { code: 'M0817', name: 'アイエスジー', until: '' },
+    { code: 'M0817', name: 'アイエスジー', until: '2026-09-30' },
     { code: 'M0036', name: '堀川産業', until: '2026-09-20' },
   ],
   // 期間指定（得意先コード）。期限は受注日で見る
   periodCustomers: [],
   orderCutoff: '2026-08-31',
+  // 過去の色塗り（条件5・7）に使う出荷データの起点。この日より前の売上日の行は使わない
+  // （ヒアリング：9月1日以降のものを基準にしている）
+  historyFrom: '2026-09-01',
   kettleCategory: '湯沸',
   grayKeywords: ['＋', 'KOS', 'EAP', 'KFAWL', 'KSAWL'],
   grayModels: [
@@ -128,7 +131,22 @@ export async function loadRules() {
     const row = await db.get('SELECT value FROM settings WHERE key = ?', [SETTINGS_KEY]);
     if (row?.value) saved = JSON.parse(row.value);
   } catch { /* 読めなければ既定値 */ }
-  return { ...DEFAULT_RULES, ...saved };
+  return upgradeRules({ ...DEFAULT_RULES, ...saved }, saved);
+}
+
+/** 保存されている判定条件の版。既定値を直したときに、保存済みの設定へも反映するために使う */
+const RULES_VERSION = 2;
+
+/**
+ * 保存済みの判定条件を今の版へそろえる（読むたびに当てる。保存は画面で保存したとき）。
+ * 版2：ヒアリングの回答を反映。アイエスジー（M0817）の期限を9月末にする（期限が空のときだけ）
+ */
+function upgradeRules(rules, saved) {
+  if ((Number(saved?.rulesVersion) || 1) < 2) {
+    rules.greenCorpCodes = (rules.greenCorpCodes ?? []).map((x) => (
+      String(x?.code ?? '').trim().toUpperCase() === 'M0817' && !x?.until ? { ...x, until: '2026-09-30' } : x));
+  }
+  return rules;
 }
 
 const strList = (v, max = 20000) => (Array.isArray(v) ? v : [])
@@ -156,6 +174,7 @@ export function sanitizeRules(input, base = DEFAULT_RULES) {
     greenCorpCodes: codeList(src.greenCorpCodes),
     periodCustomers: codeList(src.periodCustomers),
     orderCutoff: ymd(src.orderCutoff),
+    historyFrom: ymd(src.historyFrom),
     kettleCategory: String(src.kettleCategory ?? '').trim(),
     grayKeywords: strList(src.grayKeywords),
     grayModels: strList(src.grayModels),
@@ -167,7 +186,7 @@ async function saveRules(rules) {
   await db.run(
     `INSERT INTO settings (key, value) VALUES (?, ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-    [SETTINGS_KEY, JSON.stringify(rules)]);
+    [SETTINGS_KEY, JSON.stringify({ ...rules, rulesVersion: RULES_VERSION })]);
 }
 
 /** 「受注分」の見出し。締め日の月から「8月受注分」のように付ける */
@@ -201,11 +220,15 @@ export function buildContext(rules, basePrices, history = { exact: new Map(), ma
   };
 }
 
-/** 期限つきのコード表に当たるか。期限は受注日（無ければ売上日）で見る */
-const withinUntil = (map, k, day) => {
+/**
+ * 期限つきのコード表に当たるか。期限は受注日で見る（売上日では見ない）。
+ * 期限があるのに受注日が無い行は当てない（値段を見て目視で決めるため、未判定に回す）。
+ */
+const withinUntil = (map, k, orderDay) => {
   if (!map.has(k)) return false;
   const u = map.get(k);
-  return !u || !day || day <= u;
+  if (!u) return true;
+  return Boolean(orderDay) && orderDay <= u;
 };
 
 /**
@@ -220,7 +243,6 @@ export function classifyShipRow(r, ctx) {
   const name = nk(r.model_name);
   const price = toNum(r.price);
   const orderDay = r.order_date || '';
-  const day = orderDay || r.sale_date || '';
   let cat = null;
   let rule = null;
   const set = (c, why) => { cat = c; rule = why; };
@@ -251,8 +273,8 @@ export function classifyShipRow(r, ctx) {
 
   // 6. 特定コード（法人コード）・期間指定（得意先コード）
   if (!cat) {
-    if (withinUntil(ctx.greenCorpCodes, nk(code(r.corp_code)), day)
-      || withinUntil(ctx.periodCustomers, nk(code(r.customer_code)), day)) {
+    if (withinUntil(ctx.greenCorpCodes, nk(code(r.corp_code)), orderDay)
+      || withinUntil(ctx.periodCustomers, nk(code(r.customer_code)), orderDay)) {
       set('ordered', '6');
     }
   }
@@ -313,7 +335,7 @@ function cleanRow(src) {
  * 区分は画面で選んだもの・ファイルの色・自動判定の順で、最後に決まったもの。
  * 器種コードで絞ってから読む（全件を読むと、月をまたいで数万行になるため）。
  */
-async function loadHistory(dataDate, modelCodes) {
+async function loadHistory(dataDate, modelCodes, historyFrom = '') {
   const exact = new Map();
   const max = new Map();
   const codes = [...new Set(modelCodes.filter(Boolean))];
@@ -324,8 +346,10 @@ async function loadHistory(dataDate, modelCodes) {
       `SELECT r.customer_code, r.delivery_code, r.model_code, r.gas_code, r.price,
               ${FINAL_CAT} AS cat, b.data_date
          FROM ${ROW_FROM}
-        WHERE b.data_date < ? AND b.status = 'done' AND r.model_code IN (${part.map(() => '?').join(',')})`,
-      [dataDate, ...part]);
+        WHERE b.data_date < ? AND b.status = 'done'
+          ${historyFrom ? 'AND r.sale_date >= ?' : ''}
+          AND r.model_code IN (${part.map(() => '?').join(',')})`,
+      [dataDate, ...(historyFrom ? [historyFrom] : []), ...part]);
     for (const h of rows) {
       if (!CAT_KEYS.has(h.cat) || h.price == null) continue;
       const k5 = key5(h);
@@ -364,7 +388,7 @@ export async function classifyBatch(batchId) {
   const rows = await db.all(`SELECT ${ROW_COLS.join(', ')} FROM ship_rows WHERE batch_id = ?`, [batchId]);
   const rules = await loadRules();
   const ctx = buildContext(rules, await loadBasePrices(),
-    await loadHistory(batch.data_date, rows.map((r) => r.model_code)));
+    await loadHistory(batch.data_date, rows.map((r) => r.model_code), rules.historyFrom));
   const counts = {};
   for (const r of rows) {
     const { cat, rule } = classifyShipRow(r, ctx);
