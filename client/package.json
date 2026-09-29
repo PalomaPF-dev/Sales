@@ -13,7 +13,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2",
-    "xlsx": "npm:@e965/xlsx@^0.20.3"
+    "xlsx": "npm:@e965/xlsx@^0.20.3",
+    "xlsx-js-style": "^1.2.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

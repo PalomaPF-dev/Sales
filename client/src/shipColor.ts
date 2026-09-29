@@ -17,6 +17,8 @@ export interface ShipRules {
   greenCorpCodes: { code: string; name: string; until: string }[];
   periodCustomers: { code: string; name: string; until: string }[];
   orderCutoff: string;
+  /** 過去の色塗り（条件5・7）に使う出荷データの起点（売上日）。空ならすべて */
+  historyFrom: string;
   kettleCategory: string;
   grayKeywords: string[];
   grayModels: string[];
