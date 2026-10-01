@@ -19,6 +19,7 @@
 // 画面で選んだ区分（手動）と、色塗り済みのファイルから読んだ色は、
 // 自動判定より優先し、以後の取込では「過去の色塗り」（5・7）として使う。
 import { db } from './db.js';
+import { IZ_CONTRACT_QUOTES } from './shipContractQuotes.js';
 
 /** 区分。並びは色塗り資料の凡例と同じ */
 export const CATEGORIES = [
@@ -131,18 +132,26 @@ export async function loadRules() {
     const row = await db.get('SELECT value FROM settings WHERE key = ?', [SETTINGS_KEY]);
     if (row?.value) saved = JSON.parse(row.value);
   } catch { /* 読めなければ既定値 */ }
-  return upgradeRules({ ...DEFAULT_RULES, ...saved }, saved);
+  const rules = upgradeRules({ ...DEFAULT_RULES, ...saved }, saved);
+  if ((Number(saved?.rulesVersion) || 1) < RULES_VERSION) {
+    // 版を上げた内容を保存しておく。保存できなくても、読むたびに同じ更新が当たるので動作は変わらない
+    try { await saveRules(sanitizeRules(rules, rules)); } catch { /* 次に読むときにやり直す */ }
+  }
+  return rules;
 }
 
 /** 保存されている判定条件の版。既定値を直したときに、保存済みの設定へも反映するために使う */
-const RULES_VERSION = 2;
+const RULES_VERSION = 3;
 
 /**
  * 保存済みの判定条件を今の版へそろえる（読むたびに当てる。保存は画面で保存したとき）。
  * 版2：ヒアリングの回答を反映。アイエスジー（M0817）の期限を9月末にする（期限が空のときだけ）
+ * 版3：先方契約済物件（条件4）の見積伝票番号を、iZの見積リスト（2026-10-01受領）の全件に入れ替える
  */
 function upgradeRules(rules, saved) {
-  if ((Number(saved?.rulesVersion) || 1) < 2) {
+  const from = Number(saved?.rulesVersion) || 1;
+  if (from < 3) rules.contractQuotes = [...IZ_CONTRACT_QUOTES];
+  if (from < 2) {
     rules.greenCorpCodes = (rules.greenCorpCodes ?? []).map((x) => (
       String(x?.code ?? '').trim().toUpperCase() === 'M0817' && !x?.until ? { ...x, until: '2026-09-30' } : x));
   }
