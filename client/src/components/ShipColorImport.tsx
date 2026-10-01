@@ -209,6 +209,8 @@ function ReferenceCard({ info, onDone }: { info: ShipRulesRes | null; onDone: (t
       <p className="pt-note" style={{ marginTop: 0 }}>
         色塗り資料の <strong>「基準価格」「先方契約済物件」「期間指定」</strong> のシートを読み取ります。
         入っているシートだけ置き換わります（無いシートは今のまま）。
+        先方契約済物件は、<strong>iZの見積リスト</strong>（「見積伝票番号」の列があるファイル）からも取り込めます。
+        その場合は見積伝票番号の一覧だけが置き換わります。
         期間指定の「9月末まで」などの書き込みは、下の行へ引き継いで期限の日付にします。
       </p>
       <div className="kv" style={{ marginBottom: 10 }}>

@@ -401,6 +401,17 @@ export function parseReferenceWorkbook(buf: ArrayBuffer): ReferenceParsed {
       const list = g.map((row) => text(row?.[0])).filter((v) => /^[0-9A-Za-z-]{4,}$/.test(v));
       out.contracts = [...new Set(list)];
     }
+    // iZの見積リスト：「見積伝票番号」の見出しがあるシート。その列の番号を先方契約済物件として読む
+    // （明細の行ごとに同じ番号が並ぶので、重複は1つにまとめる）
+    if (!out.contracts) {
+      for (let r = 0; r < Math.min(10, g.length); r++) {
+        const col = heads(r).indexOf('見積伝票番号');
+        if (col < 0) continue;
+        const list = g.slice(r + 1).map((row) => text(row?.[col])).filter((v) => /^[0-9A-Za-z-]{4,}$/.test(v));
+        if (list.length) out.contracts = [...new Set(list)];
+        break;
+      }
+    }
 
     // 期間指定：「得意先コード」「顧客名」の見出し。期限の書き込み（〇月末まで）は下の行へ引き継ぐ
     if (!out.periodCustomers && (/期間指定/.test(name) || heads(0).includes('顧客名'))) {
