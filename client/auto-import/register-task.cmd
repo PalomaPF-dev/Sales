@@ -16,7 +16,7 @@ echo Checking the connection and the folders. Nothing is imported in this step..
 call "%~dp0run.cmd" --check
 if errorlevel 9009 (
   echo.
-  echo [NG] Node.js was not found. Install Node.js 22 or later from https://nodejs.org/ and run this again.
+  echo [NG] Node.js was not found. Put node.exe in this folder, or install Node.js 22 or later, and run this again.
   goto :fail
 )
 if errorlevel 1 (

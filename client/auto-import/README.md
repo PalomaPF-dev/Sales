@@ -74,7 +74,11 @@ npm run build:auto-import
 
 ## 3. 社内PCの準備
 
-1. **Node.js 22 以上**（LTS）を入れる。https://nodejs.org/ja のインストーラーで入れれば `node` が使えるようになります。
+1. **Node.js 22 以上**を用意する。次のどちらかです。
+   - **インストールしない**：Node.js 公式の zip 版（https://nodejs.org/dist/latest-v22.x/ の `node-v22.x.x-win-x64.zip`）を開き、
+     中の **`node.exe` だけ**を、2のフォルダ（`auto-import.mjs` と同じ場所）に置く。管理者権限は要りません。
+     `run.cmd` は同じフォルダの `node.exe` を先に使います（npm などほかのファイルは要りません）
+   - **インストールする**：https://nodejs.org/ja のインストーラー（LTS）で入れる
 2. 例として `C:\auto-import\` を作り、2の `dist` の中身をコピーする。
 3. `auto-import.config.example.json` をコピーして **`auto-import.config.json`** を作り、中身を書き換える。
 
