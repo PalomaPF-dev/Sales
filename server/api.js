@@ -28,6 +28,9 @@ import {
   parseStandardWorkbook, replaceStandardPrices,
 } from './standardPrices.js';
 import { mountShipColor } from './shipColor.js';
+import {
+  hasImportKey, resolveImportKey, mountAutoImport, autoImportStatus, isAutoImportLogin,
+} from './autoImport.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -149,6 +152,15 @@ async function fallbackUser() {
 // ---- 認証（ログインID/パスワード + セッションCookie） ----
 api.use(wrap(async (req, res, next) => {
   await initDb();
+  // 自動取込（社内PCのスクリプト）。鍵のヘッダーがあれば、Cookieは見ずに鍵だけで判断する
+  // （鍵が違うときにログイン中の別の人として通ってしまわないように）
+  if (hasImportKey(req)) {
+    const r = await resolveImportKey(req);
+    if (r.error) return res.status(r.status).json({ error: r.error });
+    req.user = r.user;
+    req.viaImportKey = true;
+    return next();
+  }
   if (AUTH_DISABLED) {
     req.user = await fallbackUser();
     if (req.user) {
@@ -411,7 +423,8 @@ api.post('/login', wrap(async (req, res) => {
   // ユーザーの有無を推測されないよう、失敗時の応答は区別しない
   const deny = () => res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
 
-  if (!user || !user.active) {
+  // 自動取込の利用者は鍵でしか入れない（管理者なので、画面から入れると影響が大きい）
+  if (!user || !user.active || isAutoImportLogin(loginId)) {
     await verifyPassword(password, null); // 応答時間を揃える
     return deny();
   }
@@ -472,6 +485,11 @@ api.post('/login/setup', wrap(async (req, res) => {
   const user = await db.get('SELECT * FROM users WHERE login_id = ? AND active = 1', [loginId]);
   if (!user) {
     return res.status(404).json({ error: '社員番号が見つかりません。管理者にお問い合わせください' });
+  }
+  // 自動取込の利用者はパスワードを持たない。ここで設定できると、IDを知っている人が
+  // 管理者として入れてしまうため断る
+  if (isAutoImportLogin(loginId)) {
+    return res.status(403).json({ error: 'この利用者は自動取込の専用です。画面からはログインできません' });
   }
   if (user.password_hash) {
     return res.status(409).json({ error: '既に設定済みです。通常のログインをお使いください' });
@@ -864,6 +882,7 @@ api.get('/admin/status', wrap(async (req, res) => {
         hint: 'Vercel → Settings → Environment Variables に RESEND_API_KEY'
           + '（任意で MAIL_FROM / APP_ORIGIN / MAIL_NOTIFY_TO）。設定後は再デプロイが必要です',
       },
+      await autoImportStatus(),
     ],
   });
 }));
@@ -5294,3 +5313,7 @@ api.delete('/import/batches/:id', wrap(async (req, res) => {
 // ---- 出荷実績の色分け（色塗り判定） ----
 // 判定・取込・集計は shipColor.js にまとめてある。認証・権限・閲覧範囲はここのものを使う
 mountShipColor(api, { wrap, requireLogin, requireRole, scopeConditions });
+
+// ---- 自動取込（社内PCのスクリプト） ----
+// 鍵の確かめは上の認証の入口で行う。ここは設定の確認と、実行結果の通知
+mountAutoImport(api, { wrap });

@@ -7,9 +7,6 @@ import type { ReferenceParsed, ShipParsed } from '../shipColorClient';
 // Excelの部品は大きいので、ファイルを選んだときだけ読み込む
 const client = () => import('../shipColorClient');
 
-/** 1回で送る行数。1日ぶん（千数百行）なら1〜2回で送り終わる */
-const CHUNK = 1500;
-
 const readBuf = async (file: File) => {
   const { readFileBuffer } = await import('../aggImportClient');
   return readFileBuffer(file);
@@ -293,26 +290,12 @@ function ShipImportCard({ info, importedDates, onDone, onError }: {
     setErr('');
     const done: string[] = [];
     try {
-      for (let d = 0; d < days.length; d++) {
-        const s = days[d];
-        const head = `${s.dataDate}（${d + 1} / ${days.length}日）`;
-        setProgress(`${head}を取り込んでいます...`);
-        const { batchId } = await api<{ batchId: number }>('/ship-color/import/start', {
-          method: 'POST',
-          body: JSON.stringify({ filename: parsed.name, sheet: s.sheet, dataDate: s.dataDate }),
-        });
-        const rows = useColors ? s.rows : s.rows.map((r) => ({ ...r, file_cat: '' }));
-        for (let i = 0; i < rows.length; i += CHUNK) {
-          setProgress(`${head} ${Math.min(i + CHUNK, rows.length).toLocaleString()} / ${rows.length.toLocaleString()}行を送信中...`);
-          await api(`/ship-color/import/${batchId}/rows`, {
-            method: 'POST', body: JSON.stringify({ rows: rows.slice(i, i + CHUNK) }),
-          });
-        }
-        setProgress(`${head}を判定しています...`);
-        const r = await api<{ rows: number; counts: Record<string, number>; replaced: number }>(
-          `/ship-color/import/${batchId}/finish`, { method: 'POST' });
-        done.push(`${s.dataDate}（${r.rows.toLocaleString()}行${r.replaced ? '・置き換え' : ''}）`);
-      }
+      // 送り方（1日ずつ・古い順）は自動取込と同じものを使う
+      await (await client()).sendShipDays(parsed.name, days, {
+        useColors,
+        onProgress: setProgress,
+        onDayDone: (r) => done.push(`${r.dataDate}（${r.rows.toLocaleString()}行${r.replaced ? '・置き換え' : ''}）`),
+      });
       setParsed(null);
       if (fileRef.current) fileRef.current.value = '';
       onDone(`出荷データを取り込み、判定しました：${done.join('、')}`);

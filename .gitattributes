@@ -1,0 +1,2 @@
+# Windowsで動かすバッチファイルは改行をCRLFにする
+*.cmd text eol=crlf

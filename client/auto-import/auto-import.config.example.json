@@ -1,0 +1,13 @@
+{
+  "appUrl": "https://sales.paloma-pf.com",
+  "key": "ここにアプリの AUTO_IMPORT_KEY と同じ値を入れる",
+  "folders": {
+    "ship": "\\\\ファイルサーバー名\\共有フォルダ\\出荷明細",
+    "salesDaily": "\\\\ファイルサーバー名\\共有フォルダ\\売上高\\日次",
+    "salesMonthly": "\\\\ファイルサーバー名\\共有フォルダ\\売上高\\月次"
+  },
+  "notify": "always",
+  "lookbackDays": 10,
+  "basicAuth": { "user": "", "pass": "" },
+  "vercelBypass": ""
+}
