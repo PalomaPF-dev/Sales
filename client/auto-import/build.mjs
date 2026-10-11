@@ -54,7 +54,7 @@ await build({
 });
 
 // 社内PCへそのまま持っていけるよう、使い方と設定の見本も同じフォルダへ
-for (const f of ['README.md', 'auto-import.config.example.json', 'run.cmd']) {
+for (const f of ['README.md', 'auto-import.config.example.json', 'run.cmd', 'register-task.cmd']) {
   copyFileSync(path.join(here, f), path.join(out, f));
 }
 console.log(`組み立てました: ${path.relative(process.cwd(), out)}（版 ${version}）`);

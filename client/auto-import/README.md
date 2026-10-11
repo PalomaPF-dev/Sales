@@ -64,6 +64,7 @@ npm run build:auto-import
 |---|---|
 | `auto-import.mjs` | スクリプト本体（Excelの部品も入っているので `npm install` は不要） |
 | `run.cmd` | タスクスケジューラから呼ぶファイル |
+| `register-task.cmd` | 確かめたうえで、タスクスケジューラへ登録するファイル（ダブルクリックで使う） |
 | `auto-import.config.example.json` | 設定の見本 |
 | `README.md` | この説明 |
 
@@ -113,7 +114,12 @@ npm run build:auto-import
 
 ## 4. タスクスケジューラに登録する（平日12:00）
 
-コマンドプロンプトで（`<Windowsの利用者>` は共有フォルダを読める利用者）：
+いちばん簡単なのは、共有フォルダを読めるWindowsの利用者でPCに入り、**`register-task.cmd` をダブルクリック**することです。
+まず3の4と同じ確認（取り込みはしない）を行い、問題が無ければ「SalesPricing AutoImport」という名前で
+月〜金 12:00 のタスクを登録します。途中でその利用者のWindowsのパスワードを聞かれます
+（ログオフ中でも動くようにするため）。確認で問題が出たときは登録しません。直してからもう一度ダブルクリックしてください。
+
+自分で登録するときは、コマンドプロンプトで（`<Windowsの利用者>` は共有フォルダを読める利用者）：
 
 ```
 schtasks /Create /TN "価格改定進捗 自動取込" /TR "C:\auto-import\run.cmd" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 12:00 /RU <Windowsの利用者> /RP
