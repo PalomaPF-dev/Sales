@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { api } from './api';
 
 /**
  * 出荷実績の色分け（色塗り判定）の取込で使うファイルの読み取り。
@@ -339,6 +340,61 @@ export function parseShipWorkbook(buf: ArrayBuffer, opts: ShipParseOptions = {})
   sheets.sort((a, b) => a.dataDate.localeCompare(b.dataDate));
   const otherSkipped = Object.values(otherCats).reduce((a, b) => a + b, 0);
   return { sheets, ignored, otherSkipped, otherCats, brokenSlips, noDate };
+}
+
+/** 1回で送る行数。1日ぶん（千数百行）なら1〜2回で送り終わる */
+const SEND_CHUNK = 1500;
+
+/** 1日ぶんの取込の結果 */
+export interface ShipDayResult {
+  dataDate: string;
+  rows: number;
+  /** 区分ごとの行数（自動判定・ファイルの色。当たらなかった行は unset） */
+  counts: Record<string, number>;
+  /** 同じ日の前の取込を置き換えた数 */
+  replaced: number;
+}
+
+/**
+ * 選んだ日を古い順に1日ずつ取り込み、判定する
+ * （後の日は前の日の結果を「過去の色塗り」として使うため）。
+ * 画面と自動取込（社内PCのスクリプト）で同じものを使う。
+ * 途中で失敗したら、そこで止めて投げる。取り込めた日は onDayDone で分かる。
+ */
+export async function sendShipDays(
+  fileName: string,
+  days: ShipSheet[],
+  opts: {
+    /** ファイルの色を区分として使うか（既定: 使う） */
+    useColors?: boolean;
+    onProgress?: (text: string) => void;
+    onDayDone?: (r: ShipDayResult) => void;
+  } = {},
+): Promise<ShipDayResult[]> {
+  const out: ShipDayResult[] = [];
+  for (let d = 0; d < days.length; d++) {
+    const s = days[d];
+    const head = `${s.dataDate}（${d + 1} / ${days.length}日）`;
+    opts.onProgress?.(`${head}を取り込んでいます...`);
+    const { batchId } = await api<{ batchId: number }>('/ship-color/import/start', {
+      method: 'POST',
+      body: JSON.stringify({ filename: fileName, sheet: s.sheet, dataDate: s.dataDate }),
+    });
+    const rows = opts.useColors === false ? s.rows.map((r) => ({ ...r, file_cat: '' })) : s.rows;
+    for (let i = 0; i < rows.length; i += SEND_CHUNK) {
+      opts.onProgress?.(`${head} ${Math.min(i + SEND_CHUNK, rows.length).toLocaleString()} / ${rows.length.toLocaleString()}行を送信中...`);
+      await api(`/ship-color/import/${batchId}/rows`, {
+        method: 'POST', body: JSON.stringify({ rows: rows.slice(i, i + SEND_CHUNK) }),
+      });
+    }
+    opts.onProgress?.(`${head}を判定しています...`);
+    const r = await api<{ rows: number; counts: Record<string, number>; replaced: number }>(
+      `/ship-color/import/${batchId}/finish`, { method: 'POST' });
+    const res = { dataDate: s.dataDate, rows: r.rows, counts: r.counts ?? {}, replaced: r.replaced };
+    out.push(res);
+    opts.onDayDone?.(res);
+  }
+  return out;
 }
 
 // ───────── 色塗り資料 ─────────

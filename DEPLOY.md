@@ -83,6 +83,8 @@ Vercelダッシュボードから設定する場合は **Settings → Environmen
 | `DB_SSL_NO_VERIFY` | | `true` でTLS証明書の検証を緩める（社内認証局を使っている場合） |
 | `DISPLAY_TZ` | | 画面に出す時刻の時間帯（既定: `Asia/Tokyo`）。通常は設定不要 |
 | `ADMIN_RECOVERY_TOKEN` | | 管理者に入れなくなったときの復旧用の合言葉。**普段は設定しない**（下記「管理者に入れなくなったとき」参照） |
+| `AUTO_IMPORT_KEY` | | 社内PCからの自動取込（出荷明細・売上高）の鍵。32文字以上。未設定なら自動取込は受け付けない（[client/auto-import/README.md](client/auto-import/README.md)） |
+| `AUTO_IMPORT_USER` | | 自動取込を行う利用者のログインID。自動取込専用に作った管理者を指定する（この利用者は画面からはログインできなくなる） |
 
 `DISABLE_AUTH` と `DEV_LOGIN_AS` は認証を省略するための開発用の設定です。
 **本番（Vercel）では設定されていても無視され、必ずログインを求めます。**

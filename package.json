@@ -16,7 +16,8 @@
     "reset-db": "node scripts/reset-db.js",
     "set-password": "node scripts/set-password.js",
     "backup": "node scripts/backup.js",
-    "vercel-build": "cd client && npm install && npm run build"
+    "vercel-build": "cd client && npm install && npm run build",
+    "build:auto-import": "cd client && npm install && node auto-import/build.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
